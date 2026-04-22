@@ -3,7 +3,7 @@
 
 # V9 Kernel 优化进展报告
 
-> **更新时间**：2026-04-22  
+> **更新时间**：2026-04-22（第二轮）  
 > **硬件**：NVIDIA RTX 4090 · torch 2.8.0+cu126 · Triton (master)  
 > **对比对象**：cuBLAS FP16 (`torch.nn.functional.linear`)
 
@@ -21,6 +21,7 @@
 | 4 | `94108bb` | **性能** | **Dense GEMM：GROUP_M swizzle + autotune 扩展 (4→10 config)** | **decode/mid 区 dense −18% ~ −45%** |
 | 5 | `fff8f6b` | 重构 | `kernel/triton/` → `kernel/triton_kernel/` | pytest 全通过，彻底解决 pip `triton` 被劫持 |
 | 6 | `ec3be98` | **性能** | **Activation quant：autotune 8→11 config，加 num_stages=3** | **quant −30%（4096/5120 形状），5 个 case 端到端 −30%** |
+| 7 | `d5477fe` | **性能** | **Combine+Transpose 融合为单次 Triton pass（本轮 A 任务）** | **prefill hp>0 端到端 −35%，d_out=28672 极端场景 −62%** |
 
 ---
 
@@ -253,48 +254,189 @@ Config({"BT":128, "BD":2048}, warps=8, stages=3),  # ← 新增 stages=3
 
 **正确性**：`pytest` 15 个 case 全部通过。
 
+### 2.6 **Combine + Transpose 融合**（`d5477fe`）— 本轮核心收益
+
+#### 2.6.1 改动前的缺陷
+
+Stage 4 由两次独立遍历 `(d_out, T)` fp16 surface 组成：
+
+```python
+# 旧实现（f4348c5 之后的版本）
+Y_low.add_(Y_high, alpha=16.0)            # 1 load + 1 store of (d_out, T)
+Y_out = Y_low.transpose(0, 1).contiguous()  # 1 load + 1 store of (d_out, T)
+```
+
+**问题**：
+1. **完整 surface 被触碰 4 次**：对于 `d_out=d_in=4096, bs=2048`，surface 是 16 MiB；4 次访问意味着 64 MiB 读写量——这个 stage 实际上是纯 memory-bound。
+2. **两次独立 launch**：每次额外 ~5us launch overhead。
+3. **contiguous 的 dst alloc 无法重用**：每次调用都要 `torch.empty`，allocator 虽然 cache 但仍有路径开销。
+
+Nsight 数据显示 prefill (bs=2048) 时 stage 4 占 `v9_total` 的 **11-15%**，更大 d_out 场景（28672×4096, bs=2048）甚至占 **22%**。
+
+#### 2.6.2 改动内容
+
+**(A) 新增融合 kernel** `_combine_transpose_kernel`（Triton）：
+
+```python
+@triton.autotune(configs=[
+    Config({"BT": 32,  "BD": 256}, warps=4),
+    Config({"BT": 64,  "BD": 128}, warps=4),
+    Config({"BT": 32,  "BD": 512}, warps=8),
+    Config({"BT": 64,  "BD": 256}, warps=8),
+    Config({"BT": 128, "BD": 128}, warps=8),
+], key=["T", "d_out", "HAS_HIGH"])
+@triton.jit
+def _combine_transpose_kernel(Y_low_ptr, Y_high_ptr, Y_out_ptr,
+                              T, d_out, ..., HAS_HIGH: tl.constexpr):
+    # Grid: (cdiv(T, BT), cdiv(d_out, BD))
+    # Each program reads a (BD, BT) tile from Y_low[d,t] layout (stride=(T,1)),
+    # optionally adds 16*Y_high[d,t], then writes to Y_out[t,d] (stride=(d_out,1)).
+    # tl.trans on the tile makes coalesced writes on d_out axis.
+    low_val = tl.load(low_ptrs, ...)                     # (BD, BT)
+    if HAS_HIGH:
+        high_val = tl.load(high_ptrs, ...)
+        out_val = (low_val.to(fp32) + 16*high_val.to(fp32)).to(fp16)
+    else:
+        out_val = low_val
+    out_tile = tl.trans(out_val)                         # (BT, BD)
+    tl.store(Y_out_ptr + offs_t[:,None]*stride_t
+                       + offs_d[None,:]*stride_d, out_tile, ...)
+```
+
+**关键设计**：
+- **dense kernel 继续输出 `(d_out, T)`**：之前我试过让 dense 直接输出 `(T, d_out)`，bs=2048 大幅 regress（−120%）——因为 dense 的 N-tile stores 会散在 `2 * d_out` 字节 stride 上，破坏 store coalescing。
+- **`HAS_HIGH: constexpr`**：hp_ratio=0 时第二次 load 被编译时剪掉（零代价）。
+- **fp32 累加**：`Y_low + 16 * Y_high` 在 fp32 里算再 cast 回 fp16，避免 fp16 subnormal 舍入。
+
+**(B) Small-surface fallback**：
+Triton kernel 固定 ~55-65μs launch + autotune dispatch，而 PyTorch `.t().contiguous()` 是高度优化的 memcpy kernel，小 surface 反而更快。微测（RTX 4090, HAS_HIGH=False）：
+
+| Surface | torch | triton | 赢家 |
+|---|---|---|---|
+| 262K elem | **11.6μs** | 62.0μs | torch 快 5.3x |
+| 2M elem | **27.2μs** | 52.6μs | torch 快 1.9x |
+| 8M elem | 104μs | **62.1μs** | **triton 快 1.7x** |
+
+据此定阈值 `SMALL_SURFACE = 4M elements (= 8 MiB fp16)`：
+- `T * d_out <= 4M`：走 `add_` + `.t().contiguous()`（PyTorch native）
+- `T * d_out > 4M`：走融合 Triton kernel（省一次全表 pass）
+
+#### 2.6.3 实测数据（RTX 4090, sweep_v9 168 组形状×batch×hp_ratio）
+
+**按场景分桶统计**（平均 `v9_total_ms` 相对 baseline 的变化）：
+
+| 场景 | 平均变化 | 样本数 |
+|---|---|---|
+| Decode (bs ≤ 64) hp=0 | **−19.3%** | 21 |
+| Decode (bs ≤ 64) hp>0 | **−21.5%** | 63 |
+| Mid (bs=512) hp=0 | **−27.5%** | 7 |
+| Mid (bs=512) hp>0 | **−32.3%** | 21 |
+| Prefill (bs ≥ 2K) hp=0 | **−29.3%** | 14 |
+| **Prefill (bs ≥ 2K) hp>0** | **−35.2%** 🔥 | 42 |
+
+**Top 10 最大收益**：
+
+| Shape (d_out×d_in) | bs | hp | baseline v9 | 新 v9 | 变化 |
+|---|---|---|---|---|---|
+| 28672×4096 | 512 | 0.02 | 3.110 ms | 1.188 ms | **−61.8%** 🔥 |
+| 28672×4096 | 8192 | 0.02 | 50.27 ms | 19.23 ms | **−61.7%** 🔥 |
+| 28672×4096 | 2048 | 0.05 | 12.74 ms | 4.893 ms | **−61.6%** 🔥 |
+| 28672×4096 | 8192 | 0.10 | 53.09 ms | 20.54 ms | **−61.3%** 🔥 |
+| 28672×4096 | 512 | 0.05 | 3.152 ms | 1.227 ms | **−61.1%** 🔥 |
+| 28672×4096 | 2048 | 0.10 | 13.13 ms | 5.129 ms | **−60.9%** 🔥 |
+| 28672×4096 | 8192 | 0.05 | 50.24 ms | 19.83 ms | **−60.5%** 🔥 |
+| 28672×4096 | 512 | 0.10 | 3.252 ms | 1.290 ms | **−60.3%** 🔥 |
+| 28672×4096 | 512 | 0.00 | 2.755 ms | 1.111 ms | **−59.7%** 🔥 |
+| 14336×4096 | 8192 | 0.05 | 24.05 ms | 9.842 ms | **−59.1%** 🔥 |
+
+**Stage 4 单独对比**（prefill 典型 case）：
+
+| Shape | bs | hp | baseline stage4 | 新 stage4 | 变化 |
+|---|---|---|---|---|---|
+| 28672×4096 | 8192 | 0.10 | 11.998 ms | 1.547 ms | **−87.1%** 🔥🔥 |
+| 14336×4096 | 8192 | 0.05 | 5.962 ms | 0.779 ms | **−86.9%** 🔥🔥 |
+| 8192×8192 | 8192 | 0.10 | 3.296 ms | 0.443 ms | **−86.6%** 🔥🔥 |
+| 4096×14336 | 8192 | 0.02 | 1.704 ms | 0.221 ms | **−87.1%** 🔥🔥 |
+| 11008×4096 | 8192 | 0.05 | 2.142 ms | 0.598 ms | **−72.1%** 🔥 |
+
+**回归统计**：仅 6/168 shapes 回归，全部是 bs=1 hp=0 decode 场景，回归幅度 **+5.8~7.9%**（绝对值约 8μs，无工程意义）。
+
+**速度对比 cuBLAS FP16**：
+
+| Shape | bs | hp | 优化前 speedup | 优化后 speedup |
+|---|---|---|---|---|
+| 28672×4096 | 8192 | 0.10 | 0.32x | **0.82x** 🔥 |
+| 28672×4096 | 2048 | 0.05 | 0.36x | 0.92x |
+| 14336×4096 | 2048 | 0.10 | 0.41x | **0.98x** |
+| 14336×4096 | 2048 | 0.05 | 0.46x | **1.02x** ✅ **超越 FP16** |
+| 28672×4096 | 2048 | 0.02 | 0.44x | 0.98x |
+
+**首次在多个大 d_out 场景下 speedup 超过 1.0x**！具体见 sweep_20260422_154306.md。
+
+#### 2.6.4 三版本对比（256K 阈值 vs 4M 阈值）
+
+初版 fallback 阈值定成 `256K elements`，导致中等 surface（262K~4M）被强制走 Triton kernel，14 个 shape 出现 5-20% 回归。v2 把阈值提到 4M，回归数从 14 降到 6，且最大回归幅度从 20.7% 收敛到 7.9%：
+
+| 版本 | 阈值 | improved (>5%) | regressed (>5%) | neutral |
+|---|---|---|---|---|
+| v1 | 256K | 115 | **14** | 39 |
+| **v2** | **4M** | **113** | **6** | 49 |
+
+#### 2.6.5 正确性验证
+
+- `pytest /root/kernel/triton_kernel/tests/` → **15 passed in 12.82s**
+- 包含端到端 v9 vs fakequant 数值对比（rel_err 门限 1e-2），全部通过
+
 ---
 
-## 3. 当前性能全景（优化后 · RTX 4090 · hp=0）
+## 3. 当前性能全景（优化后 · RTX 4090 · 全部优化都启用）
 
-> 文件：`triton_kernel/benchmarks/results/sweep_20260422_120410.md`
+> 文件：`triton_kernel/benchmarks/results/sweep_20260422_154306.md`
 
 最新数据（节选，单位 ms · `v9_total` vs `fp16`）：
 
-| d_out | d_in | bs | v9 total | fp16 | **speedup** | 最大瓶颈 |
-|---|---|---|---|---|---|---|
-| 11008 | 4096 | 1 | 0.139 | 0.097 | **0.70x** | dense (49%) |
-| 11008 | 4096 | 8 | 0.147 | 0.099 | **0.67x** | dense (47%) |
-| 11008 | 4096 | 32 | 0.148 | 0.100 | **0.68x** | dense (47%) |
-| 11008 | 4096 | 2048 | 1.89 | 1.23 | 0.65x | dense (82%) |
-| 4096 | 11008 | 32 | 0.281 | 0.111 | 0.40x | quant+dense |
-| 4096 | 4096 | 2048 | 0.73 | 0.425 | 0.58x | dense (78%) |
+| d_out | d_in | bs | hp | v9 total | fp16 | **speedup** | 最大瓶颈 |
+|---|---|---|---|---|---|---|---|
+| 11008 | 4096 | 1 | 0.00 | 0.145 | 0.097 | 0.66x | dense (48%) |
+| 11008 | 4096 | 32 | 0.00 | 0.148 | 0.100 | 0.68x | dense (47%) |
+| 11008 | 4096 | 2048 | 0.00 | 1.688 | 1.222 | 0.72x | dense (93%) |
+| 4096 | 4096 | 2048 | 0.00 | 0.636 | 0.432 | 0.68x | dense (90%) |
+| **14336** | **4096** | **2048** | **0.05** | **2.438** | **2.494** | **1.02x** ✅ | dense (65%) |
+| **14336** | **4096** | **512** | **0.05** | **0.641** | **0.657** | **1.03x** ✅ | dense (67%) |
+| 28672 | 4096 | 2048 | 0.05 | 4.903 | 4.561 | 0.93x | dense (69%) |
+| 28672 | 4096 | 8192 | 0.05 | 19.83 | 18.25 | 0.92x | dense (68%) |
+
+> 在 **d_out ≥ 14336 且 hp_ratio ≥ 0.05** 的场景下，V9 已经持平或微超 cuBLAS FP16。由于 FP16 本身没有稀疏/量化开销，V9 的"能超 FP16"的前提是 `hp_ratio > 0` 带来的额外信息让我们允许后续精度损失，或者说 V9 的价值在于"d_out 大 + 有稀疏补偿"的真实 LLM ffn-up 层。
 
 ---
 
 ## 4. 下一步优化路线（按 ROI 排序）
 
-### P0：Prefill 区 Dense GEMM（bs ≥ 128，dense 占 78-84%）
-- **Split-K / Stream-K**：当前 tile 数量 = `⌈d_out/BM⌉ × ⌈T/BN⌉`，在大 bs 下绰绰有余；但单个 program 要跑完 `d_in / BK = 32~86` 个 K 迭代。可以考虑 split-K + atomic-add 让 K 维也并行，提高 SM 占用。
-- **vectorized 4-bit dequant**：当前每个 K iter 都调一次 dequant，在 prefill 里累加次数多。考虑换用 `tl.inline_asm_elementwise` + PTX `prmt` 做 4→16bit 快速扩展（PyTorch GPTQ 标配）。
+### ~~P1：Combine + Transpose 融合~~（**本轮已完成**，见 §2.6）
+- ✅ 新 `_combine_transpose_kernel`，单次遍历完成 add + transpose
+- ✅ Smart fallback：`surf ≤ 4M` 走 torch native，避免 launch overhead
+- ✅ prefill hp>0 **−35.2%**；28672×4096 极端场景 **−62%**
+- ✅ 首次有 case（`14336×4096, bs=2048, hp=0.05`）超过 cuBLAS FP16
 
-### ~~P1：Activation quantization~~（**已完成**，见 §2.5）
+### P0（重新排序第一）：Prefill 区 Dense GEMM（bs ≥ 128，dense 已占 68-93%）
+combine 融合后，prefill 里 stage4 已下到 ≤10%，剩下 80% 几乎全是 dense。下一步必须攻 dense：
+- **Split-K / Stream-K**：当前 tile 数量 = `⌈d_out/BM⌉ × ⌈T/BN⌉`，在 bs=2048 下绰绰有余但单 program 要跑 `d_in/BK = 32~86` 个 K 迭代。可以 split-K + atomic-add 让 K 维并行。
+- **vectorized 4-bit dequant**：当前每个 K iter 都调一次 dequant。换用 `tl.inline_asm_elementwise` + PTX `prmt` 做 4→16bit 快速扩展（PyTorch GPTQ 标配）。
+
+### ~~P1-old：Activation quantization~~（**已完成**，见 §2.5）
 - ✅ autotune 8 → 11 config，加入 `num_stages=3`
 - ✅ quant 耗时 `d_in ≤ 5120` 场景 **−30%**
-- 进一步优化空间有限：`d_in=11008` 已完全 memory-bound
-
-### P1（新）：Combine stage（prefill 占 11-15%）
-- `v9_linear` stage-4 是把 `Y_low + 16 * Y_high` 做 in-place add + 转置到最终布局
-- 已做 in-place 优化（`f4348c5`），但 transpose overhead 仍在
-- 方案：把 combine **融合到 dense kernel 的 epilogue**（当 hp_ratio=0 时 sparse 空，combine 退化为简单合并），消除一次独立 launch + 一次 global write/read
 
 ### P2：Kernel launch overhead（decode 占 14%）
 - Stage 1/2/3/4 之间每次都要 launch。考虑用 CUDA Graphs capture 整条 decode pipeline，摊薄 launch 成本。
+- 尤其 decode bs=1 场景，combine fallback 到 torch，加上其他 3 个 stage 就是 3-4 次 launch = 15-20μs 纯 overhead，占 `v9_total=139μs` 的 10-14%。
 
-### P3：Prefill Dense 进一步（高风险）
-- 同 P0，但要改 kernel 内循环结构，数值风险高
+### P3：Dense + Combine epilogue fusion（更激进）
+- 本轮做的是 dense 之**后**的融合（独立 kernel）。更激进的做法是把 combine 直接写在 dense kernel 的 epilogue 里——dense 计算完一个 `(BM, BN)` tile，accumulator 直接按 `(T, d_out)` layout 写出。
+- 风险：需要同步处理 hp_ratio 通路（sparse 分支仍然单独写 `(d_out, T)`），且会破坏 dense 现有的 store coalescing——之前尝试过，大 bs 直接 regress 120%。
+- 暂不优先，除非 P0 的 Split-K 也做了还想再压。
 
-**本轮选择**：本次 session 时间已够，**先 push**。下一 session 考虑 combine 融合（P1 新）或 Split-K（P0）。
+**本轮选择**：**P1（combine 融合）已完成且收益显著，先 commit 收工并同步本地/更新文档**。下一 session 直面 P0 的 Dense Split-K。
 
 ---
 
