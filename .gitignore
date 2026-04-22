@@ -6,6 +6,7 @@ __pycache__/
 
 # Benchmark artefacts (reproducible from code, too bulky for VCS)
 triton/benchmarks/results/
+triton_kernel/benchmarks/results/
 
 # Profiling outputs (nsys/ncu reports)
 *.nsys-rep
