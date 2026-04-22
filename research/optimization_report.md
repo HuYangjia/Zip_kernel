@@ -20,6 +20,7 @@
 | 3 | `f8eb1ed` | 工具 | 接入 Nsight Systems profiling pipeline | 量化各 stage 占比，指导优化方向 |
 | 4 | `94108bb` | **性能** | **Dense GEMM：GROUP_M swizzle + autotune 扩展 (4→10 config)** | **decode/mid 区 dense −18% ~ −45%** |
 | 5 | `fff8f6b` | 重构 | `kernel/triton/` → `kernel/triton_kernel/` | pytest 全通过，彻底解决 pip `triton` 被劫持 |
+| 6 | `ec3be98` | **性能** | **Activation quant：autotune 8→11 config，加 num_stages=3** | **quant −30%（4096/5120 形状），5 个 case 端到端 −30%** |
 
 ---
 
@@ -167,6 +168,91 @@ bs ≥ 256 时 autotune 仍然选了 `128×128, warps=4, stages=3` 这个老配�
 
 **验证**：`PYTHONPATH=/root pytest /root/kernel/triton_kernel/tests/` → **15 passed in 34.44s**（之前是 ImportError 全挂）。
 
+### 2.5 Activation Quant 优化（`ec3be98`）— 本轮新增
+
+#### 2.5.1 改动前的缺陷
+
+原 autotune 8 个 config，**全部 `num_stages=2`**：
+
+```python
+triton.Config({"BT": 16,  "BD": 256}, num_warps=2, num_stages=2),
+triton.Config({"BT": 32,  "BD": 256}, num_warps=2, num_stages=2),
+...  # 全部 num_stages=2
+```
+
+**问题**：
+1. 所有 config 都是 `num_stages=2`，软件流水只有 2 拍深，无法掩盖 `BD=2048` 的宽 load 延迟
+2. 没有 `num_stages=3` 做 load↔math 重叠，对 `d_in=11008` 这种带宽受限场景尤其不利
+3. Pass 1（求 max）和 Pass 2（量化+pack）都要全量扫 d_in，本质是 **2× 读 X + 1× 读 perm**
+
+#### 2.5.2 改动内容
+
+扩到 **11 个 config**，分三档：
+
+```python
+# small-T decode（T ≤ 16）
+Config({"BT":16,  "BD":256},  warps=2, stages=2),
+Config({"BT":16,  "BD":512},  warps=2, stages=3),  # ← 新增 stages=3
+Config({"BT":32,  "BD":256},  warps=2, stages=2),
+Config({"BT":32,  "BD":512},  warps=4, stages=3),  # ← 新增 stages=3
+
+# medium（16 < T ≤ 128）
+Config({"BT":64,  "BD":512},  warps=4, stages=2),
+Config({"BT":64,  "BD":1024}, warps=4, stages=3),  # ← 新增 stages=3
+Config({"BT":128, "BD":512},  warps=4, stages=2),
+Config({"BT":128, "BD":1024}, warps=8, stages=2),
+
+# large-T（T ≥ 256）— 专门给 d_in=11008 准备
+Config({"BT":64,  "BD":2048}, warps=8, stages=2),
+Config({"BT":64,  "BD":2048}, warps=8, stages=3),  # ← 新增 stages=3
+Config({"BT":128, "BD":2048}, warps=8, stages=3),  # ← 新增 stages=3
+```
+
+**关键约束**：`BT ≤ 128`，因为 `BT=256` 在 `T=32` 的场景会导致只有 1 个 block、SM 完全不饱和（实验验证：`BT=256` 让 `d_in=11008, bs=32` 的 quant 从 152μs → 258μs，+70%）。
+
+#### 2.5.3 实测数据（quant kernel only · RTX 4090）
+
+| d_in | bs | 优化前 (μs) | 优化后 (μs) | 变化 |
+|---|---|---|---|---|
+| 4096 | 1 | 87.8 | **60.4** | **−31%** 🔥 |
+| 4096 | 8 | 87.8 | **61.3** | **−30%** 🔥 |
+| 4096 | 32 | 87.4 | **61.5** | **−30%** 🔥 |
+| 4096 | 128 | 86.2 | **60.6** | **−30%** 🔥 |
+| 4096 | 512 | 86.7 | **61.1** | **−30%** 🔥 |
+| 4096 | 2048 | 87.1 | **61.7** | **−29%** 🔥 |
+| 5120 | 1 | 86.9 | **60.9** | **−30%** 🔥 |
+| 5120 | 8 | 86.8 | **60.8** | **−30%** 🔥 |
+| 5120 | 32 | 90.9 | **69.9** | **−23%** ✅ |
+| 5120 | 128 | 72.8 | 70.4 | −3% |
+| 5120 | 512 | 72.7 | 73.1 | ≈ |
+| 5120 | 2048 | 74.3 | 74.3 | ≈ |
+| 11008 | 1 | 108 | 103 | −5% |
+| 11008 | 8 | 123 | 117 | −5% |
+| 11008 | 32 | 152 | **147** | −3% |
+| 11008 | 128 | 153 | **147** | −4% |
+| 11008 | 512 | 153 | 152 | ≈ |
+| 11008 | 2048 | 154 | 154 | ≈ |
+
+**结论**：`d_in ≤ 5120` 的小-中 bs 场景普遍 −30%；`d_in=11008` 已彻底 memory-bound，只剩 −3~5% 的小优化空间（受 HBM 带宽物理限制）。
+
+#### 2.5.4 端到端 V9 总耗时变化（v9_total_ms · hp=0）
+
+| Shape | bs | Old v9_total | New v9_total | 变化 | 新 speedup vs FP16 |
+|---|---|---|---|---|---|
+| 4096 × 4096 | 1 | 0.138 | 0.140 | ≈ | 0.27x |
+| 4096 × 4096 | **8** | **0.212** | **0.149** | **−30%** 🔥 | 0.10x |
+| 4096 × 4096 | **32** | **0.212** | **0.149** | **−30%** 🔥 | **0.15x** |
+| 4096 × 4096 | 128 | 0.147 | 0.148 | ≈ | 0.23x |
+| 4096 × 4096 | 2048 | 0.730 | 0.731 | ≈ | 0.59x |
+| 11008 × 4096 | 1-32 | ~0.147 | ~0.147 | ≈ | 0.68x |
+| 4096 × 11008 | **8** | **0.274** | **0.245** | **−11%** ✅ | **0.40x** |
+| 4096 × 11008 | 32 | 0.281 | 0.278 | −1% | 0.40x |
+| **5120 × 5120** | **1** | **0.200** | **0.138** | **−31%** 🔥 | **0.41x** |
+| **5120 × 5120** | **8** | **0.214** | **0.147** | **−31%** 🔥 | **0.14x** |
+| 5120 × 5120 | 2048 | 1.092 | 1.103 | +1% | 0.64x |
+
+**正确性**：`pytest` 15 个 case 全部通过。
+
 ---
 
 ## 3. 当前性能全景（优化后 · RTX 4090 · hp=0）
@@ -192,18 +278,23 @@ bs ≥ 256 时 autotune 仍然选了 `128×128, warps=4, stages=3` 这个老配�
 - **Split-K / Stream-K**：当前 tile 数量 = `⌈d_out/BM⌉ × ⌈T/BN⌉`，在大 bs 下绰绰有余；但单个 program 要跑完 `d_in / BK = 32~86` 个 K 迭代。可以考虑 split-K + atomic-add 让 K 维也并行，提高 SM 占用。
 - **vectorized 4-bit dequant**：当前每个 K iter 都调一次 dequant，在 prefill 里累加次数多。考虑换用 `tl.inline_asm_elementwise` + PTX `prmt` 做 4→16bit 快速扩展（PyTorch GPTQ 标配）。
 
-### P1：Activation quantization（prefill 占 17-28%）
-- 当前 quant kernel 有 autotune，但只有 2 个 config，且 `BK=128` 死死绑定。
-- 扩 autotune + 尝试 `num_stages=3/4` + 检查有没有 warp-level reduce 可以打通。
+### ~~P1：Activation quantization~~（**已完成**，见 §2.5）
+- ✅ autotune 8 → 11 config，加入 `num_stages=3`
+- ✅ quant 耗时 `d_in ≤ 5120` 场景 **−30%**
+- 进一步优化空间有限：`d_in=11008` 已完全 memory-bound
+
+### P1（新）：Combine stage（prefill 占 11-15%）
+- `v9_linear` stage-4 是把 `Y_low + 16 * Y_high` 做 in-place add + 转置到最终布局
+- 已做 in-place 优化（`f4348c5`），但 transpose overhead 仍在
+- 方案：把 combine **融合到 dense kernel 的 epilogue**（当 hp_ratio=0 时 sparse 空，combine 退化为简单合并），消除一次独立 launch + 一次 global write/read
 
 ### P2：Kernel launch overhead（decode 占 14%）
 - Stage 1/2/3/4 之间每次都要 launch。考虑用 CUDA Graphs capture 整条 decode pipeline，摊薄 launch 成本。
-- 或：把 combine（stage 4）融合到 dense kernel 的 epilogue 里（当 `hp_ratio=0` 时 sparse 为空，combine 其实只是一个 transpose+dequant-scale）。
 
-### P3（已想好但风险较大）
-- Dense kernel 支持 `BK = k × BCOL_K`（k∈{1,2,4}），减少 epilogue 频率。需要改 kernel 内循环结构，有数值风险。
+### P3：Prefill Dense 进一步（高风险）
+- 同 P0，但要改 kernel 内循环结构，数值风险高
 
-**本轮选择：先攻 P1（quant 优化）**——代码量小、风险低、预计能让 prefill 端到端再 −10% 左右；然后评估 P0 的 Split-K 是否值得。
+**本轮选择**：本次 session 时间已够，**先 push**。下一 session 考虑 combine 融合（P1 新）或 Split-K（P0）。
 
 ---
 
