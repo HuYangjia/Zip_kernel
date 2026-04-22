@@ -26,6 +26,7 @@ from kernel.triton.v9_linear import (  # noqa: E402
     v9_linear_fakequant,
     v9_linear_forward,
 )
+from kernel.triton.benchmarks._bench_util import time_ms as _time_ms  # noqa: E402
 
 
 SHAPES: List[Tuple[int, int]] = [(4096, 4096), (11008, 4096), (4096, 11008)]
@@ -59,18 +60,7 @@ def _build_pack(d_out: int, d_in: int, hp_ratio: float = 0.05):
     })
 
 
-def _time_ms(fn, n_warmup: int = 10, n_iter: int = 30) -> float:
-    for _ in range(n_warmup):
-        fn()
-    torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(n_iter):
-        fn()
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / n_iter
+
 
 
 def main():

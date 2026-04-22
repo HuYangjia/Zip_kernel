@@ -14,6 +14,7 @@ from kernel.triton.activation_quant import quantize_activation_s4  # noqa: E402
 from kernel.triton.dense_u4s4_gemm import dense_gemm_u4_s4  # noqa: E402
 from kernel.triton.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
 from kernel.triton.sparse_s4s4_gemm import sparse_gemm_s4_s4  # noqa: E402
+from kernel.triton.benchmarks._bench_util import time_ms as _time_ms  # noqa: E402
 
 
 def _build_pack(d_out: int, d_in: int, hp_ratio: float = 0.05):
@@ -45,20 +46,6 @@ def _build_pack(d_out: int, d_in: int, hp_ratio: float = 0.05):
         "Q_s8_blocks": Q_s8_blocks, "scale_s8_per_block": scale_s8,
         "hp_block_indices": hp_indices, "perm": perm,
     })
-
-
-def _time_ms(fn, n_warmup=10, n_iter=50) -> float:
-    for _ in range(n_warmup):
-        fn()
-    torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(n_iter):
-        fn()
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / n_iter
 
 
 def main():

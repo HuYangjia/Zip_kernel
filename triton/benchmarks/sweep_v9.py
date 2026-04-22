@@ -23,7 +23,7 @@ import datetime as _dt
 import logging
 import sys
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import List, Tuple
 
 import torch
 
@@ -40,6 +40,7 @@ from kernel.triton.activation_quant import quantize_activation_s4  # noqa: E402
 from kernel.triton.dense_u4s4_gemm import dense_gemm_u4_s4  # noqa: E402
 from kernel.triton.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
 from kernel.triton.sparse_s4s4_gemm import sparse_gemm_s4_s4  # noqa: E402
+from kernel.triton.benchmarks._bench_util import time_ms as _time_ms  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -124,18 +125,7 @@ def _build_pack(d_out: int, d_in: int, hp_ratio: float):
     })
 
 
-def _time_ms(fn: Callable[[], None], n_warmup: int = 10, n_iter: int = 30) -> float:
-    for _ in range(n_warmup):
-        fn()
-    torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(n_iter):
-        fn()
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / n_iter
+
 
 
 def _bench_v9_stages(W, X_2d, has_hp: bool):
