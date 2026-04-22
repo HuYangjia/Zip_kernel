@@ -75,6 +75,19 @@ def _unpack_packed_s4_rowmajor(packed, BM: tl.constexpr, BK: tl.constexpr):
         triton.Config({"BM": 128, "BN": 128, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=4),
         triton.Config({"BM": 256, "BN": 128, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
         triton.Config({"BM": 128, "BN": 256, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
+        # --- NEW (Phase B-1, 2026-04-22): extended prefill tiles. Sweep
+        #     analysis (sweep_20260422_154306) showed prefill dense is at
+        #     1.27x cuBLAS FP16 despite only 1.6-7% HBM BW utilisation,
+        #     i.e. the kernel is TC-occupancy limited. BK is locked to
+        #     BCOL_K=128 by per-group dequant, so we can only push BM,
+        #     BN, num_warps and num_stages. The first three configs are
+        #     the prime TC-heavy candidates; the next two add extra
+        #     pipeline depth to better hide HBM latency on big shapes.
+        triton.Config({"BM": 256, "BN": 256, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8,  num_stages=3),
+        triton.Config({"BM": 256, "BN": 128, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8,  num_stages=4),
+        triton.Config({"BM": 128, "BN": 256, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8,  num_stages=4),
+        triton.Config({"BM": 128, "BN": 128, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=4,  num_stages=5),
+        triton.Config({"BM": 128, "BN": 128, "BK": 128, "GROUP_SIZE_M": 16}, num_warps=8, num_stages=4),
     ],
     key=["d_out", "d_in", "T"],
 )

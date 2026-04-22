@@ -462,6 +462,114 @@ T=128 是 dense 占比从 ~50% 跳到 ~70% 的临界点，自然分界。后续 
 
 ---
 
+### 2.8 Prefill **W4A16 fallback**（`<本轮核心收益>`）— 真正的加速
+
+> **一句话结论**：在 prefill（大 `T`）场景，在线 INT4×SINT4 GEMM 被"一次性反量化 W 到 FP16 + cuBLAS FP16 GEMM"的路径**系统性地击败 13-24%**；集成到 `_v9_forward_prefill` 后，v9 端到端相对 cuBLAS FP16 的比率从 **0.70x 一跃到 0.88-0.97x**。
+
+#### 2.8.1 动机（为什么 autotune 单独没救）
+
+先尝试的 Phase B-1 是**纯 autotune 扩展**：在 `dense_u4s4_gemm` 加入 `BM=256/BN=256, GROUP=16, num_stages=4/5, num_warps=8` 等 5 个大 tile 配置。实测结果：
+
+| 场景 | autotune 选中的 config | dense/fp16 ratio |
+|---|---|---|
+| 4096×4096, bs=2048 | `BM=64, BN=128, warps=4, stages=3`（旧 config） | 1.31x |
+| 14336×4096, bs=8192 | `BM=128, BN=128, **GROUP=16**, warps=8, stages=4`（新 config）| 1.04x |
+| 28672×4096, bs=2048 | `BM=128, BN=128, **GROUP=16**, warps=8, stages=4`（新 config）| 1.28x |
+| 8192×8192, bs=8192 | `BM=128, BN=128, **GROUP=16**, warps=8, stages=4`（新 config）| 1.23x |
+
+- 3/4 大 prefill 场景确实选中了新 config，但 median ratio 仅从 1.27x → 1.26x（噪声级）
+- `BM=256, BN=256` 超大 tile **从未被选中** → 寄存器/shared mem 压力实际限制了 tile 规模
+- 结论：**纯 Triton tile 调优的收益已见顶，必须绕开 online-dequant-inside-GEMM 的模式**
+
+#### 2.8.2 Phase B-2 的核心洞察
+
+4-bit 权重 GEMM 快于 FP16 GEMM 的**必要条件**是"权重 HBM 带宽"是瓶颈。sweep 数据显示：
+
+| regime | HBM BW util (dense only) | 结论 |
+|---|---|---|
+| decode (bs=1, d_out=28672) | **73% of HBM peak** | 带宽瓶颈成立 → int4 value 显现 |
+| prefill (bs=2048, 任何 shape) | **1.6-7% of HBM peak** | **compute-bound**，int4 不但没收益还被 dequant epilogue 拖慢 |
+
+所以 **prefill 场景本来就不该跑在线 int4 GEMM**。正确策略：**先一次性把 W 反量化成 fp16，然后走 cuBLAS FP16**——反正 fp16 GEMM 本来就压得满 TC。
+
+#### 2.8.3 实现：专用 Triton dequant kernel
+
+现有 `reconstruct_w_fakequant_fp16` 用 `torch.repeat_interleave`，4096×4096 要 1.97ms（HBM 屋顶只要 ~0.04ms，慢了 47x），**直接不可用**。
+
+新增 `triton_kernel/dequant_w4_to_fp16.py`：
+- 读取 `(d_out, d_in//2) int8` packed SINT4 + `(d_out, n_groups) fp16` scale/zero
+- 输出 `(d_out, d_in) fp16` dense 权重
+- 每个 program 处理 `(BM, BK)` tile，BK 是 BCOL=128 的整数倍，用 `tl.reshape` + broadcast 做 per-group scale/zero
+- 6 个 autotune 配置
+
+**正确性**：对 4 个 shape 测试 `torch.equal(triton_dequant, torch_reference) == True`（0 bit 差异）。
+
+**性能**：
+
+| shape | torch native | **Triton dequant** | 加速 |
+|---|---|---|---|
+| 4096×4096 | 1.97 ms | **0.052 ms** | **38x** |
+| 11008×4096 | 5.99 ms | **0.131 ms** | 46x |
+| 28672×4096 | 15.60 ms | **0.345 ms** | 45x |
+| 8192×8192 | 8.91 ms | **0.194 ms** | 46x |
+
+已经贴近 HBM 屋顶（0.052ms 对应带宽 645 GB/s = 64% of 1008 GB/s 峰值）。
+
+#### 2.8.4 集成：`_v9_forward_prefill` 的 W4A16 fallback 分支
+
+`v9_linear.py` 的 `_v9_forward_prefill` 新增快速分支：
+
+```python
+use_w4a16 = (
+    W.n_hp_blocks == 0                            # 有 sparse 时暂不支持
+    and (T >= 1024                                 # 大 prefill 全赢
+         or (T >= 512 and d_out*d_in <= 4096*4096))  # 中小 prefill 部分赢
+)
+if use_w4a16:
+    W_fp16 = dequant_u4_to_fp16(W)                 # (d_out, d_in) permuted-col
+    X_perm = X_2d.index_select(1, W.perm.to(torch.long))  # 列对齐
+    return torch.nn.functional.linear(X_perm, W_fp16)
+# else: 走原 int4 pipeline
+```
+
+关键决策点：
+- **`hp_ratio > 0` 时强制走 int4**：sparse 贡献需要 `(d_out, T)` layout 的 fp16 加回，fallback 里暂未实现，保守排除
+- **T 阈值 1024**：在所有 shape 上 DQ+FP16 都赢
+- **T ∈ [512, 1024)**：只有小 shape (`d_out*d_in ≤ 4096²`) 赢，大 shape 的 dequant 成本还没摊平
+- **列对齐 (`X_perm = X.index_select(1, W.perm)`）**：V9 weight 是 permuted-col 存储的，fallback 不走 `activation_quant` kernel，必须显式 gather X
+
+#### 2.8.5 端到端收益（vs 基准 sweep_20260422_154306）
+
+| Shape, bs | Baseline (v9/fp16) | **Phase B-2** | Gain |
+|---|---|---|---|
+| 4096×4096, 2048 | 0.73x | **0.88x** | +21% |
+| 4096×4096, 8192 | 0.73x | **0.90x** | +23% |
+| 11008×4096, 2048 | 0.70x | **0.94x** | +34% |
+| 11008×4096, 8192 | 0.70x | **0.96x** | +37% |
+| 14336×4096, 8192 | 0.70x | **0.96x** | +37% |
+| 28672×4096, 2048 | 0.70x | **0.92x** | +31% |
+| **28672×4096, 8192** | 0.70x | **0.97x** 🔥 | +39% |
+| 8192×8192, 2048 | 0.73x | **0.86x** | +18% |
+| 8192×8192, 8192 | 0.73x | **0.95x** | +30% |
+
+- prefill hp=0 场景**全部**从 0.70x 档升到 **0.86-0.97x** 档
+- 最大的形状（28672×4096, bs=8192）几乎追平 FP16，同时权重显存还是 1/4
+- `hp>0` 场景本 commit 未优化（仍走 int4，保证正确性）
+
+#### 2.8.6 正确性验证
+
+新增 `tests/test_w4a16_fallback.py`：
+1. **4 个 shape × bs 组合**：fallback 输出 vs `v9_linear_fakequant`，`rel_err ≤ 2e-2`（放宽自 1e-2，因 cuBLAS 是 fp16 累加，int4 path 是 fp32 累加）
+2. **`hp>0` 强制走 int4**：对比 `v9_linear_forward_prefill` 和 `v9_linear_forward_decode`（后者永不 fallback），要求 `torch.equal`
+
+全套测试：**29 passed**（24 原有 + 5 新增）。
+
+#### 2.8.7 Autotune 扩展保留
+
+Phase B-1 在 `dense_u4s4_gemm.py` 加的 5 个新 config 作为**副产物保留**：虽然 median 提升不显著，但 `BM=128, BN=128, GROUP=16, stages=4, warps=8` 在 4 个大 prefill shape 上被 autotune 选中，对 `hp>0` 的 prefill（仍走 int4 路径）仍是略微正收益；保留不删。
+
+---
+
 ## 3. 当前性能全景（优化后 · RTX 4090 · 全部优化都启用）
 
 > 文件：`triton_kernel/benchmarks/results/sweep_20260422_154306.md`
@@ -485,36 +593,41 @@ T=128 是 dense 占比从 ~50% 跳到 ~70% 的临界点，自然分界。后续 
 
 ## 4. 下一步优化路线（按 ROI 排序）
 
-### ~~P1：Combine + Transpose 融合~~（**本轮已完成**，见 §2.6）
+### ~~P1：Combine + Transpose 融合~~（**已完成**，见 §2.6）
 - ✅ 新 `_combine_transpose_kernel`，单次遍历完成 add + transpose
 - ✅ Smart fallback：`surf ≤ 4M` 走 torch native，避免 launch overhead
 - ✅ prefill hp>0 **−35.2%**；28672×4096 极端场景 **−62%**
-- ✅ 首次有 case（`14336×4096, bs=2048, hp=0.05`）超过 cuBLAS FP16
 
-### P0（重新排序第一）：Prefill 区 Dense GEMM（bs ≥ 128，dense 已占 68-93%）
-combine 融合后，prefill 里 stage4 已下到 ≤10%，剩下 80% 几乎全是 dense。下一步必须攻 dense：
-- **Split-K / Stream-K**：当前 tile 数量 = `⌈d_out/BM⌉ × ⌈T/BN⌉`，在 bs=2048 下绰绰有余但单 program 要跑 `d_in/BK = 32~86` 个 K 迭代。可以 split-K + atomic-add 让 K 维并行。
-- **vectorized 4-bit dequant**：当前每个 K iter 都调一次 dequant。换用 `tl.inline_asm_elementwise` + PTX `prmt` 做 4→16bit 快速扩展（PyTorch GPTQ 标配）。
+### ~~P0-prefill：Dense GEMM (prefill regime)~~（**本轮已完成**，见 §2.8）
+- ✅ Phase B-1：autotune 扩展 5 个大 tile（GROUP=16, stages=4/5）— 作为副产物保留
+- ✅ Phase B-2：**W4A16 fallback**（dequant-then-cuBLAS）— **端到端 +20-40%**
+- ✅ Triton dequant kernel（比 torch native 快 38-46x，贴近 HBM 屋顶）
+- ✅ prefill hp=0 速度 0.70x → **0.88-0.97x**（28672×4096, bs=8192 近乎追平 cuBLAS）
 
-### ~~P1-old：Activation quantization~~（**已完成**，见 §2.5）
-- ✅ autotune 8 → 11 config，加入 `num_stages=3`
-- ✅ quant 耗时 `d_in ≤ 5120` 场景 **−30%**
+### P1（新）：hp>0 prefill 的 W4A16 扩展
+当前 fallback 在 `W.n_hp_blocks > 0` 时强制走 int4。sweep 数据显示 hp>0 的 prefill 仍是 ~0.66x 档。改造思路：
+- dequant W 到 fp16（已有 kernel），然后
+- 把 sparse 的 4-bit 块也 dequant-加入到 fp16 权重（一次性操作，均摊到 T），或
+- 保持 sparse 在 int4 path 单独计算，结果 add 到 fp16 GEMM 结果上（需要 kernel 做 (T, d_out) layout 的 add）
+
+收益预估：hp>0 prefill 也能提升到 0.85-0.95x 档，覆盖 sweep 里余下一半 shape。
 
 ### P2：Kernel launch overhead（decode 占 14%）
-- Stage 1/2/3/4 之间每次都要 launch。考虑用 CUDA Graphs capture 整条 decode pipeline，摊薄 launch 成本。
-- 尤其 decode bs=1 场景，combine fallback 到 torch，加上其他 3 个 stage 就是 3-4 次 launch = 15-20μs 纯 overhead，占 `v9_total=139μs` 的 10-14%。
-- **架构准备已完成**：本轮 §2.7 已把 decode 入口独立出来（`v9_linear_forward_decode`），未来 CUDA Graph capture 只需包裹这一个函数即可。
+- Stage 1/2/3/4 之间每次都要 launch。考虑用 CUDA Graphs capture 整条 decode pipeline。
+- 尤其 decode bs=1 场景，3-4 次 launch ≈ 15-20μs = `v9_total=139μs` 的 10-14%。
+- **架构准备已完成**（§2.7 decode 入口已独立）。
 
-### P3：Dense + Combine epilogue fusion（更激进）
-- 本轮做的是 dense 之**后**的融合（独立 kernel）。更激进的做法是把 combine 直接写在 dense kernel 的 epilogue 里——dense 计算完一个 `(BM, BN)` tile，accumulator 直接按 `(T, d_out)` layout 写出。
-- 风险：需要同步处理 hp_ratio 通路（sparse 分支仍然单独写 `(d_out, T)`），且会破坏 dense 现有的 store coalescing——之前尝试过，大 bs 直接 regress 120%。
-- 暂不优先，除非 P0 的 Split-K 也做了还想再压。
+### P3：Decode 专属 kernel 特化
+- decode 的 quant / sparse kernel 在小 bs (≤16) 时 launch overhead 严重。
+- 方案：给 `quantize_activation_s4` 加 `T ≤ 16` 专用小 tile config；sparse kernel 同理。
+- 收益预估：decode hp=0 0.69x → 0.85-0.95x。
 
 **本轮选择（更新）**：
-1. **已完成**：§2.6 combine+transpose 融合（−19~62%）+ §2.7 prefill/decode 架构拆分（0 overhead）
-2. **下一 session 首要**：P0 Phase B-1 — 给 prefill 的 dense kernel 扩展 autotune 配置（大 TC tile + Split-K），目标 `dense/fp16` 从 1.27x → 1.0x
-3. **随后**：P0 Phase B-2 — 内联 PTX 做 4-bit dequant 向量化
-4. **最后**：Phase C decode 专属优化（CUDA Graph + sparse 小 tile）
+1. **已完成**：§2.7 prefill/decode 架构拆分（0 overhead）+ §2.8 **W4A16 fallback（prefill +20-40%）**
+2. **下一 session 候选**：
+   - P1（hp>0 prefill 扩展 W4A16） — ROI 最高，sweep 剩余一半 shape
+   - P2（decode CUDA Graph） — 结构性改动
+   - P3（decode kernel 小 tile 特化） — 低风险增量
 
 ---
 

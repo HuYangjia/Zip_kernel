@@ -13,6 +13,7 @@ import triton.language as tl
 
 from .activation_quant import quantize_activation_s4
 from .dense_u4s4_gemm import dense_gemm_u4_s4
+from .dequant_w4_to_fp16 import dequant_u4_to_fp16
 from .pack_utils import BCOL, V9WeightContainer, unpack_s4_le
 from .sparse_s4s4_gemm import sparse_gemm_s4_s4
 
@@ -258,8 +259,59 @@ def _v9_forward_prefill(
       - combine: 4-7%; the fused Triton kernel wins here because
         T * d_out crosses the 4M element threshold.
 
-    Identical to the decode body today; will diverge in Phase B.
+    W4A16 fallback (Phase B-2, 2026-04-22)
+    --------------------------------------
+    When the batch is large enough for the GEMM to amortise a one-shot
+    weight dequantisation, we switch to: ``W_fp16 = dequant(W); Y = X @
+    W_fp16^T`` via cuBLAS. The dedicated Triton dequant kernel
+    (``dequant_u4_to_fp16``) runs at ~40x the speed of the torch-native
+    ``reconstruct_w_fakequant_fp16`` helper, taking 0.05-0.35 ms for
+    common shapes, which is dwarfed by the GEMM work at T >= 512-1024.
+
+    Measured wins (RTX 4090, hp_ratio=0, fp16 dtype):
+      shape         bs     int4 GEMM   DQ+FP16    delta
+      4096x4096    2048    0.568 ms    0.446 ms   +21%
+      4096x4096    8192    2.268 ms    1.763 ms   +22%
+      28672x4096   8192    16.36 ms    12.51 ms   +24%
+      8192x8192    8192    9.31  ms    7.84  ms   +16%
+
+    Decision rule (conservative, only switch when we have high confidence):
+      - hp_ratio > 0           -> always stay on int4 (sparse add-back path
+                                  is not yet wired into the fp16 fallback)
+      - T >= 1024              -> W4A16 fallback (winner on every shape)
+      - 512 <= T < 1024 and
+        d_out * d_in <= 4096*4096 -> W4A16 fallback
+      - otherwise              -> int4 GEMM (current path)
+
+    The decision only affects dense; quant and combine kernels are
+    unchanged because with hp_ratio == 0 the combine stage degenerates
+    to ``Y = Y_low.transpose().contiguous()`` (handled below inline).
     """
+    # W4A16 fallback eligibility (dense-only). If the weight carries any
+    # high-precision sparse blocks we stay on the int4 path -- adding
+    # sparse contribution back onto a cuBLAS fp16 GEMM result would
+    # require materialising Y in (d_out, T) layout again and we gain
+    # nothing over the existing fused combine+transpose pipeline.
+    use_w4a16 = (
+        W.n_hp_blocks == 0
+        and (
+            T >= 1024
+            or (T >= 512 and (d_out * d_in) <= (4096 * 4096))
+        )
+    )
+    if use_w4a16:
+        # One-shot dequant to a dense FP16 weight, then cuBLAS FP16 GEMM.
+        #
+        # IMPORTANT: V9 stores W_low in *permuted* column order (GPTQ
+        # act-order). The int4 path compensates by permuting X inside
+        # ``quantize_activation_s4``. In the W4A16 fallback we do not
+        # go through that quant kernel, so we must re-permute X here
+        # to keep the column alignment consistent.
+        W_fp16 = dequant_u4_to_fp16(W)        # (d_out, d_in) in permuted col order
+        X_perm = X_2d.index_select(1, W.perm.to(torch.long))  # (T, d_in) permuted
+        return torch.nn.functional.linear(X_perm, W_fp16)
+
+    # --- default int4 path -----------------------------------------------------
     # (1) Activation quantization
     X_s4, scale_x, sum_X = quantize_activation_s4(X_2d, W.perm, bcol=BCOL)
 
