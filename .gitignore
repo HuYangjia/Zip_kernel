@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Benchmark artefacts (reproducible from code, too bulky for VCS)
+triton/benchmarks/results/
+
+# Profiling outputs (nsys/ncu reports)
+*.nsys-rep
+*.qdrep
+*.ncu-rep
+*.sqlite
+
+# Editor
+.vscode/
+.idea/
