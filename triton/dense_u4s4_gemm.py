@@ -60,10 +60,21 @@ def _unpack_packed_s4_rowmajor(packed, BM: tl.constexpr, BK: tl.constexpr):
 
 @triton.autotune(
     configs=[
-        triton.Config({"BM": 128, "BN": 128, "BK": 128}, num_warps=4, num_stages=2),
-        triton.Config({"BM": 128, "BN": 128, "BK": 128}, num_warps=8, num_stages=3),
-        triton.Config({"BM": 64,  "BN": 128, "BK": 128}, num_warps=4, num_stages=2),
-        triton.Config({"BM": 128, "BN": 64,  "BK": 128}, num_warps=4, num_stages=2),
+        # --- decode regime (small N/T): BN must be tiny so we don't waste
+        #     threads on N-padding.  M tiles stay medium/large for SM coverage.
+        triton.Config({"BM": 64,  "BN": 16,  "BK": 128, "GROUP_SIZE_M": 1}, num_warps=2, num_stages=3),
+        triton.Config({"BM": 128, "BN": 16,  "BK": 128, "GROUP_SIZE_M": 1}, num_warps=4, num_stages=3),
+        triton.Config({"BM": 128, "BN": 32,  "BK": 128, "GROUP_SIZE_M": 4}, num_warps=4, num_stages=3),
+        # --- mid regime (16 <= N <= 128): square-ish tiles benefit from L2
+        #     swizzle.  GROUP_SIZE_M=8 roughly matches RTX 4090's 72 MiB L2.
+        triton.Config({"BM": 64,  "BN": 64,  "BK": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
+        triton.Config({"BM": 128, "BN": 64,  "BK": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
+        triton.Config({"BM": 64,  "BN": 128, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
+        # --- prefill regime (N >= 256): large square tiles, deeper pipeline.
+        triton.Config({"BM": 128, "BN": 128, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
+        triton.Config({"BM": 128, "BN": 128, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=4),
+        triton.Config({"BM": 256, "BN": 128, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
+        triton.Config({"BM": 128, "BN": 256, "BK": 128, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
     ],
     key=["d_out", "d_in", "T"],
 )
@@ -86,9 +97,31 @@ def dense_gemm_kernel(
     N_GROUPS: tl.constexpr,
     BCOL_K: tl.constexpr,
     BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
 ):
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    # ------------------------------------------------------------------
+    # Grouped program-ID swizzle for L2 locality.
+    #
+    # Without swizzle, program (pid_m, pid_n) visits memory in a raster
+    # pattern.  A group of ``GROUP_SIZE_M`` adjacent M-blocks is reused
+    # across all N-blocks -> we want those ``GROUP_SIZE_M * num_pid_n``
+    # programs to be scheduled together so W-tiles stay hot in L2.
+    # This is the standard Triton matmul tutorial swizzle, adapted to a
+    # (pid_m, pid_n) 2-D launch grid rather than a 1-D flattening.
+    # ------------------------------------------------------------------
+    pid_m_raw = tl.program_id(0)
+    pid_n_raw = tl.program_id(1)
+    num_pid_m = tl.cdiv(d_out, BM)
+    num_pid_n = tl.cdiv(T,     BN)
+
+    # Flatten + re-index so every ``GROUP_SIZE_M`` consecutive M rows are
+    # processed across the full N dimension before moving on.
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    pid = pid_m_raw * num_pid_n + pid_n_raw
+    first_pid_m = (pid // num_pid_in_group) * GROUP_SIZE_M
+    group_size_m = tl.minimum(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
 
     offs_m = pid_m * BM + tl.arange(0, BM)
     offs_n = pid_n * BN + tl.arange(0, BN)
