@@ -55,11 +55,13 @@ def v9_linear_forward(X_fp16: torch.Tensor, W: V9WeightContainer) -> torch.Tenso
             X_s4, W.scale_u4, scale_x,
             d_out=d_out, d_in=d_in,
         )
-        Y = Y_low + 16.0 * Y_high
-    else:
-        Y = Y_low
+        # (4a) In-place combine: Y_low <- Y_low + 16 * Y_high.
+        # Avoids the temp (d_out, T) fp16 tensor a naive `Y_low + 16*Y_high`
+        # would allocate, saving ~one full output read+write per call.
+        Y_low.add_(Y_high, alpha=16.0)
+    Y = Y_low
 
-    # Y is (d_out, T) ; turn back to (..., d_out) with the original leading dims.
+    # (4b) Y is (d_out, T) ; turn back to (..., d_out) with the original leading dims.
     Y_out = Y.transpose(0, 1).contiguous()              # (T, d_out)
     out_shape = original_shape[:-1] + (d_out,)
     return Y_out.reshape(out_shape)
