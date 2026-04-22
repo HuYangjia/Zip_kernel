@@ -40,6 +40,10 @@ from kernel.triton_kernel.activation_quant import quantize_activation_s4  # noqa
 from kernel.triton_kernel.dense_u4s4_gemm import dense_gemm_u4_s4  # noqa: E402
 from kernel.triton_kernel.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
 from kernel.triton_kernel.sparse_s4s4_gemm import sparse_gemm_s4_s4  # noqa: E402
+from kernel.triton_kernel.v9_linear import (  # noqa: E402
+    v9_linear_forward,
+    _combine_transpose,
+)
 from kernel.triton_kernel.benchmarks._bench_util import time_ms as _time_ms  # noqa: E402
 
 
@@ -157,12 +161,12 @@ def _bench_v9_stages(W, X_2d, has_hp: bool):
                 X_s4, W.scale_u4, scale_x, d_out=d_out, d_in=W.d_in,
             )
 
+    # Stage 4 now uses the fused combine+transpose kernel (single pass over
+    # the (d_out, T) surface) instead of the old
+    #   ``Y = Y_low + 16*Y_high ; Y.transpose(0,1).contiguous()``
+    # sequence, which walked the surface twice.
     def s4():
-        if has_hp:
-            out = Y_low + 16.0 * Y_high
-        else:
-            out = Y_low
-        out.transpose(0, 1).contiguous()
+        _combine_transpose(Y_low, Y_high if has_hp else None, d_out=d_out, T=T)
 
     t1 = _time_ms(s1)
     t2 = _time_ms(s2)
@@ -172,25 +176,13 @@ def _bench_v9_stages(W, X_2d, has_hp: bool):
 
 
 def _bench_v9_total(W, X_2d, has_hp: bool) -> float:
-    """End-to-end V9 call time (what a user observes)."""
-    T = X_2d.shape[0]
-    d_out = W.d_out
-    d_in = W.d_in
+    """End-to-end V9 call time (what a user observes).
 
+    Goes through ``v9_linear_forward`` directly, so any pipeline-level fusion
+    (e.g. the combined combine+transpose epilogue kernel) is reflected here.
+    """
     def run():
-        X_s4, scale_x, sum_X = quantize_activation_s4(X_2d, W.perm, bcol=BCOL)
-        Y_low = dense_gemm_u4_s4(
-            W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x
-        )
-        if has_hp:
-            Y_high = sparse_gemm_s4_s4(
-                W.W_high_blocks_packed, W.hp_row_offsets, W.hp_col_indices,
-                X_s4, W.scale_u4, scale_x, d_out=d_out, d_in=d_in,
-            )
-            Y = Y_low + 16.0 * Y_high
-        else:
-            Y = Y_low
-        Y.transpose(0, 1).contiguous()
+        v9_linear_forward(X_2d, W)
 
     return _time_ms(run)
 
