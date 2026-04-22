@@ -20,13 +20,13 @@ RESULTS_DIR = HERE / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(HERE.parent.parent.parent))
 
-from kernel.triton.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
-from kernel.triton.v9_linear import (  # noqa: E402
+from kernel.triton_kernel.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
+from kernel.triton_kernel.v9_linear import (  # noqa: E402
     reconstruct_w_fakequant_fp16,
     v9_linear_fakequant,
     v9_linear_forward,
 )
-from kernel.triton.benchmarks._bench_util import time_ms as _time_ms  # noqa: E402
+from kernel.triton_kernel.benchmarks._bench_util import time_ms as _time_ms  # noqa: E402
 
 
 SHAPES: List[Tuple[int, int]] = [(4096, 4096), (11008, 4096), (4096, 11008)]

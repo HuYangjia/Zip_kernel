@@ -282,7 +282,7 @@ for g in range(n_groups):                     # K 维 loop
 ### 7.1 路径规范
 
 - **绝对路径解析**：所有脚本用 `pathlib.Path(__file__).resolve().parent` 基准解析数据路径，禁止依赖 CWD
-- **Kernel 代码目录**：`kernel/triton/`（待创建），结构约定：
+- **Kernel 代码目录**：`kernel/triton_kernel/`（待创建），结构约定：
   ```
   kernel/
     research/           ← 本文档和算法分析

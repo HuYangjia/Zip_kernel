@@ -1,0 +1,4 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+43.3,4813861,50,96277.2,96290.5,95842,96995,209.3,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __half, __half, __half, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<__half>, float>>(T13)"
+38.6,4296852,50,85937.0,85906.5,85506,86338,204.7,dense_gemm_kernel
+18.1,2016056,50,40321.1,40321.0,40289,40449,26.6,quantize_activation_kernel

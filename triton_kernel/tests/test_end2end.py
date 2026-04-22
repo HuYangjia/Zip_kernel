@@ -21,8 +21,8 @@ pytest.importorskip("triton")
 if not torch.cuda.is_available():
     pytest.skip("CUDA required for end-to-end test", allow_module_level=True)
 
-from kernel.triton.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
-from kernel.triton.v9_linear import v9_linear_fakequant, v9_linear_forward  # noqa: E402
+from kernel.triton_kernel.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
+from kernel.triton_kernel.v9_linear import v9_linear_fakequant, v9_linear_forward  # noqa: E402
 
 
 def _synthesize_pack(d_out: int, d_in: int, hp_ratio: float = 0.05, seed: int = 0):

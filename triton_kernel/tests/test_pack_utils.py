@@ -14,11 +14,11 @@ import numpy as np
 import pytest
 import torch
 
-# Allow running via `pytest kernel/triton/tests/` without an installed package.
+# Allow running via `pytest kernel/triton_kernel/tests/` without an installed package.
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent.parent))  # add workspace root
 
-from kernel.triton.pack_utils import (  # noqa: E402
+from kernel.triton_kernel.pack_utils import (  # noqa: E402
     BCOL,
     BROW,
     pack_s4_le,

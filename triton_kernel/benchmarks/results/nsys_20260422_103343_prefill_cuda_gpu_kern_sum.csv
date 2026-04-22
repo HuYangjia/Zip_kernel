@@ -1,0 +1,5 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+50.0,46035996,30,1534533.2,1546796.0,1512331,1556268,20368.5,dense_gemm_kernel
+38.5,35434030,30,1181134.3,1181041.5,1156161,1195714,10653.4,ampere_fp16_s1688gemm_fp16_128x64_sliced1x2_ldg8_f2f_tn
+9.3,8548696,30,284956.5,287016.0,280136,289065,3820.7,"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 10)]::operator ()() const::[lambda(c10::Half) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+2.2,2042588,30,68086.3,68386.0,66722,69666,855.4,quantize_activation_kernel

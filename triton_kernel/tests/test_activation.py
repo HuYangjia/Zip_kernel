@@ -20,8 +20,8 @@ pytest.importorskip("triton")
 if not torch.cuda.is_available():
     pytest.skip("CUDA required for activation kernel tests", allow_module_level=True)
 
-from kernel.triton.activation_quant import quantize_activation_s4  # noqa: E402
-from kernel.triton.pack_utils import BCOL, pack_s4_le, unpack_s4_le  # noqa: E402
+from kernel.triton_kernel.activation_quant import quantize_activation_s4  # noqa: E402
+from kernel.triton_kernel.pack_utils import BCOL, pack_s4_le, unpack_s4_le  # noqa: E402
 
 
 def _torch_reference(X: torch.Tensor, perm: torch.Tensor, bcol: int):

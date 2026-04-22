@@ -1,0 +1,5 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+39.1,5368759,50,107375.2,107363.0,106243,108547,501.7,void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_tn_align8>(T1::Params)
+35.7,4894764,50,97895.3,97890.5,97219,98242,222.6,dense_gemm_kernel
+21.4,2939315,50,58786.3,58754.0,58498,59010,99.6,quantize_activation_kernel
+3.8,515690,50,10313.8,10304.5,10240,10464,39.4,"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 10)]::operator ()() const::[lambda(c10::Half) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"

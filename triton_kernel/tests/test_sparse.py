@@ -19,11 +19,11 @@ pytest.importorskip("triton")
 if not torch.cuda.is_available():
     pytest.skip("CUDA required for sparse GEMM test", allow_module_level=True)
 
-from kernel.triton.activation_quant import quantize_activation_s4  # noqa: E402
-from kernel.triton.dense_u4s4_gemm import dense_gemm_u4_s4  # noqa: E402
-from kernel.triton.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
-from kernel.triton.sparse_s4s4_gemm import sparse_gemm_s4_s4  # noqa: E402
-from kernel.triton.v9_linear import reconstruct_w_fakequant_fp16  # noqa: E402
+from kernel.triton_kernel.activation_quant import quantize_activation_s4  # noqa: E402
+from kernel.triton_kernel.dense_u4s4_gemm import dense_gemm_u4_s4  # noqa: E402
+from kernel.triton_kernel.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
+from kernel.triton_kernel.sparse_s4s4_gemm import sparse_gemm_s4_s4  # noqa: E402
+from kernel.triton_kernel.v9_linear import reconstruct_w_fakequant_fp16  # noqa: E402
 
 
 def test_sparse_full_hp_matches_fakequant():

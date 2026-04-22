@@ -1,0 +1,8 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+36.1,5466141,50,109322.8,109315.5,108131,110564,515.0,void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_tn_align8>(T1::Params)
+32.3,4890861,50,97817.2,97810.5,97059,98435,259.9,dense_gemm_kernel
+19.4,2932111,50,58642.2,58641.5,58433,58945,110.1,quantize_activation_kernel
+7.8,1174113,50,23482.3,23488.0,23329,23777,92.4,sparse_gemm_kernel
+3.5,526284,50,10525.7,10528.0,10432,10592,41.3,"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 10)]::operator ()() const::[lambda(c10::Half) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.6,84738,50,1694.8,1696.0,1664,1760,20.4,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::CUDAFunctor_add<c10::Half>, std::array<char *, (unsigned long)3>>(int, T2, T3)"
+0.4,63137,50,1262.7,1248.0,1248,1281,16.1,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<c10::Half>, std::array<char *, (unsigned long)1>>(int, T2, T3)"

@@ -10,11 +10,11 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent.parent))
 
-from kernel.triton.activation_quant import quantize_activation_s4  # noqa: E402
-from kernel.triton.dense_u4s4_gemm import dense_gemm_u4_s4  # noqa: E402
-from kernel.triton.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
-from kernel.triton.sparse_s4s4_gemm import sparse_gemm_s4_s4  # noqa: E402
-from kernel.triton.benchmarks._bench_util import time_ms as _time_ms  # noqa: E402
+from kernel.triton_kernel.activation_quant import quantize_activation_s4  # noqa: E402
+from kernel.triton_kernel.dense_u4s4_gemm import dense_gemm_u4_s4  # noqa: E402
+from kernel.triton_kernel.pack_utils import BCOL, BROW, pack_v9_weights  # noqa: E402
+from kernel.triton_kernel.sparse_s4s4_gemm import sparse_gemm_s4_s4  # noqa: E402
+from kernel.triton_kernel.benchmarks._bench_util import time_ms as _time_ms  # noqa: E402
 
 
 def _build_pack(d_out: int, d_in: int, hp_ratio: float = 0.05):

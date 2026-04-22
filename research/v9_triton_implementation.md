@@ -1,7 +1,7 @@
 # V9 True-Quant Triton Kernel 套件实现说明
 
-> 目标读者：需要理解 `kernel/triton/` 下各模块做了什么、用到哪些技术、为什么这样设计的后续贡献者。
-> 对应源码：`kernel/triton/{pack_utils,activation_quant,dense_u4s4_gemm,sparse_s4s4_gemm,v9_linear}.py`
+> 目标读者：需要理解 `kernel/triton_kernel/` 下各模块做了什么、用到哪些技术、为什么这样设计的后续贡献者。
+> 对应源码：`kernel/triton_kernel/{pack_utils,activation_quant,dense_u4s4_gemm,sparse_s4s4_gemm,v9_linear}.py`
 > 算法依据：`kernel/research/kernel_algorithm.md`、`kernel/research/triton_kernel_prompt.md`
 
 ---
@@ -277,7 +277,7 @@ Y = (Y_low + 16 * Y_high).T.reshape(*original_shape[:-1], d_out)
 目录结构：
 
 ```
-kernel/triton/
+kernel/triton_kernel/
 ├── tests/
 │   ├── test_pack_utils.py       # pack/unpack 自验证、位级拆分、BSR 索引
 │   ├── test_activation.py       # 对 fp16 基线的 MSE / max-abs 误差

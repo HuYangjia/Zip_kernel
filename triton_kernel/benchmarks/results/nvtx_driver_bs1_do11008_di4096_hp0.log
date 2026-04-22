@@ -1,0 +1,6 @@
+10:33:45 | DEBUG | log file: /root/Zip_kernel/triton/benchmarks/results/nvtx_driver_bs1_do11008_di4096_hp0.log
+10:33:45 | INFO  | NVTX driver | bs=1 d_out=11008 d_in=4096 hp=0.00 iters=50
+10:33:45 | INFO  | GPU: NVIDIA GeForce RTX 4090  torch=2.8.0+cu126
+10:33:46 | INFO  | warm-up start
+10:33:48 | INFO  | warm-up done
+10:33:56 | INFO  | profiled region done (50 iters)

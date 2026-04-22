@@ -1,0 +1,65 @@
+[10:33:43] INFO  nsys profiling sweep started (ts=20260422_103343)
+[10:33:43] INFO  results dir: /root/Zip_kernel/triton/benchmarks/results
+NVIDIA Nsight Systems version 2025.1.1.0
+NVIDIA GeForce RTX 4090, 580.105.08, 8.9
+
+[10:33:43] INFO  === workload decode: bs=1 d_out=11008 d_in=4096 hp=0.00 iters=50 ===
+10:33:45 | INFO  | NVTX driver | bs=1 d_out=11008 d_in=4096 hp=0.00 iters=50
+10:33:45 | INFO  | GPU: NVIDIA GeForce RTX 4090  torch=2.8.0+cu126
+10:33:46 | INFO  | warm-up start
+10:33:48 | INFO  | warm-up done
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-report-3569.qdstrm'
+[1/1] [0%                          ] nsys_20260422_103343_decode.nsys-repProcessing events...
+[1/1] [0%                          ] nsys_20260422_103343_decode.nsys-rep[1/1] [===23%                      ] nsys_20260422_103343_decode.nsys-rep[1/1] [=========45%                ] nsys_20260422_103343_decode.nsys-rep[1/1] [==================75%       ] nsys_20260422_103343_decode.nsys-rep[1/1] [===================82%      ] nsys_20260422_103343_decode.nsys-rep[1/1] [====================83%     ] nsys_20260422_103343_decode.nsys-rep[1/1] [========================100%] nsys_20260422_103343_decode.nsys-rep[1/1] [========================100%] nsys_20260422_103343_decode.nsys-rep
+10:33:56 | INFO  | profiled region done (50 iters)
+Generated:
+    /root/Zip_kernel/triton/benchmarks/results/nsys_20260422_103343_decode.nsys-rep
+
+[10:33:57] INFO  === workload mid: bs=64 d_out=11008 d_in=4096 hp=0.00 iters=50 ===
+10:34:00 | INFO  | NVTX driver | bs=64 d_out=11008 d_in=4096 hp=0.00 iters=50
+10:34:00 | INFO  | GPU: NVIDIA GeForce RTX 4090  torch=2.8.0+cu126
+10:34:00 | INFO  | warm-up start
+10:34:02 | INFO  | warm-up done
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-report-0469.qdstrm'
+[1/1] [0%                          ] nsys_20260422_103343_mid.nsys-repProcessing events...
+[1/1] [0%                          ] nsys_20260422_103343_mid.nsys-rep[1/1] [==20%                       ] nsys_20260422_103343_mid.nsys-rep[1/1] [=======39%                  ] nsys_20260422_103343_mid.nsys-rep[1/1] [==================75%       ] nsys_20260422_103343_mid.nsys-rep[1/1] [===================82%      ] nsys_20260422_103343_mid.nsys-rep[1/1] [========================100%] nsys_20260422_103343_mid.nsys-rep[1/1] [========================100%] nsys_20260422_103343_mid.nsys-rep
+10:34:11 | INFO  | profiled region done (50 iters)
+Generated:
+    /root/Zip_kernel/triton/benchmarks/results/nsys_20260422_103343_mid.nsys-rep
+
+[10:34:11] INFO  === workload prefill: bs=2048 d_out=11008 d_in=4096 hp=0.00 iters=30 ===
+10:34:14 | INFO  | NVTX driver | bs=2048 d_out=11008 d_in=4096 hp=0.00 iters=30
+10:34:14 | INFO  | GPU: NVIDIA GeForce RTX 4090  torch=2.8.0+cu126
+10:34:14 | INFO  | warm-up start
+10:34:16 | INFO  | warm-up done
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-report-f7e2.qdstrm'
+[1/1] [0%                          ] nsys_20260422_103343_prefill.nsys-repProcessing events...
+[1/1] [0%                          ] nsys_20260422_103343_prefill.nsys-rep[1/1] [====26%                     ] nsys_20260422_103343_prefill.nsys-rep[1/1] [===========51%              ] nsys_20260422_103343_prefill.nsys-rep[1/1] [==================78%       ] nsys_20260422_103343_prefill.nsys-rep[1/1] [====================84%     ] nsys_20260422_103343_prefill.nsys-rep[1/1] [========================100%] nsys_20260422_103343_prefill.nsys-rep[1/1] [========================100%] nsys_20260422_103343_prefill.nsys-rep
+10:34:25 | INFO  | profiled region done (30 iters)
+Generated:
+    /root/Zip_kernel/triton/benchmarks/results/nsys_20260422_103343_prefill.nsys-rep
+
+[10:34:25] INFO  === workload mid_hp5: bs=64 d_out=11008 d_in=4096 hp=0.05 iters=50 ===
+10:34:28 | INFO  | NVTX driver | bs=64 d_out=11008 d_in=4096 hp=0.05 iters=50
+10:34:28 | INFO  | GPU: NVIDIA GeForce RTX 4090  torch=2.8.0+cu126
+10:34:28 | INFO  | warm-up start
+10:34:30 | INFO  | warm-up done
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-report-acd1.qdstrm'
+[1/1] [0%                          ] nsys_20260422_103343_mid_hp5.nsys-repProcessing events...
+[1/1] [0%                          ] nsys_20260422_103343_mid_hp5.nsys-rep[1/1] [=16%                        ] nsys_20260422_103343_mid_hp5.nsys-rep[1/1] [=====32%                    ] nsys_20260422_103343_mid_hp5.nsys-rep[1/1] [=================73%        ] nsys_20260422_103343_mid_hp5.nsys-rep[1/1] [===================81%      ] nsys_20260422_103343_mid_hp5.nsys-rep[1/1] [========================100%] nsys_20260422_103343_mid_hp5.nsys-rep[1/1] [========================100%] nsys_20260422_103343_mid_hp5.nsys-rep
+10:34:38 | INFO  | profiled region done (50 iters)
+Generated:
+    /root/Zip_kernel/triton/benchmarks/results/nsys_20260422_103343_mid_hp5.nsys-rep
+
+[10:34:39] INFO  building markdown summary -> /root/Zip_kernel/triton/benchmarks/results/nsys_summary_20260422_103343.md
+10:34:40 | INFO  | writing summary to /root/Zip_kernel/triton/benchmarks/results/nsys_summary_20260422_103343.md
+10:34:40 | INFO  | summary written (1893 bytes)
+[10:34:40] INFO  done. see /root/Zip_kernel/triton/benchmarks/results/nsys_summary_20260422_103343.md
