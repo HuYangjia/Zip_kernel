@@ -389,6 +389,79 @@ Triton kernel 固定 ~55-65μs launch + autotune dispatch，而 PyTorch `.t().co
 
 ---
 
+### 2.7 Prefill / Decode 双版本拆分（`<本轮>`）— 架构准备
+
+#### 2.7.1 动机
+
+基于 `sweep_20260422_154306.csv` 的瓶颈分析（详见 `research/analysis_20260422_next_steps.md`），确认 prefill 和 decode 两个 regime 的瓶颈完全相反：
+
+| Regime | 主要瓶颈 | dense/fp16 ratio | 优化方向 |
+|---|---|---|---|
+| **decode** (T ≤ 128) | quant (33-44%) + sparse (25-27%) 的 **launch overhead** | 0.73x median（已接近屋顶） | 小 tile config + CUDA Graph |
+| **prefill** (T > 128) | dense (83-91%) 的 **Tensor Core 利用率不足** | **1.27x median**（比 cuBLAS 慢 27%） | 扩展 autotune + Split-K + 内联 PTX dequant |
+
+共用一条 forward path 会导致 autotune 搜索空间冲突、kernel 特化路径被锁死。
+
+#### 2.7.2 改动
+
+把 `v9_linear_forward` 从"一条 4-stage pipeline"重构为"dispatcher + 两个 regime-specific forwards"：
+
+```
+┌── v9_linear_forward (dispatcher) ──┐
+│   if T <= DECODE_T_THRESHOLD(=128):│
+│       → _v9_forward_decode()       │
+│   else:                            │
+│       → _v9_forward_prefill()      │
+└────────────────────────────────────┘
+```
+
+同时导出两个显式入口：
+- `v9_linear_forward_decode(X, W)`：已知场景是 decode 时跳过 dispatch 分支；未来 CUDA Graph 捕获的挂载点。
+- `v9_linear_forward_prefill(X, W)`：已知场景是 prefill 时使用；未来 Split-K / 大 TC tile 的挂载点。
+
+两个显式入口都带"regime-safe 兜底"：如果输入实际不在预期 regime，自动路由到正确路径（correctness-safe，无 perf promise）。
+
+#### 2.7.3 本次只改调度层，底层 kernel 保持共享
+
+- 本 commit **不改任何 Triton kernel 源码**，只做 Python 层分发
+- `_v9_forward_decode` 和 `_v9_forward_prefill` 现在是完全相同的 4-stage 序列
+- 保证 0 正确性风险，后续 kernel 特化（Phase B / C）可以独立迭代
+
+#### 2.7.4 Dispatcher 开销验证（`bench_dispatcher_overhead.py`）
+
+按项目的 GPU 微基准规范（50 warm-up + 100 iters × 3 windows × min-of-means）测量三个入口的耗时差：
+
+| Case | T | regime | dispatch (ms) | decode entry (ms) | prefill entry (ms) | overhead vs decode | overhead vs prefill |
+|---|---|---|---|---|---|---|---|
+| decode-bs1-hp0 | 1 | decode | 0.2288 | 0.2294 | 0.2285 | **−0.6 μs** | +0.3 μs |
+| decode-bs1-hp10 | 1 | decode | 0.2276 | 0.2276 | 0.2262 | +0.0 μs | +1.4 μs |
+| decode-bs64-hp5 | 64 | decode | 0.2378 | 0.2369 | 0.2366 | +0.8 μs | +1.1 μs |
+| prefill-bs512-hp0 | 512 | prefill | 0.2633 | 0.2633 | 0.2633 | −0.0 μs | +0.0 μs |
+| prefill-bs2048-hp10 | 2048 | prefill | 0.8233 | 0.8251 | 0.8248 | −1.8 μs | −1.5 μs |
+
+**结论**：所有 case 上 `|overhead| ≤ 1.8 μs`，远低于噪声门限（min-of-means 的标准偏差在这些场景约 ±3 μs）。dispatcher 引入的 Python 层开销完全可忽略。
+
+#### 2.7.5 正确性验证
+
+- 新增 `tests/test_prefill_decode_dispatch.py`（9 个 case）：验证 dispatcher、decode entry、prefill entry 三者对同一输入产出 **bit-identical** 结果（`torch.equal`）
+- 覆盖：decode 小 bs (1, 16, 64)、threshold 边界 (T=128, T=129)、prefill 中 bs (512)、prefill 大 bs (2048)、3D 输入 reshape
+- 全仓库测试 `pytest triton_kernel/tests/` → **24 passed in 35.58s**（15 原有 + 9 新增）
+
+#### 2.7.6 阈值选择
+
+`DECODE_T_THRESHOLD = 128` 的依据（来自 sweep 数据的 stage 占比表）：
+
+| bs_tier | dense 占比 | 归属 |
+|---|---|---|
+| decode (1-16) | 37-49% | decode |
+| small (32-64) | 41-52% | decode |
+| **mid (128-512)** | **70-78%** | **prefill** |
+| prefill (≥2K) | 83-91% | prefill |
+
+T=128 是 dense 占比从 ~50% 跳到 ~70% 的临界点，自然分界。后续 kernel 特化完成后可能会重新校准。
+
+---
+
 ## 3. 当前性能全景（优化后 · RTX 4090 · 全部优化都启用）
 
 > 文件：`triton_kernel/benchmarks/results/sweep_20260422_154306.md`
@@ -430,13 +503,18 @@ combine 融合后，prefill 里 stage4 已下到 ≤10%，剩下 80% 几乎全�
 ### P2：Kernel launch overhead（decode 占 14%）
 - Stage 1/2/3/4 之间每次都要 launch。考虑用 CUDA Graphs capture 整条 decode pipeline，摊薄 launch 成本。
 - 尤其 decode bs=1 场景，combine fallback 到 torch，加上其他 3 个 stage 就是 3-4 次 launch = 15-20μs 纯 overhead，占 `v9_total=139μs` 的 10-14%。
+- **架构准备已完成**：本轮 §2.7 已把 decode 入口独立出来（`v9_linear_forward_decode`），未来 CUDA Graph capture 只需包裹这一个函数即可。
 
 ### P3：Dense + Combine epilogue fusion（更激进）
 - 本轮做的是 dense 之**后**的融合（独立 kernel）。更激进的做法是把 combine 直接写在 dense kernel 的 epilogue 里——dense 计算完一个 `(BM, BN)` tile，accumulator 直接按 `(T, d_out)` layout 写出。
 - 风险：需要同步处理 hp_ratio 通路（sparse 分支仍然单独写 `(d_out, T)`），且会破坏 dense 现有的 store coalescing——之前尝试过，大 bs 直接 regress 120%。
 - 暂不优先，除非 P0 的 Split-K 也做了还想再压。
 
-**本轮选择**：**P1（combine 融合）已完成且收益显著，先 commit 收工并同步本地/更新文档**。下一 session 直面 P0 的 Dense Split-K。
+**本轮选择（更新）**：
+1. **已完成**：§2.6 combine+transpose 融合（−19~62%）+ §2.7 prefill/decode 架构拆分（0 overhead）
+2. **下一 session 首要**：P0 Phase B-1 — 给 prefill 的 dense kernel 扩展 autotune 配置（大 TC tile + Split-K），目标 `dense/fp16` 从 1.27x → 1.0x
+3. **随后**：P0 Phase B-2 — 内联 PTX 做 4-bit dequant 向量化
+4. **最后**：Phase C decode 专属优化（CUDA Graph + sparse 小 tile）
 
 ---
 

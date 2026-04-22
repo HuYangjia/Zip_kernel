@@ -167,18 +167,141 @@ def _combine_transpose(
     return Y_out
 
 
+# ---------------------------------------------------------------------------
+# Prefill / Decode dispatcher
+# ---------------------------------------------------------------------------
+#
+# Sweep data (sweep_20260422_154306.csv, 168 shapes on RTX 4090) shows
+# two regimes with opposite bottlenecks -- see
+# research/analysis_20260422_next_steps.md for the full table:
+#
+#   Regime        Stage breakdown                        Current speedup
+#   ---------     ------------------------------------   ---------------
+#   decode        quant 33-44% + sparse 25-27% dominate;  0.47-0.69x
+#    (T <= 128)   dense already hits 73% HBM peak at
+#                 bs=1, d_out=28672 (memory-bound);
+#                 enemy = kernel launch overhead.
+#   prefill       dense 83-91% of v9_total; median
+#    (T >  128)   dense_ms / fp16_ms = 1.27x;              0.66-0.73x
+#                 HBM bw util 1.6-7% (TC underused);
+#                 enemy = TC occupancy + dequant overhead.
+#
+# Sharing one forward path forces us to share one set of autotune configs
+# and one pipeline structure, which is sub-optimal for both.  We split
+# the entry point into two regime-specific forwards and a cheap runtime
+# dispatcher, so future kernel specialisation (Phase B / C in the
+# analysis doc) can proceed independently on each side.
+#
+# This commit only splits the Python-level dispatch; the underlying
+# Triton kernels are still shared.  Subsequent commits will customise
+# the autotune grids, add a prefill-specific Split-K, and make the
+# decode path eligible for CUDA-Graph capture.
+
+# T at which decode transitions to prefill.  Chosen from the stage-share
+# table: bs<=128 still has dense < 70% of v9_total (decode-like), bs>=128
+# flips to dense-dominated (prefill-like).  Revisit after Phase B/C.
+DECODE_T_THRESHOLD = 128
+
+
+def _v9_forward_decode(
+    X_2d: torch.Tensor, W: V9WeightContainer, T: int, d_out: int, d_in: int
+) -> torch.Tensor:
+    """Decode-regime forward (T <= DECODE_T_THRESHOLD).
+
+    Bottleneck profile (from sweep data):
+      - quant kernel: 33-44% of v9_total (launch overhead heavy)
+      - sparse kernel (if hp>0): 25-27% of v9_total (same reason)
+      - dense: 37-52% of v9_total but already near HBM roof
+      - combine: 3-6% (small surface, falls back to torch native)
+
+    For now this body is identical to the monolithic path; it will
+    diverge from ``_v9_forward_prefill`` in Phase C as we specialise
+    autotune tiles for small T and ultimately capture the whole
+    pipeline in a CUDA Graph.
+    """
+    # (1) Activation quantization
+    X_s4, scale_x, sum_X = quantize_activation_s4(X_2d, W.perm, bcol=BCOL)
+
+    # (2) Dense low-bit GEMM -- produces Y_low in (d_out, T) layout.
+    Y_low = dense_gemm_u4_s4(
+        W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x,
+    )
+
+    # (3) Sparse high-bit GEMM -- skipped entirely when hp=0.
+    Y_high: torch.Tensor | None = None
+    if W.n_hp_blocks > 0:
+        Y_high = sparse_gemm_s4_s4(
+            W.W_high_blocks_packed,
+            W.hp_row_offsets, W.hp_col_indices,
+            X_s4, W.scale_u4, scale_x,
+            d_out=d_out, d_in=d_in,
+        )
+
+    # (4) Fused combine + transpose.  Decode T is tiny, so this always
+    #     falls through to the torch-native fast path inside
+    #     _combine_transpose (surf = T * d_out well below the 4M element
+    #     threshold), which is what we want here.
+    return _combine_transpose(Y_low, Y_high, d_out=d_out, T=T)
+
+
+def _v9_forward_prefill(
+    X_2d: torch.Tensor, W: V9WeightContainer, T: int, d_out: int, d_in: int
+) -> torch.Tensor:
+    """Prefill-regime forward (T > DECODE_T_THRESHOLD).
+
+    Bottleneck profile (from sweep data):
+      - dense: 83-91% of v9_total, median dense_ms / fp16_ms = 1.27x
+        -> this is where Phase B (expanded autotune, Split-K, inline
+        PTX dequant, explicit K-loop pipelining) will land.
+      - sparse (if hp>0): 7-13% of v9_total; real work, not launch bound.
+      - quant: 5-16% (prefill N is large, quant kernel already amortises).
+      - combine: 4-7%; the fused Triton kernel wins here because
+        T * d_out crosses the 4M element threshold.
+
+    Identical to the decode body today; will diverge in Phase B.
+    """
+    # (1) Activation quantization
+    X_s4, scale_x, sum_X = quantize_activation_s4(X_2d, W.perm, bcol=BCOL)
+
+    # (2) Dense low-bit GEMM
+    Y_low = dense_gemm_u4_s4(
+        W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x,
+    )
+
+    # (3) Sparse high-bit GEMM
+    Y_high: torch.Tensor | None = None
+    if W.n_hp_blocks > 0:
+        Y_high = sparse_gemm_s4_s4(
+            W.W_high_blocks_packed,
+            W.hp_row_offsets, W.hp_col_indices,
+            X_s4, W.scale_u4, scale_x,
+            d_out=d_out, d_in=d_in,
+        )
+
+    # (4) Fused combine + transpose: on prefill surfaces (T * d_out >= 4M)
+    #     the Triton fused kernel wins against torch .t().contiguous().
+    return _combine_transpose(Y_low, Y_high, d_out=d_out, T=T)
+
+
 def v9_linear_forward(X_fp16: torch.Tensor, W: V9WeightContainer) -> torch.Tensor:
     """V9 Linear forward.  Returns Y_fp16 with shape matching X on all-but-last dim.
 
-    Internal pipeline:
+    Runtime dispatcher: picks ``_v9_forward_decode`` when the flattened
+    batch ``T = numel(X) / d_in`` is ``<= DECODE_T_THRESHOLD`` and
+    ``_v9_forward_prefill`` otherwise.  The two regime-specific forwards
+    share the same 4-stage pipeline today but will diverge in subsequent
+    commits as their autotune grids and kernel choices specialise
+    (see research/analysis_20260422_next_steps.md).
+
+    Pipeline (shared, for now):
       (1) per-token SINT4 activation quantization (fused kernel)
       (2) dense UINT4 x SINT4 GEMM   -> Y_low  (d_out, T)
       (3) block-sparse SINT4 x SINT4 GEMM -> Y_high (d_out, T)   [only if hp>0]
       (4) **fused**: Y_out[t, d] = Y_low[d, t] + 16 * Y_high[d, t]
           (single-pass combine + transpose, see ``_combine_transpose_kernel``)
 
-    Rationale (vs. earlier implementation)
-    --------------------------------------
+    Rationale for the prior Stage-4 fusion (still valid)
+    ----------------------------------------------------
     The former epilogue did two *independent* traversals of the whole
     ``(d_out, T)`` fp16 surface::
 
@@ -186,17 +309,13 @@ def v9_linear_forward(X_fp16: torch.Tensor, W: V9WeightContainer) -> torch.Tenso
         Y_out = Y_low.transpose(0, 1).contiguous()   # 1 load + 1 store
 
     ``(d_out * T)`` fp16 is not small: at ``d_out = d_in = 4096, bs = 2048``
-    that is 16 MiB touched **four times** end-to-end.  The new fused path
-    keeps the dense kernel's output layout (critical for store coalescing
-    in the inner GEMM -- a prior attempt to make dense write directly into
-    a ``(T, d_out)`` view regressed bs=2048 shapes by ~120% because it
-    spread consecutive N-tile stores across 2*d_out-byte strides), and
-    performs *one* pass that reads ``Y_low`` (and optionally ``Y_high``),
-    combines, and stores directly into the ``(T, d_out)`` final layout.
-
-    Net effect: ~2x fewer bytes touched in stage 4, and when ``W.n_hp_blocks
-    == 0`` the ``Y_high`` load is compiled out entirely via a
-    ``HAS_HIGH`` ``constexpr`` switch.
+    that is 16 MiB touched **four times** end-to-end.  The fused path keeps
+    the dense kernel's output layout (critical for store coalescing -- a
+    prior attempt to make dense write directly into a ``(T, d_out)`` view
+    regressed bs=2048 shapes by ~120% because it spread consecutive N-tile
+    stores across ``2 * d_out``-byte strides), and performs *one* pass
+    that reads ``Y_low`` (and optionally ``Y_high``), combines, and stores
+    directly into the ``(T, d_out)`` final layout.
     """
     assert X_fp16.is_cuda and X_fp16.dtype == torch.float16
 
@@ -211,30 +330,68 @@ def v9_linear_forward(X_fp16: torch.Tensor, W: V9WeightContainer) -> torch.Tenso
     X_2d = X_fp16.reshape(-1, d_in)
     T = X_2d.shape[0]
 
-    # (1) Activation quantization
-    X_s4, scale_x, sum_X = quantize_activation_s4(X_2d, W.perm, bcol=BCOL)
+    if T <= DECODE_T_THRESHOLD:
+        Y_out = _v9_forward_decode(X_2d, W, T=T, d_out=d_out, d_in=d_in)
+    else:
+        Y_out = _v9_forward_prefill(X_2d, W, T=T, d_out=d_out, d_in=d_in)
 
-    # (2) Dense low-bit GEMM -- keep natural (d_out, T) output for coalesced
-    #     stores inside the inner GEMM.
-    Y_low = dense_gemm_u4_s4(
-        W.W_low_packed, X_s4,
-        W.scale_u4, W.zero_u4,
-        sum_X, scale_x,
-    )
+    out_shape = original_shape[:-1] + (d_out,)
+    return Y_out.reshape(out_shape)
 
-    # (3) Sparse high-bit GEMM
-    Y_high: torch.Tensor | None = None
-    if W.n_hp_blocks > 0:
-        Y_high = sparse_gemm_s4_s4(
-            W.W_high_blocks_packed,
-            W.hp_row_offsets, W.hp_col_indices,
-            X_s4, W.scale_u4, scale_x,
-            d_out=d_out, d_in=d_in,
+
+def v9_linear_forward_decode(
+    X_fp16: torch.Tensor, W: V9WeightContainer
+) -> torch.Tensor:
+    """Explicit decode-path entry for callers that already know they are
+    in the decode regime (e.g. serving loops holding T fixed = 1).
+
+    Skips the dispatch branch and any T-threshold overhead, and will be
+    the attachment point for future CUDA-Graph capture.  Falls back to
+    the dispatcher if called with T > DECODE_T_THRESHOLD (emits a
+    warning-free correctness path, no perf promise).
+    """
+    assert X_fp16.is_cuda and X_fp16.dtype == torch.float16
+    original_shape = X_fp16.shape
+    d_in = W.d_in
+    d_out = W.d_out
+    if X_fp16.shape[-1] != d_in:
+        raise ValueError(
+            f"X last dim ({X_fp16.shape[-1]}) must match d_in ({d_in})"
         )
+    X_2d = X_fp16.reshape(-1, d_in)
+    T = X_2d.shape[0]
+    if T <= DECODE_T_THRESHOLD:
+        Y_out = _v9_forward_decode(X_2d, W, T=T, d_out=d_out, d_in=d_in)
+    else:
+        Y_out = _v9_forward_prefill(X_2d, W, T=T, d_out=d_out, d_in=d_in)
+    out_shape = original_shape[:-1] + (d_out,)
+    return Y_out.reshape(out_shape)
 
-    # (4) Fused combine + transpose (single pass over the d_out x T surface).
-    Y_out = _combine_transpose(Y_low, Y_high, d_out=d_out, T=T)
 
+def v9_linear_forward_prefill(
+    X_fp16: torch.Tensor, W: V9WeightContainer
+) -> torch.Tensor:
+    """Explicit prefill-path entry for callers that already know they are
+    in the prefill regime (e.g. first forward pass over a long prompt).
+
+    Same shape-handling contract as ``v9_linear_forward``; falls back to
+    the decode path if T <= DECODE_T_THRESHOLD so it is always
+    correctness-safe.
+    """
+    assert X_fp16.is_cuda and X_fp16.dtype == torch.float16
+    original_shape = X_fp16.shape
+    d_in = W.d_in
+    d_out = W.d_out
+    if X_fp16.shape[-1] != d_in:
+        raise ValueError(
+            f"X last dim ({X_fp16.shape[-1]}) must match d_in ({d_in})"
+        )
+    X_2d = X_fp16.reshape(-1, d_in)
+    T = X_2d.shape[0]
+    if T > DECODE_T_THRESHOLD:
+        Y_out = _v9_forward_prefill(X_2d, W, T=T, d_out=d_out, d_in=d_in)
+    else:
+        Y_out = _v9_forward_decode(X_2d, W, T=T, d_out=d_out, d_in=d_in)
     out_shape = original_shape[:-1] + (d_out,)
     return Y_out.reshape(out_shape)
 
@@ -317,4 +474,11 @@ def v9_linear_fakequant(X_fp16: torch.Tensor, W: V9WeightContainer) -> torch.Ten
     return Y_2d.reshape(out_shape)
 
 
-__all__ = ["v9_linear_forward", "v9_linear_fakequant", "reconstruct_w_fakequant_fp16"]
+__all__ = [
+    "v9_linear_forward",
+    "v9_linear_forward_decode",
+    "v9_linear_forward_prefill",
+    "v9_linear_fakequant",
+    "reconstruct_w_fakequant_fp16",
+    "DECODE_T_THRESHOLD",
+]
