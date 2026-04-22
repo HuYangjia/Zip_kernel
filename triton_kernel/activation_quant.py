@@ -26,19 +26,31 @@ from .pack_utils import BCOL
 
 @triton.autotune(
     configs=[
-        # Small-T regime (decode): one warp is enough, pick BT that matches
-        # typical token counts to avoid launching tons of partially-idle blocks.
-        triton.Config({"BT": 16,  "BD": 256}, num_warps=2, num_stages=2),
-        triton.Config({"BT": 32,  "BD": 256}, num_warps=2, num_stages=2),
-        triton.Config({"BT": 32,  "BD": 512}, num_warps=4, num_stages=2),
-        # Medium regime (prefill-ish): wider BT so we amortize Pass-1 reads.
-        triton.Config({"BT": 64,  "BD": 512}, num_warps=4, num_stages=2),
-        triton.Config({"BT": 64,  "BD": 1024}, num_warps=4, num_stages=2),
-        triton.Config({"BT": 128, "BD": 512}, num_warps=4, num_stages=2),
+        # ----- Small-T regime (decode, T <= 16) ------------------------
+        # One/two warps is enough; match BT to typical token counts to
+        # avoid launching tons of partially-idle blocks.
+        triton.Config({"BT": 16,  "BD": 256},  num_warps=2, num_stages=2),
+        triton.Config({"BT": 16,  "BD": 512},  num_warps=2, num_stages=3),
+        triton.Config({"BT": 32,  "BD": 256},  num_warps=2, num_stages=2),
+        triton.Config({"BT": 32,  "BD": 512},  num_warps=4, num_stages=3),
+        # ----- Medium regime (16 < T <= 128) ---------------------------
+        # These BT values only make sense when we actually have enough
+        # tokens to fill them; autotune will automatically avoid them
+        # for small T because the empty-tile overhead dominates.
+        triton.Config({"BT": 64,  "BD": 512},  num_warps=4, num_stages=2),
+        triton.Config({"BT": 64,  "BD": 1024}, num_warps=4, num_stages=3),
+        triton.Config({"BT": 128, "BD": 512},  num_warps=4, num_stages=2),
         triton.Config({"BT": 128, "BD": 1024}, num_warps=8, num_stages=2),
-        # Very large-T regime: BT too large means fewer blocks -> poor SM use,
-        # so don't push BT past 128; but a wider BD helps bandwidth.
+        # ----- Large-T regime (T >= 256) -------------------------------
+        # For the Llama-2 FFN shapes (d_in=11008) the kernel is
+        # load-bandwidth bound, so we bias toward BD=2048 with one extra
+        # pipeline stage -- this double-buffers the wide loads against
+        # the divide+rint work of Pass 2.  We intentionally keep BT<=128
+        # to guarantee enough program-level parallelism for SM occupancy
+        # even when T is only ~32-64.
         triton.Config({"BT": 64,  "BD": 2048}, num_warps=8, num_stages=2),
+        triton.Config({"BT": 64,  "BD": 2048}, num_warps=8, num_stages=3),
+        triton.Config({"BT": 128, "BD": 2048}, num_warps=8, num_stages=3),
     ],
     key=["T", "D", "N_GROUPS"],
 )
