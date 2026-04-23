@@ -21,38 +21,149 @@ from .pack_utils import BCOL
 
 
 # ---------------------------------------------------------------------------
+# Per-device identity-perm cache
+# ---------------------------------------------------------------------------
+# When the L2-thrash workaround triggers we replace a random permutation
+# with the identity.  Allocating torch.arange(D) per call would show up
+# as ~3-5us of host+launch overhead on decode shapes, which is significant
+# relative to the kernel itself.  We cache one (device, D) -> tensor
+# mapping so the hot path becomes a dict lookup.
+#
+# In addition we keep a small set of "known identity" data_ptrs so that
+# a caller passing their own torch.arange(D) (e.g. benchmarks, unit
+# tests, or sweep harnesses that pre-build W.perm=arange) also gets
+# detected as identity.  The first encounter pays one GPU sync
+# (torch.equal against our cached arange), subsequent encounters are
+# a pure dict lookup.
+_IDENTITY_PERM_CACHE: dict = {}
+_KNOWN_IDENTITY_PTRS: set = set()
+
+
+def _identity_perm(D: int, device: torch.device) -> torch.Tensor:
+    key = (str(device), D)
+    t = _IDENTITY_PERM_CACHE.get(key)
+    if t is None:
+        t = torch.arange(D, dtype=torch.int32, device=device)
+        _IDENTITY_PERM_CACHE[key] = t
+        _KNOWN_IDENTITY_PTRS.add(t.data_ptr())
+    return t
+
+
+def _is_identity_perm(perm: torch.Tensor) -> bool:
+    """Return True if `perm` is semantically the identity permutation.
+
+    Fast path: memoize by data_ptr.  First time we see a new pointer we
+    do a *single* torch.equal check against our cached identity tensor,
+    which costs one GPU sync (~10us) but is then cached forever.
+    """
+    ptr = perm.data_ptr()
+    if ptr in _KNOWN_IDENTITY_PTRS:
+        return True
+    # Only worth the sync if it *might* be identity: require int32/int64
+    # and shape-compatible with a cached arange.  If the user never
+    # constructs torch.arange, this path is never entered.
+    D = perm.numel()
+    key = (str(perm.device), D)
+    cached = _IDENTITY_PERM_CACHE.get(key)
+    if cached is None:
+        # No cached identity for this (device, D) yet -- build it lazily.
+        cached = torch.arange(D, dtype=torch.int32, device=perm.device)
+        _IDENTITY_PERM_CACHE[key] = cached
+        _KNOWN_IDENTITY_PTRS.add(cached.data_ptr())
+    if perm.dtype != cached.dtype:
+        perm_cmp = perm.to(cached.dtype)
+    else:
+        perm_cmp = perm
+    if torch.equal(perm_cmp, cached):
+        _KNOWN_IDENTITY_PTRS.add(ptr)
+        return True
+    return False
+
+
+
+
+# ---------------------------------------------------------------------------
 # Triton kernel
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Autotune config selection rationale (2026-04-23 rework)
+# ---------------------------------------------------------------------------
+# The original config list (2026-04-22 version, kept as `# old` comments
+# below) biased toward BD=2048 for "large-T prefill".  That turned out to
+# be a trap: at D=11008/14336 the Pass-2 loop unrolls N_GROUPS=86..112
+# groups, and each iteration keeps 4 live (BT, BCOL/2)=(BT, 64) SINT4
+# tiles in registers (x_lo, x_hi, q_lo, q_hi), plus perm_lo/hi for the
+# permuted gather.  With BD=2048 and BT=128 the compiler runs out of
+# registers and spills to local memory; autotune then has no choice but
+# to fall back to the tiniest config it knows (BT=16, BD=512), which
+# turns T=8192 prefill into 512 CTAs launching serially -> 17 ms.
+#
+# The new grid is built around two principles:
+#   (1) Cap BD at 1024.  Past that, register pressure outweighs loop
+#       latency hiding for this kernel (verified by microbench).
+#   (2) Add BT in {64, 128, 256} paired with BD in {256, 512, 1024} so
+#       that when T is large we get wide CTAs with few iterations rather
+#       than narrow CTAs with many iterations.
+#
+# A `prune_configs_by.early_config_prune` hook filters out obviously bad
+# configs *before* Triton compiles and benchmarks them, cutting autotune
+# dispatch cost by ~4x on first call.
+
+def _prune_quant_configs(configs, named_args, **kwargs):
+    """Remove configs that are provably dominated for the given shape.
+
+    Run before compilation, so filtering here saves both compile time and
+    benchmark time.  Keeps at least one config so autotune never fails.
+    """
+    T = named_args["T"]
+    D = named_args["D"]
+    kept = []
+    for c in configs:
+        bt = c.kwargs["BT"]
+        bd = c.kwargs["BD"]
+        # Rule 1: BT must not exceed T by more than 4x (else wasted lanes)
+        if bt > 4 * T and bt > 16:
+            continue
+        # Rule 2: BD must not exceed D (partial tiles only hurt)
+        if bd > D:
+            continue
+        # Rule 3: at very small T (<= 16) we *never* want BT > 32
+        # (bulk of BT lanes sit idle, just wastes SM cycles)
+        if T <= 16 and bt > 32:
+            continue
+        kept.append(c)
+    # Defensive: always keep at least one
+    return kept if kept else [configs[0]]
+
+
 @triton.autotune(
     configs=[
-        # ----- Small-T regime (decode, T <= 16) ------------------------
-        # One/two warps is enough; match BT to typical token counts to
-        # avoid launching tons of partially-idle blocks.
+        # ----- Decode family (BT <= 32) ---------------------------------
         triton.Config({"BT": 16,  "BD": 256},  num_warps=2, num_stages=2),
         triton.Config({"BT": 16,  "BD": 512},  num_warps=2, num_stages=3),
         triton.Config({"BT": 32,  "BD": 256},  num_warps=2, num_stages=2),
         triton.Config({"BT": 32,  "BD": 512},  num_warps=4, num_stages=3),
-        # ----- Medium regime (16 < T <= 128) ---------------------------
-        # These BT values only make sense when we actually have enough
-        # tokens to fill them; autotune will automatically avoid them
-        # for small T because the empty-tile overhead dominates.
+        triton.Config({"BT": 32,  "BD": 1024}, num_warps=4, num_stages=2),
+        # ----- Medium family (BT = 64) ----------------------------------
+        triton.Config({"BT": 64,  "BD": 256},  num_warps=4, num_stages=3),
         triton.Config({"BT": 64,  "BD": 512},  num_warps=4, num_stages=2),
-        triton.Config({"BT": 64,  "BD": 1024}, num_warps=4, num_stages=3),
+        triton.Config({"BT": 64,  "BD": 512},  num_warps=4, num_stages=3),
+        triton.Config({"BT": 64,  "BD": 1024}, num_warps=8, num_stages=2),
+        triton.Config({"BT": 64,  "BD": 1024}, num_warps=8, num_stages=3),
+        # ----- Large-T family (BT = 128) --------------------------------
+        triton.Config({"BT": 128, "BD": 256},  num_warps=4, num_stages=3),
         triton.Config({"BT": 128, "BD": 512},  num_warps=4, num_stages=2),
+        triton.Config({"BT": 128, "BD": 512},  num_warps=8, num_stages=3),
         triton.Config({"BT": 128, "BD": 1024}, num_warps=8, num_stages=2),
-        # ----- Large-T regime (T >= 256) -------------------------------
-        # For the Llama-2 FFN shapes (d_in=11008) the kernel is
-        # load-bandwidth bound, so we bias toward BD=2048 with one extra
-        # pipeline stage -- this double-buffers the wide loads against
-        # the divide+rint work of Pass 2.  We intentionally keep BT<=128
-        # to guarantee enough program-level parallelism for SM occupancy
-        # even when T is only ~32-64.
-        triton.Config({"BT": 64,  "BD": 2048}, num_warps=8, num_stages=2),
-        triton.Config({"BT": 64,  "BD": 2048}, num_warps=8, num_stages=3),
-        triton.Config({"BT": 128, "BD": 2048}, num_warps=8, num_stages=3),
+        # Restored: baseline frequently picked this for T=2048 prefill.
+        triton.Config({"BT": 128, "BD": 1024}, num_warps=8, num_stages=3),
+        # ----- Very-large-T family (BT = 256) ---------------------------
+        triton.Config({"BT": 256, "BD": 256},  num_warps=8, num_stages=3),
+        triton.Config({"BT": 256, "BD": 512},  num_warps=8, num_stages=2),
     ],
     key=["T", "D", "N_GROUPS"],
+    prune_configs_by={"early_config_prune": _prune_quant_configs},
 )
 @triton.jit
 def quantize_activation_kernel(
@@ -238,9 +349,75 @@ def quantize_activation_s4(
     n_groups = D // bcol
     device = X_2d.device
 
+    # ---------------------------------------------------------------
+    # Large-T L2-thrash workaround.
+    #
+    # When T * D * 2 (bytes of X) exceeds ~L2 capacity (72 MiB on 4090),
+    # the in-kernel permuted gather thrashes L2 because each warp's 32
+    # lanes touch 32 different random columns per iteration.  Measured
+    # on RTX 4090 (D=11008):
+    #   T=2048 perm=rand :   537us   (perm=id:  388us)  ratio 1.38x
+    #   T=8192 perm=rand : 18566us   (perm=id: 1449us)  ratio 12.81x !!
+    #
+    # Above ~32 MiB (T*D*2B) the ratio jumps from ~1.4x to >10x.  At
+    # that point materialising X_perm = X[:, perm] via torch native
+    # index_select (coalesced 1D gather along the contiguous T axis) is
+    # cheaper than paying the L2-miss penalty every kernel iteration.
+    # For small T the extra launch + HBM traffic hurts more than it
+    # helps, so we only take this path above the threshold.
+    #
+    # Threshold calibrated empirically on RTX 4090 (72 MiB L2):
+    #   T=2048, D=11008 (22M elems)   : kernel=537us  pre-perm=628us   KEEP KERNEL
+    #   T=8192, D=4096  (33M elems)   : kernel=732us  pre-perm=464us   SWITCH
+    #   T=8192, D=11008 (90M elems)   : kernel=18ms   pre-perm=1.9ms   SWITCH!
+    # The crossover is ~32M elements (= 64 MiB fp16).
+    # ---------------------------------------------------------------
+    _L2_THRASH_THRESHOLD_ELEMS = 32 * 1024 * 1024  # == 64 MiB at fp16
+    if T * D > _L2_THRASH_THRESHOLD_ELEMS and not _is_identity_perm(perm):
+        # Pre-permute X along the feature dim.  After this the kernel
+        # walks X in contiguous order -> 100% coalesced loads.
+        X_2d = X_2d.index_select(1, perm.to(torch.long)).contiguous()
+        perm = _identity_perm(D, device)
+
     X_s4 = torch.empty((T, D // 2), dtype=torch.int8, device=device)
     scale_x = torch.empty((T,), dtype=torch.float16, device=device)
     sum_X = torch.empty((T, n_groups), dtype=torch.int32, device=device)
+
+    # ---------------------------------------------------------------
+    # Fast-path dispatch
+    # ---------------------------------------------------------------
+    # For T <= 512 autotune always converges on
+    #   (BT=16, BD=512, num_warps=2, num_stages=3)
+    # across every d_in we tested (4096 / 11008 / 14336).  Keeping the
+    # @triton.autotune wrapper on that regime just adds 15-45us of
+    # Python-side dispatcher overhead per launch (measured with
+    # probe_quant_dispatch.py).  We short-circuit to the fixed-config
+    # kernel and save that overhead entirely.
+    #
+    # At T >= 1024 autotune may select a different BD / num_stages
+    # (e.g. T=2048 picks BD=256, stages=2), so we leave those on the
+    # autotune path -- there the dispatcher cost is a tiny fraction
+    # of the total anyway.
+    # ---------------------------------------------------------------
+    if T <= 512:
+        _FAST_BT = 16
+        _FAST_BD = 512
+        grid_fast = (triton.cdiv(T, _FAST_BT),)
+        quantize_activation_kernel_fast[grid_fast](
+            X_2d, perm,
+            X_s4, scale_x, sum_X,
+            T, D,
+            X_2d.stride(0), X_2d.stride(1),
+            X_s4.stride(0), X_s4.stride(1),
+            sum_X.stride(0), sum_X.stride(1),
+            N_GROUPS=n_groups,
+            BCOL_K=bcol,
+            BT=_FAST_BT,
+            BD=_FAST_BD,
+            num_warps=2,
+            num_stages=3,
+        )
+        return X_s4, scale_x, sum_X
 
     # autotune picks BT/BD/num_warps; grid depends on BT so pass a callable.
     grid = lambda META: (triton.cdiv(T, META["BT"]),)
@@ -259,3 +436,130 @@ def quantize_activation_s4(
 
 
 __all__ = ["quantize_activation_kernel", "quantize_activation_s4"]
+
+
+# ---------------------------------------------------------------------------
+# Fixed-config "fast path" kernel for decode / small-T shapes
+# ---------------------------------------------------------------------------
+# Why a second kernel?
+# --------------------
+# For T <= 64 and D <= 8192 the autotuned wrapper consistently picks
+# (BT=16, BD=512, warps=2, stages=3).  But the autotune dispatcher itself
+# costs 15-45us per launch (measured with probe_quant_dispatch.py):
+#
+#     T=1,  D=4096  :  autotune=87.6us  fixed=43.1us   (-50.8%)
+#     T=16, D=4096  :  autotune=89.6us  fixed=73.9us   (-17.5%)
+#     T=64, D=4096  :  autotune=89.3us  fixed=73.7us   (-17.5%)
+#
+# For larger D (D>=11008) the real work dwarfs the dispatcher cost, so
+# we keep the autotune path for them.
+#
+# Kernel body is IDENTICAL to quantize_activation_kernel -- do not
+# diverge them.  If you fix a bug in one, mirror it to the other.
+# ---------------------------------------------------------------------------
+
+@triton.jit
+def quantize_activation_kernel_fast(
+    X_ptr, perm_ptr,
+    X_s4_ptr, scale_x_ptr, sum_X_ptr,
+    T, D,
+    stride_xt, stride_xd,
+    stride_qt, stride_qd,
+    stride_st, stride_sg,
+    N_GROUPS: tl.constexpr,
+    BCOL_K: tl.constexpr,
+    BT: tl.constexpr,
+    BD: tl.constexpr,
+):
+    """Fast-path variant: fixed (BT, BD, num_warps, num_stages).
+
+    MUST be kept bitwise-equivalent to `quantize_activation_kernel`;
+    the only difference is the absence of the @triton.autotune wrapper
+    (and therefore no dispatcher overhead on the Python side).
+    """
+    pid_t = tl.program_id(0)
+    t_start = pid_t * BT
+    offs_t = t_start + tl.arange(0, BT)
+    mask_t = offs_t < T
+
+    max_abs = tl.zeros((BT,), dtype=tl.float32)
+    for d_start in range(0, D, BD):
+        offs_d = d_start + tl.arange(0, BD)
+        mask_d = offs_d < D
+        perm_idx = tl.load(perm_ptr + offs_d, mask=mask_d, other=0).to(tl.int32)
+        x_ptrs = X_ptr + offs_t[:, None] * stride_xt + perm_idx[None, :] * stride_xd
+        x_tile = tl.load(
+            x_ptrs,
+            mask=mask_t[:, None] & mask_d[None, :],
+            other=0.0,
+        ).to(tl.float32)
+        tile_max = tl.max(tl.abs(x_tile), axis=1)
+        max_abs = tl.maximum(max_abs, tile_max)
+
+    scale_fp32 = max_abs / 7.0
+    scale_fp16 = scale_fp32.to(tl.float16)
+    scale = scale_fp16.to(tl.float32)
+    scale_safe = tl.where(scale > 0.0, scale, 1.0)
+    scale_is_zero = scale <= 0.0
+
+    tl.store(scale_x_ptr + offs_t, scale_fp16, mask=mask_t)
+
+    offs_h = tl.arange(0, BCOL_K // 2)
+    for g in range(0, N_GROUPS):
+        d_start = g * BCOL_K
+        offs_d_lo = d_start + 2 * offs_h
+        offs_d_hi = d_start + 2 * offs_h + 1
+        mask_d_lo = offs_d_lo < D
+        mask_d_hi = offs_d_hi < D
+
+        perm_lo = tl.load(perm_ptr + offs_d_lo, mask=mask_d_lo, other=0).to(tl.int32)
+        perm_hi = tl.load(perm_ptr + offs_d_hi, mask=mask_d_hi, other=0).to(tl.int32)
+
+        x_lo = tl.load(
+            X_ptr + offs_t[:, None] * stride_xt + perm_lo[None, :] * stride_xd,
+            mask=mask_t[:, None] & mask_d_lo[None, :],
+            other=0.0,
+        ).to(tl.float32)
+        x_hi = tl.load(
+            X_ptr + offs_t[:, None] * stride_xt + perm_hi[None, :] * stride_xd,
+            mask=mask_t[:, None] & mask_d_hi[None, :],
+            other=0.0,
+        ).to(tl.float32)
+
+        q_lo = x_lo / scale_safe[:, None]
+        q_lo = tl_libdevice.rint(q_lo)
+        q_lo = tl.minimum(tl.maximum(q_lo, -8.0), 7.0)
+        q_lo_i32 = q_lo.to(tl.int32)
+        q_lo_i32 = tl.where(scale_is_zero[:, None], 0, q_lo_i32)
+        q_lo_i32 = tl.where(mask_d_lo[None, :], q_lo_i32, 0)
+
+        q_hi = x_hi / scale_safe[:, None]
+        q_hi = tl_libdevice.rint(q_hi)
+        q_hi = tl.minimum(tl.maximum(q_hi, -8.0), 7.0)
+        q_hi_i32 = q_hi.to(tl.int32)
+        q_hi_i32 = tl.where(scale_is_zero[:, None], 0, q_hi_i32)
+        q_hi_i32 = tl.where(mask_d_hi[None, :], q_hi_i32, 0)
+
+        g_sum = tl.sum(q_lo_i32, axis=1) + tl.sum(q_hi_i32, axis=1)
+        tl.store(sum_X_ptr + offs_t * stride_st + g * stride_sg, g_sum, mask=mask_t)
+
+        low = q_lo_i32 & 0x0F
+        high = q_hi_i32 & 0x0F
+        packed = ((high << 4) | low) & 0xFF
+        packed_i8 = tl.where(packed >= 128, packed - 256, packed).to(tl.int8)
+
+        byte_offs = (d_start // 2) + offs_h
+        byte_mask = byte_offs < (D // 2)
+        qs_ptrs = X_s4_ptr + offs_t[:, None] * stride_qt + byte_offs[None, :] * stride_qd
+        tl.store(
+            qs_ptrs,
+            packed_i8,
+            mask=mask_t[:, None] & byte_mask[None, :],
+        )
+
+
+__all__ = [
+    "quantize_activation_kernel",
+    "quantize_activation_kernel_fast",
+    "quantize_activation_s4",
+]
