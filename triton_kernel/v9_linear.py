@@ -13,6 +13,7 @@ import triton.language as tl
 
 from .activation_quant import quantize_activation_s4
 from .dense_u4s4_gemm import dense_gemm_u4_s4
+from .dense_gemm_to_out import dense_gemm_u4_s4_to_out
 from .dequant_w4_to_fp16 import dequant_u4_to_fp16
 from .fused_dense_sparse_gemm import fused_dense_sparse_gemm
 from .pack_utils import BCOL, V9WeightContainer, unpack_s4_le
@@ -224,20 +225,35 @@ def _v9_forward_decode(
     # (1) Activation quantization
     X_s4, scale_x, sum_X = quantize_activation_s4(X_2d, W.perm, bcol=BCOL)
 
+    # (2 + 4) hp=0 fast path: single fused dense-GEMM-to-output kernel that
+    #     writes directly into (T, d_out) FP16 -- no separate combine pass.
+    #     Bench (bench_dense_to_out.py, RTX 4090, min-of-means):
+    #       shape           plain (us)   fused (us)   vs_plain
+    #       4096x4096  T=4     70.88       58.57      1.21x
+    #       4096x4096  T=16    71.45       59.90      1.19x
+    #       14336x4096 T=16    70.11       59.94      1.17x
+    #       4096x11008 T=1    135.73      121.42      1.12x
+    #       4096x4096  T=1     60.56       59.13      1.02x   (GEMV tail)
+    #     10/10 shapes improved, avg 1.10x, all bit-exact vs plain+transpose.
+    if W.n_hp_blocks == 0:
+        return dense_gemm_u4_s4_to_out(
+            W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x,
+            T=T, d_out=d_out,
+        )
+
+    # hp > 0 path: keep the existing dense + sparse + combine pipeline.
     # (2) Dense low-bit GEMM -- produces Y_low in (d_out, T) layout.
     Y_low = dense_gemm_u4_s4(
         W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x,
     )
 
-    # (3) Sparse high-bit GEMM -- skipped entirely when hp=0.
-    Y_high: torch.Tensor | None = None
-    if W.n_hp_blocks > 0:
-        Y_high = sparse_gemm_s4_s4(
-            W.W_high_blocks_packed,
-            W.hp_row_offsets, W.hp_col_indices,
-            X_s4, W.scale_u4, scale_x,
-            d_out=d_out, d_in=d_in,
-        )
+    # (3) Sparse high-bit GEMM.
+    Y_high = sparse_gemm_s4_s4(
+        W.W_high_blocks_packed,
+        W.hp_row_offsets, W.hp_col_indices,
+        X_s4, W.scale_u4, scale_x,
+        d_out=d_out, d_in=d_in,
+    )
 
     # (4) Fused combine + transpose.  Decode T is tiny, so this always
     #     falls through to the torch-native fast path inside
