@@ -287,3 +287,79 @@ No existing file is modified in Steps 4.1–4.3. Step 4.4 touches `v9_linear.py`
 | Total HBM | 8.01 MiB | 8.14 MiB (+1.6%) | 8.27 MiB (+3.4%) |
 
 HBM overhead is negligible. The win comes from **4× more programs finishing the same HBM fetch in parallel**, not from doing less work.
+
+---
+
+## 10. Step 4.1 & 4.2 实测结果 (2026-04-23 晚)
+
+### 10.1 Step 4.1 — 对齐测试 (commit `de49845`)
+
+| 类别 | 数量 | 结果 |
+|---|---|---|
+| `split_k=1` canary (atol=2e-3) | 9 | ✅ PASS |
+| `split_k ∈ {2,4,8}` 数值逼近 (atol=2e-3) | 18 | ✅ PASS (6 skipped — n_groups 不整除) |
+| auto-policy | 6 | ✅ PASS |
+| policy sanity | 1 | ✅ PASS |
+| **合计** | **37 passed, 6 skipped** | ✅ |
+
+**关键更正**：`split_k=1` 不是 bit-exact，因 kernel 故意把 `scale_x` 挪到 reduce pass 以让 per-split partial 独立；一次 FP32 乘法重排 → 观测到 `max|delta|=1.95e-3`，与 FP16 ULP 量级匹配。已把 tolerance 拉到 `atol=2e-3, rtol=1e-3` 并在代码注释中详细说明原因。
+
+### 10.2 Step 4.2 — microbench（**未达标，触发 go/no-go 停止点**）
+
+`bench_dense_splitk.py`, RTX 4090, warmup=50, windows=3, iters=200，单位 µs：
+
+| T | d_out | d_in | sk | plain | fused(P3) | **splitk** | **FP16 cuBLAS** | splitk vs fused | splitk vs FP16 |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 4096 | 4096 | 8 | 87.8 | 85.4 | **141.8** | 38.5 | **0.60×** ❌ | 0.27× |
+| 1 | 4096 | 11008 | 2 | 135.5 | 121.3 | **99.7** | 98.0 | **1.22× ✅** | 0.98× |
+| 1 | 11008 | 4096 | 8 | 60.9 | 58.9 | 99.5 | 96.6 | 0.59× ❌ | 0.97× |
+| 4 | 4096 | 4096 | 8 | 70.5 | 60.5 | 100.4 | 14.2 | 0.60× ❌ | 0.14× |
+| 16 | 4096 | 4096 | 8 | 70.7 | 60.1 | 100.8 | 16.7 | 0.60× ❌ | 0.17× |
+| 1 | 14336 | 4096 | 8 | 62.0 | 59.5 | 99.5 | 125.0 | 0.60× ❌ | **1.26×** |
+| 1 | 28672 | 4096 | 1 | 78.4 | 75.1 | 99.4 | 247.2 | 0.76× ❌ | **2.49×** |
+| 4 | 14336 | 4096 | 8 | 71.3 | 59.8 | 100.8 | 126.6 | 0.59× ❌ | 1.26× |
+| 16 | 14336 | 4096 | 8 | 70.8 | 59.8 | 100.7 | 128.0 | 0.59× ❌ | 1.27× |
+| 16 | 28672 | 4096 | 1 | 86.5 | 81.5 | 98.6 | 253.2 | 0.83× ❌ | **2.57×** |
+
+Totals: plain=794µs, fused=722µs, **splitk=1041µs, FP16=1144µs**；splitk vs fused avg **0.69× (更慢)**，splitk vs FP16 avg 1.10×。
+
+**Go/no-go 判定：FAIL**（设计文档 §4 Step 4.2 gate 要求最差 shape ≥1.3×，实测 0.59×）。
+
+### 10.3 失败原因诊断
+
+1. **reduce pass 是新瓶颈**。`splitk_us` 几乎全部稳定在 ~99-100 µs，独立于 SPLIT_K 和形状——这正是 **Kernel A ~50µs + Kernel B ~50µs** 两次 launch 叠加的签名。即使 `sk=1`（reduce 只做 FP32→FP16 cast），仍然要 ~24µs overhead（对比 fused=75µs 的 d_out=28672 shape），远高于设计文档预估的 "~5µs 额外 launch"。
+2. **双 kernel launch overhead 在 decode 尺度下占比极高**。Kernel A 本身 ~50 µs + Kernel B ~50 µs > fused 单 kernel 总时间。
+3. **唯一赢的 shape 是 `T=1, d_in=11008` with sk=2**：`n_groups=86`，sk=2 时每 split 43 组，HBM 传输时间足够大 → 反超两次 launch 开销。这印证了 split-K 思路本身有效，但阈值不在 4090 + 小 decode shape。
+4. **3 个 shape 出现 split-K 已超 FP16**（d_out=14336/28672 且 d_in=4096）——但这些 shape 本身 fused 就已经赢 FP16，split-K 反倒把优势抵消。
+5. **设计文档的 HBM 利用率诊断是对的**（SM idle），但 two-kernel 路径的 fixed cost 比原估计高 4-5×。
+
+### 10.4 下一步决策（供用户拍板）
+
+**放弃 "Step 4.3 传统两 kernel fuse" 路线**。即使把 reduce 与 transpose 融成一个 kernel，也无法消除 kernel A 和 kernel B 之间的 HBM 读写环节（FP32 `Y_partial` 必须落盘）——这是数据依赖，不是工程实现。
+
+**三条候选路线**：
+
+| 路线 | 原理 | 工时 | 风险 |
+|---|---|---|---|
+| **A. 单-kernel atomic split-K** | Kernel A 直接 `tl.atomic_add` 累加到 FP32 输出，最后一个 small kernel 做 `×scale_x + cast fp16`。消除 HBM round-trip。 | 1 天 | atomic 争用可能回吐收益；scale_x 仍需单独 kernel |
+| **B. Persistent GEMM + tile-level streaming** | 不分 K，而是让一个 CTA 沿 K 流式处理；用 persistent block 反复复用 W tile。grid 固定 = SM 数。 | 2-3 天 | 写法复杂，Triton 原语支持有限 |
+| **C. 放弃 decode T=1 d_in=4096 档，接受现状 (0.65× FP16)** | 现实是：Step 1 (P3) 已经让 decode hp=0 端到端从 0.70× → 0.70×（小 shape 高达 1.28×），主要 gap 在 d_out=11008 一档。 | 0 天 | 零风险，跑回 P5 |
+
+**推荐**：**路线 A**（atomic split-K），因为：
+- 可以直接改造 Kernel A，只需把 `tl.store` 换成 `tl.atomic_add`；
+- 不需要独立 FP32 `Y_partial` buffer（省 HBM 分配）；
+- scale_x 和 cast 可以独立一个 ~10µs 的 tiny kernel 处理，仍比两 kernel 链快。
+
+---
+
+## 11. Step 4.1/4.2 效果 vs FP16 小结
+
+从本轮 microbench（hp=0 dense 通路，不含 activation quant）看：
+
+| 指标 | Pre-P4 (fused) vs FP16 | **Post-P4 (splitk) vs FP16** |
+|---|---|---|
+| 10-shape 总延迟 | 722 µs / 1144 µs = **1.58×** | 1041 µs / 1144 µs = **1.10×** |
+| 最差 shape | T=4 d_out=4096: 60.5 µs vs 14.2 µs = **0.23×** | T=4 d_out=4096: 100.4 µs vs 14.2 µs = **0.14×** |
+| 最优 shape | T=1 d_out=28672: 75.1 µs vs 247.2 µs = **3.29×** | T=1 d_out=28672: 99.4 µs vs 247.2 µs = **2.49×** |
+
+**结论**：two-kernel split-K 在本 bench 上全面不如 Step 1 (P3)。**决定保留 v9_linear 的接入为 P3 Step 1 (fused_to_out)**，直到路线 A / B 任一验证通过。

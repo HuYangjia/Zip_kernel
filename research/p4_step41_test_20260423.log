@@ -1,0 +1,52 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0 -- /root/miniconda3/bin/python
+cachedir: .pytest_cache
+rootdir: /root/Zip_kernel
+plugins: anyio-4.10.0
+collecting ... collected 43 items
+
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[4096-4096-1] PASSED [  2%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[4096-4096-4] PASSED [  4%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[4096-4096-16] PASSED [  6%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[14336-4096-1] PASSED [  9%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[14336-4096-4] PASSED [ 11%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[14336-4096-16] PASSED [ 13%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[4096-11008-1] PASSED [ 16%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[4096-11008-4] PASSED [ 18%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_equals_1_close_to_reference[4096-11008-16] PASSED [ 20%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-1-2] PASSED [ 23%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-1-4] PASSED [ 25%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-1-8] PASSED [ 27%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-4-2] PASSED [ 30%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-4-4] PASSED [ 32%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-4-8] PASSED [ 34%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-16-2] PASSED [ 37%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-16-4] PASSED [ 39%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-4096-16-8] PASSED [ 41%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-1-2] PASSED [ 44%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-1-4] PASSED [ 46%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-1-8] PASSED [ 48%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-4-2] PASSED [ 51%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-4-4] PASSED [ 53%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-4-8] PASSED [ 55%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-16-2] PASSED [ 58%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-16-4] PASSED [ 60%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[14336-4096-16-8] PASSED [ 62%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-1-2] PASSED [ 65%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-1-4] SKIPPED [ 67%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-1-8] SKIPPED [ 69%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-4-2] PASSED [ 72%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-4-4] SKIPPED [ 74%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-4-8] SKIPPED [ 76%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-16-2] PASSED [ 79%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-16-4] SKIPPED [ 81%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_splitk_close_to_reference[4096-11008-16-8] SKIPPED [ 83%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_auto_split_k_close_to_reference[1-4096-4096] PASSED [ 86%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_auto_split_k_close_to_reference[1-11008-4096] PASSED [ 88%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_auto_split_k_close_to_reference[1-14336-4096] PASSED [ 90%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_auto_split_k_close_to_reference[4-4096-4096] PASSED [ 93%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_auto_split_k_close_to_reference[16-14336-4096] PASSED [ 95%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_auto_split_k_close_to_reference[16-4096-11008] PASSED [ 97%]
+triton_kernel/tests/test_dense_gemm_splitk.py::test_choose_split_k_policy_sanity PASSED [100%]
+
+======================== 37 passed, 6 skipped in 42.74s ========================

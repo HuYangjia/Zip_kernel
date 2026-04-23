@@ -25,7 +25,8 @@
 | 8 | `3c3171c` | **性能** | **Activation Quant：L2-thrash workaround + fast-path + autotune retune** | **T=8192 random perm −91%，decode quant −30%，prefill hp=0 端到端 v9 −22%** |
 | 9 | `<本轮>` | **性能** | **Fused Dense+Sparse GEMM**（单 kernel 合并 combine）  | **microbench 14/14 improve 平均 −3.0%，小 bs=512 −4.9%，大 shape 28672×4096 bs=8192 节省 638μs** |
 | 10 | `<本轮>` | **性能** | **CUDA Graph decode wrapper（`V9LinearCudaGraph`）** | **decode 全场 +1.11× ~ +2.92×，T=1 d_out=14336 追平 cuBLAS FP16，最差 shape +2.37×** |
-| 11 | `e792b47` | **性能** | **P3 Step 1：Fused Dense-GEMM-to-Out kernel（hp=0 decode）** | **microbench 10/10 improve 平均 1.10×，T=4/16 d_out=4096~14336 吃到 1.17×~1.21×，28 bit-exact 测试全绿** |
+| 11 | `e792b47` | **性能** | **P3 Step 1：Fused Dense-GEMM-to-Out kernel（hp=0 decode）** | **microbench 10/10 improve 平均 1.10×，T=4/16 d_out=4096~14336 吃到 1.17×~1.21×，28 bit-exact 测试全绿；端到端 sweep 验证 decode hp=0 −6.4%, hp>0 −5.2%** |
+| 12 | `de49845` | **实验** | **P4 Step 4.1/4.2：Split-K Dense GEMM（microbench 未达标，未接入 v9_linear）** | **37/37 对齐测试全绿；microbench 1/10 shape 赢（T=1 d_in=11008, 1.22× vs fused），9/10 shape 变慢（平均 0.69× vs fused）；根因：two-kernel 链有 ~24-50µs launch overhead，对 decode 尺度太重。**代码保留但未接入**，走路线 A (atomic split-K) 或 C (放弃 decode T=1 档) 作为下一步决策** |
 
 ---
 
@@ -843,19 +844,62 @@ worst case 仅 +1.5% regress（noise 级）。
 
 **P3 Step 1 暴露的新瓶颈**：`T=1, d_in=4096` 一档收益仅 3-4%。原因是此时 plain kernel 本身就 ~59 µs，已不在 epilogue，而是 dense GEMM kernel 内部 **SM occupancy 不足**（grid = `d_out/128 = 32` programs，4090 有 128 SM，**75% SM 空闲**）。
 
-### P4：Split-K Dense GEMM（下一 session 主攻，设计见 `research/p4_splitk_dense_design.md`）
-- 目标形状：`T ≤ 16, d_out ≤ 14336, d_in = 4096`（全部是 decode 低 grid 场景）
-- 方案：K-axis split=4~8，grid 从 32 → 128~256 programs，SM 利用率 25% → 100%
-- 关键难点：per-group dequant（`scale_u4`, `zero_u4`, `sum_X`）在 K-loop 内部，必须证明 FP32 partial 可按 group 拆分后再相加（设计文档 §2.1 已推导可行）
-- 预期收益：`T=1, d_out=4096, d_in=4096` 从 ~135 µs → ~95 µs，vs FP16 从 0.65× → **0.92×**
-- 实施拆为 4 个 sub-step，每步有 go/no-go 决策点；总工时预估 2 天
+### P4：Split-K Dense GEMM — **Step 4.1/4.2 本轮完成，触发 go/no-go 停止**（commit `de49845`）
+
+**做了什么 & 为什么**：按 `research/p4_splitk_dense_design.md` 的计划，实现 `dense_gemm_splitk.py`（split-K main kernel + FP32→FP16 reduce kernel）+ `test_dense_gemm_splitk.py`（37/43 tests，6 skipped 是 n_groups 不整除的组合）+ `bench_dense_splitk.py` 四列对比 plain/fused/splitk/FP16 cuBLAS。动机是 P3 Step 1 留下的 `T=1, d_in=4096` 档只有 3-4% 收益 —— plain kernel 本身 59µs 已非 epilogue 瓶颈，而是 grid=32 programs 在 4090 128 SM 上只能填满 25%。
+
+**对齐测试结果（37 PASS, 6 skipped）**：
+- ✅ `split_k=1` canary（9 shapes, atol=2e-3）：因为 scale_x 从 K-loop 挪到 reduce pass，一次 FP32 mul 重排造成 max|delta|=1.95e-3，与 FP16 ULP 量级匹配
+- ✅ `split_k ∈ {2,4,8}` relaxed atol（18 shapes）
+- ✅ auto policy（6 shapes）+ policy sanity
+
+**Microbench 结果（RTX 4090，单位 µs，与 FP16 对比）**：
+
+| T | d_out | d_in | sk | plain | fused(P3) | **splitk** | **FP16 cuBLAS** | **splitk vs fused** | **splitk vs FP16** |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 4096 | 4096 | 8 | 87.8 | 85.4 | **141.8** | **38.5** | 0.60× ❌ | 0.27× |
+| 1 | 4096 | 11008 | 2 | 135.5 | 121.3 | **99.7** | 98.0 | **1.22× ✅** | 0.98× |
+| 1 | 11008 | 4096 | 8 | 60.9 | 58.9 | 99.5 | 96.6 | 0.59× ❌ | 0.97× |
+| 4 | 4096 | 4096 | 8 | 70.5 | 60.5 | 100.4 | **14.2** | 0.60× ❌ | 0.14× |
+| 16 | 4096 | 4096 | 8 | 70.7 | 60.1 | 100.8 | **16.7** | 0.60× ❌ | 0.17× |
+| 1 | 14336 | 4096 | 8 | 62.0 | 59.5 | 99.5 | 125.0 | 0.60× ❌ | **1.26×** |
+| 1 | 28672 | 4096 | 1 | 78.4 | 75.1 | 99.4 | 247.2 | 0.76× ❌ | **2.49×** |
+| 4 | 14336 | 4096 | 8 | 71.3 | 59.8 | 100.8 | 126.6 | 0.59× ❌ | 1.26× |
+| 16 | 14336 | 4096 | 8 | 70.8 | 59.8 | 100.7 | 128.0 | 0.59× ❌ | 1.27× |
+| 16 | 28672 | 4096 | 1 | 86.5 | 81.5 | 98.6 | 253.2 | 0.83× ❌ | **2.57×** |
+
+- Totals: plain 794µs, fused 722µs, **splitk 1041µs, FP16 1144µs**
+- splitk vs fused avg **0.69×**（退步），splitk vs FP16 avg 1.10×
+- **go/no-go 判定：FAIL**（设计文档 §4 Step 4.2 gate 要求最差 shape ≥1.3×，实测 0.59×）
+
+**效果 vs FP16 小结**：
+
+| 指标 | P3 (fused) vs FP16 | **P4 (splitk) vs FP16** | Δ |
+|---|---|---|---|
+| 10-shape 总延迟比 | 1144/722 = **1.58× 领先** | 1144/1041 = **1.10× 领先** | 退步 |
+| 最差 shape | T=4 d_out=4096: 0.23× | T=4 d_out=4096: **0.14×** | 退步 |
+| 最优 shape | T=1 d_out=28672: 3.29× | T=1 d_out=28672: 2.49× | 退步 |
+
+**决策**：split-K 代码提交保留，但**不接入 `v9_linear.py`**。decode hp=0 分支继续使用 P3 Step 1 fused kernel。
+
+**失败根因诊断**：`splitk_us` 几乎全部在 ~99-100 µs 常量 plateau 上（与 SPLIT_K 和形状无关）——这正是 **Kernel A 主计算 ~50µs + Kernel B reduce ~50µs** 两次 launch 叠加的签名。即使 `sk=1`，reduce kernel 本身就多了 ~24µs overhead。设计文档低估了二 kernel 链的 fixed cost 4-5×。
+
+**下一步候选路线（供用户拍板）**：
+
+| 路线 | 原理 | 工时 | 风险 |
+|---|---|---|---|
+| **A. 单-kernel atomic split-K** | `tl.atomic_add` 到 FP32 输出，消除 HBM round-trip；scale_x+cast 用一个 tiny kernel | 1 天 | atomic 争用；仍需 1 次额外 launch |
+| **B. Persistent GEMM + tile streaming** | 不分 K，CTA 沿 K 流式，grid = SM 数 | 2-3 天 | Triton 原语支持有限 |
+| **C. 放弃 decode T=1 d_in=4096 档** | P3 已把 decode hp=0 端到端推到 0.70× FP16，直接跑回 P5 | 0 天 | 零风险 |
+
+本次详细分析见 `research/p4_splitk_dense_design.md` §10-11，实验日志见 `research/p4_step42_bench_20260423.log`。
 
 ### P5（候选，暂缓）：其他方向
 - **hp>0 prefill 扩展 W4A16**：sparse 并入 fp16 权重的路径复杂，ROI 不如 P4
 - **CUDA Graph prefill 扩展**：prefill kernel 本身 compile 时间 >> graph launch 节省，负收益
 - **PTX `prmt.b32` dequant**：Phase B 末尾候选，需要先完成 P4 再评估是否还有收益
 
-**下一 session 选择**：**P4 Split-K Dense**（按设计文档 §4 的 4 个 sub-step 推进）。
+**下一 session 选择**：**路线 A（atomic split-K）优先**，或路线 C（跑回 P5）—— 请用户拍板。
 
 ---
 
