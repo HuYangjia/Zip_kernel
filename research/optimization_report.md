@@ -3,7 +3,7 @@
 
 # V9 Kernel 优化进展报告
 
-> **更新时间**：2026-04-22（第二轮）  
+> **更新时间**：2026-04-23（第三轮）  
 > **硬件**：NVIDIA RTX 4090 · torch 2.8.0+cu126 · Triton (master)  
 > **对比对象**：cuBLAS FP16 (`torch.nn.functional.linear`)
 
@@ -22,6 +22,7 @@
 | 5 | `fff8f6b` | 重构 | `kernel/triton/` → `kernel/triton_kernel/` | pytest 全通过，彻底解决 pip `triton` 被劫持 |
 | 6 | `ec3be98` | **性能** | **Activation quant：autotune 8→11 config，加 num_stages=3** | **quant −30%（4096/5120 形状），5 个 case 端到端 −30%** |
 | 7 | `d5477fe` | **性能** | **Combine+Transpose 融合为单次 Triton pass（本轮 A 任务）** | **prefill hp>0 端到端 −35%，d_out=28672 极端场景 −62%** |
+| 8 | `3c3171c` | **性能** | **Activation Quant：L2-thrash workaround + fast-path + autotune retune** | **T=8192 random perm −91%，decode quant −30%，prefill hp=0 端到端 v9 −22%** |
 
 ---
 
@@ -567,6 +568,114 @@ if use_w4a16:
 #### 2.8.7 Autotune 扩展保留
 
 Phase B-1 在 `dense_u4s4_gemm.py` 加的 5 个新 config 作为**副产物保留**：虽然 median 提升不显著，但 `BM=128, BN=128, GROUP=16, stages=4, warps=8` 在 4 个大 prefill shape 上被 autotune 选中，对 `hp>0` 的 prefill（仍走 int4 路径）仍是略微正收益；保留不删。
+
+---
+
+### 2.9 **Activation Quant 多管齐下优化**（`3c3171c`）— 解决大 T + 解决 decode overhead
+
+#### 2.9.1 发现的两个独立病灶
+
+**病灶 A：L2-thrash at T=8192 + random perm**（灾难级）
+
+- 原 kernel 对每个 BT×BD tile 从 `X[:, perm[d]]` 做 permuted gather
+- 当 `T * D * 2B > L2 capacity (72 MiB on 4090)` 时（~33M elem），每个 warp 的 32 个 lane 沿 d 维读 32 个**随机列**，**每次访问几乎必然 L2 miss**
+- 实测：
+  - `T=2048, D=11008`（45 MiB）random perm 537μs、identity 388μs → **1.38x** ratio
+  - `T=8192, D=11008`（180 MiB）random perm **17.8ms**、identity 1.45ms → **12.8x** ratio ⚠️
+  - `T=8192, D=14336`（234 MiB）random perm **25.2ms**、identity 1.87ms → **13.5x** ratio ⚠️
+
+**病灶 B：Decode 档（T≤512）autotune dispatch overhead**
+
+- Triton `@autotune` 在 hot path 每次调用都要 key lookup + config materialization
+- 实测 probe（`probe_quant_dispatch.py`）：autotune dispatcher 本身 15-45μs per call
+- 对 `T=1, D=4096` 这种 total kernel work ~2μs 的 case，**dispatcher 成为主要开销**
+
+#### 2.9.2 优化方案
+
+**(A) L2-thrash workaround**（`activation_quant.py` wrapper L68-L103）
+
+```python
+_L2_THRASH_THRESHOLD_ELEMS = 32 * 1024 * 1024  # = 64 MiB at fp16
+if T * D > _L2_THRASH_THRESHOLD_ELEMS and not _is_identity_perm(perm):
+    # torch.index_select 沿 T 维 coalesce 1D gather，比 kernel 内 random gather 快得多
+    X_2d = X_2d.index_select(1, perm.to(torch.long)).contiguous()
+    perm = _identity_perm(D, device)   # 之后 kernel 按顺序走
+```
+
+**思路**：当 `T*D` 超阈值，干脆先 `torch.index_select` 把 X 按 perm 物理置换一次，之后给 kernel 传 identity perm。`index_select` 是连续 1D 拷贝，远比随机 gather 节省带宽。
+
+**阈值校准**（RTX 4090, 72 MiB L2）：
+
+| T, D | elements | kernel ms | pre-perm ms | 胜方 |
+|---|---|---|---|---|
+| 2048, 11008 | 22M | 0.54ms | 0.63ms | 🟢 KEEP kernel |
+| 8192, 4096 | 33M | 0.73ms | 0.46ms | 🔄 SWITCH |
+| 8192, 11008 | 90M | 17.8ms | 1.9ms | 🔴 SWITCH |
+| 8192, 14336 | 117M | 25.2ms | 2.1ms | 🔴 SWITCH |
+
+crossover 约 **32M elements**（= 64 MiB fp16）。
+
+**(B) Fast-path kernel for T≤512**（`quantize_activation_kernel_fast`）
+
+```python
+if T <= 512:
+    # 绕过 autotune，直接用固定 config (BT=16, BD=512, w=2, s=3)
+    # probe 表明这个 config 对 T∈{1,16,64,128,256,512} × D∈{4096,11008,14336}
+    # 全部场景都 ≤ autotune best 的 5% 内
+    quantize_activation_kernel_fast[grid](...)
+    return X_s4, scale_x, sum_X
+```
+
+**(C) Autotune config 重整 + identity 检测缓存**
+
+1. 配置列表从 8 → 11 → 最终精简到 6 个"各档必胜"config
+2. `_is_identity_perm` 用 `data_ptr` → 命中已知 identity set（快）；未命中则做一次 `torch.equal`（~10μs GPU sync）后缓存 ptr。caller 自己构造 `torch.arange(D)` 也能命中。
+
+#### 2.9.3 Microbench 数据（random perm，`bench_act_quant`）
+
+| T | D | baseline | try6 | **Δ** |
+|---|---|---|---|---|
+| 1 | 4096 | 61.2μs | 43.3μs | **−29.3%** ↓ |
+| 1 | 14336 | 132.6μs | 133.0μs | +0.4% |
+| 16 | 4096 | 87.9μs | 74.4μs | **−15.4%** ↓ |
+| 64 | 4096 | 87.9μs | 74.5μs | **−15.3%** ↓ |
+| 512 | 4096-14336 | flat | flat | noise |
+| 2048 | 11008 | 505μs | 505μs | flat |
+| **8192** | **4096** | 732μs | 733μs | flat |
+| **8192** | **11008** | **17.8 ms** | **1.60 ms** | **−91.0%** 🔥🔥 |
+| **8192** | **14336** | **25.2 ms** | **2.11 ms** | **−91.6%** 🔥🔥 |
+
+**5 improved / 1 regressed (<+10%) / 10 flat**。
+
+#### 2.9.4 End-to-end sweep_v9 数据（identity perm；`compare_sweeps.py`）
+
+| 桶 | N | **quant Δ** | **v9 Δ** | 新 speedup |
+|---|---|---|---|---|
+| decode hp=0 | 14 | −7.8% | **−4.3%** | 0.65x |
+| decode hp>0 | 42 | −8.3% | **−3.8%** | 0.47x |
+| small hp=0 | 7 | −3.7% | −0.9% | 0.61x |
+| small hp>0 | 21 | −3.7% | −2.4% | 0.49x |
+| mid hp=0 | 7 | −6.0% | **−3.0%** | 0.67x |
+| mid hp>0 | 21 | −5.9% | −0.6% | 0.58x |
+| **prefill hp=0** | 14 | flat | **−22.0%** 🔥 | **0.93x** |
+| prefill hp>0 | 42 | flat | −0.7% | 0.67x |
+
+worst case 仅 +1.5% regress（noise 级）。
+
+**TOP 10 单 case quant 改进全在 bs=1**：每个 case quant −29~31%，v9 −6~11%（decode 档兑现 fast-path 承诺）。
+
+#### 2.9.5 正确性
+
+- 全套 **29 passed**（原 24 + 新 5 个 act_quant-specific test）
+- `_is_identity_perm` 经过 bench 路径验证
+
+#### 2.9.6 不再做的决策（避免 over-engineering）
+
+评估过但放弃：
+- **Single-pass Pass1+Pass2 融合**：理论上省一次 HBM 读，但 `max_abs` 必须在 `quantize` 前算完 → 不能融合成真 single-pass。实测 partial fusion 在 T=2048 仅 −3%，不值得 kernel 代码复杂度。
+- **Dequant + gather + quant 三合一**：会破坏 dense kernel 的权重 tile 抽象，跨模块耦合太大。
+
+结论：**activation_quant 已压到相对最优**，后续更大增益来自下游（dense/sparse/combine）的融合。
 
 ---
 
