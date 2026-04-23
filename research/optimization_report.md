@@ -25,6 +25,7 @@
 | 8 | `3c3171c` | **性能** | **Activation Quant：L2-thrash workaround + fast-path + autotune retune** | **T=8192 random perm −91%，decode quant −30%，prefill hp=0 端到端 v9 −22%** |
 | 9 | `<本轮>` | **性能** | **Fused Dense+Sparse GEMM**（单 kernel 合并 combine）  | **microbench 14/14 improve 平均 −3.0%，小 bs=512 −4.9%，大 shape 28672×4096 bs=8192 节省 638μs** |
 | 10 | `<本轮>` | **性能** | **CUDA Graph decode wrapper（`V9LinearCudaGraph`）** | **decode 全场 +1.11× ~ +2.92×，T=1 d_out=14336 追平 cuBLAS FP16，最差 shape +2.37×** |
+| 11 | `e792b47` | **性能** | **P3 Step 1：Fused Dense-GEMM-to-Out kernel（hp=0 decode）** | **microbench 10/10 improve 平均 1.10×，T=4/16 d_out=4096~14336 吃到 1.17×~1.21×，28 bit-exact 测试全绿** |
 
 ---
 
@@ -829,17 +830,32 @@ worst case 仅 +1.5% regress（noise 级）。
 - ✅ 14/14 case 收益 1.11× – 2.92×；fat-out T=1 hp=0 已对打 cuBLAS FP16
 - ✅ 10 个新测试全绿，正确性 bit-exact；不侵入既有 `v9_linear_forward` API
 
-### P3：Decode 专属 kernel 特化
-- decode 的 quant / sparse kernel 在小 bs (≤16) 时 launch overhead 严重。
-- 方案：给 `quantize_activation_s4` 加 `T ≤ 16` 专用小 tile config；sparse kernel 同理。
-- 收益预估：decode hp=0 0.69x → 0.85-0.95x。
+### ~~P3 Step 1：Fused Dense-GEMM-to-Out（hp=0 decode）~~（**本轮已完成**，commit `e792b47`）
+- ✅ 新 kernel `dense_gemm_u4_s4_to_out`（270 行）：复用既有 dense autotune 主循环，epilogue 在 FP32 accumulator 上 `tl.trans` 后直接写 `(T, d_out)` FP16，消除独立的 `_combine_transpose` pass。
+- ✅ 接入 `_v9_forward_decode` 的 `W.n_hp_blocks == 0` 分支；prefill hp=0 分支保守保持旧路径（尚未微基准覆盖大 T）。
+- ✅ 28 个 bit-exact 对齐测试全绿（涵盖 d_out ∈ {4096, 11008, 14336, 28672}, d_in ∈ {4096, 11008}, T ∈ {1, 2, 4, 8, 16}）。
+- ✅ 21 个回归测试（end2end + dispatcher + CUDA Graph）全绿。
+- ✅ `bench_dense_to_out.py` 结果（RTX 4090, min-of-means）：
+  - `T=4/16 d_out ∈ 4096~14336` → **1.17×~1.21×**（combine pass 被完全消灭的主场）
+  - `T=1 d_out=4096, d_in=11008` → **1.12×**
+  - `T=1 d_out ∈ 4096~28672, d_in=4096` → 1.02×~1.04×（GEMV tail，kernel 本身已是瓶颈）
+  - 10/10 shape 全部改善，平均 **1.10×**
 
-**本轮选择（更新）**：
-1. **已完成**：§2.7 prefill/decode 架构拆分（0 overhead）+ §2.8 **W4A16 fallback（prefill +20-40%）**
-2. **下一 session 候选**：
-   - P1（hp>0 prefill 扩展 W4A16） — ROI 最高，sweep 剩余一半 shape
-   - P2（decode CUDA Graph） — 结构性改动
-   - P3（decode kernel 小 tile 特化） — 低风险增量
+**P3 Step 1 暴露的新瓶颈**：`T=1, d_in=4096` 一档收益仅 3-4%。原因是此时 plain kernel 本身就 ~59 µs，已不在 epilogue，而是 dense GEMM kernel 内部 **SM occupancy 不足**（grid = `d_out/128 = 32` programs，4090 有 128 SM，**75% SM 空闲**）。
+
+### P4：Split-K Dense GEMM（下一 session 主攻，设计见 `research/p4_splitk_dense_design.md`）
+- 目标形状：`T ≤ 16, d_out ≤ 14336, d_in = 4096`（全部是 decode 低 grid 场景）
+- 方案：K-axis split=4~8，grid 从 32 → 128~256 programs，SM 利用率 25% → 100%
+- 关键难点：per-group dequant（`scale_u4`, `zero_u4`, `sum_X`）在 K-loop 内部，必须证明 FP32 partial 可按 group 拆分后再相加（设计文档 §2.1 已推导可行）
+- 预期收益：`T=1, d_out=4096, d_in=4096` 从 ~135 µs → ~95 µs，vs FP16 从 0.65× → **0.92×**
+- 实施拆为 4 个 sub-step，每步有 go/no-go 决策点；总工时预估 2 天
+
+### P5（候选，暂缓）：其他方向
+- **hp>0 prefill 扩展 W4A16**：sparse 并入 fp16 权重的路径复杂，ROI 不如 P4
+- **CUDA Graph prefill 扩展**：prefill kernel 本身 compile 时间 >> graph launch 节省，负收益
+- **PTX `prmt.b32` dequant**：Phase B 末尾候选，需要先完成 P4 再评估是否还有收益
+
+**下一 session 选择**：**P4 Split-K Dense**（按设计文档 §4 的 4 个 sub-step 推进）。
 
 ---
 

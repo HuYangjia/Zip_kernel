@@ -1,0 +1,37 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0 -- /root/miniconda3/bin/python
+cachedir: .pytest_cache
+rootdir: /root/Zip_kernel
+plugins: anyio-4.10.0
+collecting ... collected 28 items
+
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-4096-1] PASSED [  3%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-4096-2] PASSED [  7%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-4096-4] PASSED [ 10%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-4096-8] PASSED [ 14%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-4096-16] PASSED [ 17%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[14336-4096-1] PASSED [ 21%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[14336-4096-2] PASSED [ 25%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[14336-4096-4] PASSED [ 28%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[14336-4096-8] PASSED [ 32%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[14336-4096-16] PASSED [ 35%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[28672-4096-1] PASSED [ 39%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[28672-4096-2] PASSED [ 42%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[28672-4096-4] PASSED [ 46%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[28672-4096-8] PASSED [ 50%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[28672-4096-16] PASSED [ 53%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-11008-1] PASSED [ 57%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-11008-2] PASSED [ 60%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-11008-4] PASSED [ 64%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-11008-8] PASSED [ 67%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[4096-11008-16] PASSED [ 71%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[11008-4096-1] PASSED [ 75%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[11008-4096-2] PASSED [ 78%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[11008-4096-4] PASSED [ 82%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[11008-4096-8] PASSED [ 85%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_bitexact_vs_dense_plus_transpose[11008-4096-16] PASSED [ 89%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_nonlocal_T_still_correct[1-4096-4096] PASSED [ 92%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_nonlocal_T_still_correct[16-14336-4096] PASSED [ 96%]
+triton_kernel/tests/test_dense_gemm_to_out.py::test_nonlocal_T_still_correct[4-28672-4096] PASSED [100%]
+
+======================== 28 passed in 63.26s (0:01:03) =========================
