@@ -14,6 +14,7 @@ import triton.language as tl
 from .activation_quant import quantize_activation_s4
 from .dense_u4s4_gemm import dense_gemm_u4_s4
 from .dequant_w4_to_fp16 import dequant_u4_to_fp16
+from .fused_dense_sparse_gemm import fused_dense_sparse_gemm
 from .pack_utils import BCOL, V9WeightContainer, unpack_s4_le
 from .sparse_s4s4_gemm import sparse_gemm_s4_s4
 
@@ -315,23 +316,42 @@ def _v9_forward_prefill(
     # (1) Activation quantization
     X_s4, scale_x, sum_X = quantize_activation_s4(X_2d, W.perm, bcol=BCOL)
 
-    # (2) Dense low-bit GEMM
-    Y_low = dense_gemm_u4_s4(
-        W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x,
-    )
-
-    # (3) Sparse high-bit GEMM
-    Y_high: torch.Tensor | None = None
+    # (2 + 3) Dense low-bit GEMM (+ optional sparse high-bit GEMM).
+    #
+    # When there ARE sparse high-precision blocks we call the fused
+    # dense+sparse kernel, which computes
+    #     Y_total[m, n] = Y_low[m, n] + 16 * Y_high[m, n]
+    # in a single pass over (d_out, T).  Compared to calling
+    # ``dense_gemm_u4_s4`` and ``sparse_gemm_s4_s4`` separately this saves:
+    #   - one kernel launch
+    #   - one full (d_out, T) fp16 write-back (Y_high)
+    #   - one full (d_out, T) fp16 read in the combine stage
+    # Benchmarked -2.2%..-4.9% in bench_fused_ds on prefill shapes.
+    #
+    # When hp_ratio==0 we skip the fused path and call the pure dense
+    # kernel -- its autotune grid is decode-friendlier and the fused
+    # kernel gains nothing from a 0-iter sparse loop anyway.
     if W.n_hp_blocks > 0:
-        Y_high = sparse_gemm_s4_s4(
+        Y_low = fused_dense_sparse_gemm(
+            W.W_low_packed,
             W.W_high_blocks_packed,
             W.hp_row_offsets, W.hp_col_indices,
-            X_s4, W.scale_u4, scale_x,
+            X_s4,
+            W.scale_u4, W.zero_u4, sum_X, scale_x,
             d_out=d_out, d_in=d_in,
         )
+        Y_high = None   # already folded into Y_low by the fused kernel
+    else:
+        Y_low = dense_gemm_u4_s4(
+            W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x,
+        )
+        Y_high = None
 
-    # (4) Fused combine + transpose: on prefill surfaces (T * d_out >= 4M)
-    #     the Triton fused kernel wins against torch .t().contiguous().
+    # (4) Fused combine + transpose: Y_high is None in both branches now,
+    #     so this degenerates to a pure transpose.  Still worth calling
+    #     the fused Triton kernel on prefill (T * d_out >= 4M) because
+    #     torch's .t().contiguous() is slower there; wrapper picks the
+    #     right path automatically.
     return _combine_transpose(Y_low, Y_high, d_out=d_out, T=T)
 
 

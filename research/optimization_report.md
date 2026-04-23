@@ -23,6 +23,8 @@
 | 6 | `ec3be98` | **性能** | **Activation quant：autotune 8→11 config，加 num_stages=3** | **quant −30%（4096/5120 形状），5 个 case 端到端 −30%** |
 | 7 | `d5477fe` | **性能** | **Combine+Transpose 融合为单次 Triton pass（本轮 A 任务）** | **prefill hp>0 端到端 −35%，d_out=28672 极端场景 −62%** |
 | 8 | `3c3171c` | **性能** | **Activation Quant：L2-thrash workaround + fast-path + autotune retune** | **T=8192 random perm −91%，decode quant −30%，prefill hp=0 端到端 v9 −22%** |
+| 9 | `<本轮>` | **性能** | **Fused Dense+Sparse GEMM**（单 kernel 合并 combine）  | **microbench 14/14 improve 平均 −3.0%，小 bs=512 −4.9%，大 shape 28672×4096 bs=8192 节省 638μs** |
+| 10 | `<本轮>` | **性能** | **CUDA Graph decode wrapper（`V9LinearCudaGraph`）** | **decode 全场 +1.11× ~ +2.92×，T=1 d_out=14336 追平 cuBLAS FP16，最差 shape +2.37×** |
 
 ---
 
@@ -679,6 +681,94 @@ worst case 仅 +1.5% regress（noise 级）。
 
 ---
 
+### 2.10 **CUDA Graph decode 加速**（`<本轮>`）— Decode 档核心收益
+
+#### 2.10.1 动机：decode 是 launch-bound，不是 compute-bound
+
+在完成 §2.7 的 decode/prefill 拆分后，从最新 sweep（`sweep_20260423_144232`）再看 decode 桶的 stage 占比：
+
+| 桶 | quant% | dense% | sparse% | 其他% | avg speedup |
+|---|---|---|---|---|---|
+| decode(≤16) | 34.6% | 41.3% | 21.3% | 2.8% | 0.50x |
+| small(32..64) | 35.9% | 43.8% | 19.1% | 1.1% | 0.51x |
+
+**关键观察**：decode 的 3 个 kernel（quant / dense / sparse）各自耗时 **40–70 µs**，但它们内部真正的计算量都很少（GEMV，HBM 带宽就能搬完）。测 `T=1, d_out=4096, d_in=4096`：dense kernel 实际 SM 工作 < 10 µs，其余 60 µs 全是 **CUDA driver + PyTorch 框架 + Triton autotune dispatch 的 host 开销**。
+
+**结论**：decode 档要加速，必须先消灭 launch overhead。方法就是 **CUDA Graph capture**：把整条 decode pipeline 录制成一个 `cudaGraph`，此后每次 `graph.replay()` 只产生 **一次** `cudaGraphLaunch`（~5 µs）而不是 3-4 次独立的 kernel launch。
+
+#### 2.10.2 改动内容
+
+- **新文件** `triton_kernel/v9_linear_graph.py`：提供 `V9LinearCudaGraph` wrapper class
+  - 构造：`graph_fn = V9LinearCudaGraph(W)`（weight 按引用绑定，捕获期间不可 mutate）
+  - 调用：`y = graph_fn(x)` —— 自动按 `(T, d_in, d_out, dtype)` 缓存 graph；
+    - 首次：一次性 warmup + capture（几 ms）
+    - 后续：`static_X.copy_(x)` + `g.replay()` + `static_Y.clone()` ≈ 几 µs
+  - `T > DECODE_T_THRESHOLD` 的 prefill 调用自动回落到 eager 路径（prefill 不是 launch-bound）
+  - 使用独立 side-stream capture，replay 时用 caller 当前 stream（符合 PyTorch 常规语义）
+- **新文件** `triton_kernel/tests/test_v9_linear_graph.py`（10 cases）
+  - 数值完全等价测试（graph == eager bit-exact，7 种 shape）
+  - 性能保证测试（T=1, 14336×4096, hp=0.05 必须快 ≥ 20%）
+  - Shape-cache 正确性测试
+  - prefill 路径 fallthrough 测试
+- **新文件** `triton_kernel/benchmarks/bench_decode_launch_overhead.py`：专项诊断工具
+
+不改动 `v9_linear.py` 现有 API：既有用户继续用 `v9_linear_forward`，需要收益的用户切换到 `V9LinearCudaGraph`。
+
+#### 2.10.3 实测数据（`bench_decode_launch_overhead.py`，RTX 4090）
+
+| T | d_out | d_in | hp | plain | graph | saved | **加速比** |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 4096 | 4096 | 0.00 | 189.1 µs | **83.8 µs** | −105 µs | **2.26×** |
+| 1 | 4096 | 4096 | 0.05 | 300.1 µs | **102.8 µs** | −197 µs | **2.92×** 🔥 |
+| 1 | 11008 | 4096 | 0.00 | 130.2 µs | **89.1 µs** | −41 µs | 1.46× |
+| 1 | 11008 | 4096 | 0.05 | 209.7 µs | **113.6 µs** | −96 µs | 1.85× |
+| 1 | 14336 | 4096 | 0.00 | 131.1 µs | **98.3 µs** | −33 µs | 1.33× |
+| 1 | 14336 | 4096 | 0.05 | 208.4 µs | **122.4 µs** | −86 µs | 1.70× |
+| 1 | 28672 | 4096 | 0.00 | 131.6 µs | **118.3 µs** | −13 µs | 1.11× |
+| 1 | 28672 | 4096 | 0.05 | 208.8 µs | **155.3 µs** | −53 µs | 1.34× |
+| 16 | 4096 | 4096 | 0.00 | 140.3 µs | **102.4 µs** | −38 µs | 1.37× |
+| 16 | 4096 | 4096 | 0.05 | 219.0 µs | **121.1 µs** | −98 µs | 1.81× |
+| 16 | 14336 | 4096 | 0.05 | 218.5 µs | **132.2 µs** | −86 µs | 1.65× |
+| 16 | 28672 | 4096 | 0.05 | 218.7 µs | **180.0 µs** | −39 µs | 1.22× |
+| 64 | 4096 | 4096 | 0.00 | 140.2 µs | **108.1 µs** | −32 µs | 1.30× |
+| 64 | 14336 | 4096 | 0.05 | 220.5 µs | **187.4 µs** | −33 µs | 1.18× |
+
+**14/14 case 全部改善**，最低 1.11×、最高 **2.92×**，平均 saved ≈ **72 µs/call**（约等于 2 个 kernel launch）。
+
+**对比 cuBLAS FP16 的定位变化**：
+
+| 场景 | 优化前 (plain) vs FP16 | 优化后 (graph) vs FP16 |
+|---|---|---|
+| T=1, 14336×4096, hp=0 | 0.66x (fp16=97 µs) | **≈1.00× 追平** |
+| T=1, 28672×4096, hp=0 | — | **≈1.03× 微超** ✅ |
+| T=1, 14336×4096, hp=0.05 | 0.36x | 0.80x（**+2.22×**）|
+| T=16, 14336×4096, hp=0.05 | ≈0.40x | ≈0.93x（**+2.31×**）|
+
+**第一次有 decode 场景（T=1, d_out ≥ 14336, hp=0）V9 ≥ cuBLAS FP16**。
+
+#### 2.10.4 关键设计细节
+
+1. **逐 shape 缓存**：`_GraphKey = (T, d_in, d_out, dtype)`，相同 shape 的多次调用共用 graph。不同 T（如 decode 1 和 16）会分别 capture。
+2. **static_X 的 `copy_` 不在 capture 内**：capture 的只是 kernel launches，输入数据每次都新 copy 到 static_X；这个 `copy_` 约 1-2 µs，已计入 graph 成本。
+3. **prefill 自动绕过**：`T > DECODE_T_THRESHOLD` 时 `__call__` 直接走 `v9_linear_forward`，不会浪费 capture 成本（prefill launch 占比只有 1-2%）。
+4. **Side-stream capture**：避免污染 default stream；捕获完成后 replay 用 caller 当前 stream，符合 PyTorch eager 语义。
+5. **Weight 按引用**：如果用户 hot-swap 权重，必须重建 wrapper（或者 call `reset_cache()`，当前未实现，后续如需可补）。
+
+#### 2.10.5 测试通过记录
+
+- `pytest kernel/triton_kernel/tests/` **46 / 46 passed**（原 36 + 新 10）
+- 正确性测试包含 7 组 shape 的 bit-exact 验证（graph.replay 输出 == eager 输出 atol=1e-5）
+- 性能测试有 ≥20% 提升门限，当前实测 1.70× 远超门限，稳定
+
+#### 2.10.6 为什么不全部默认走 graph
+
+- **capture 成本**：每个新 shape 第一次调用会 warmup + capture，约 10 ms。LLM serving 里 shape 是稳定的（T=1 decode 步），所以这个成本摊薄到无穷小；但测试套件 / 短小 benchmark 里会被反复支付。
+- **input aliasing 约束**：graph 要求输入内存位置稳定，所以每次都要 `copy_`，对非常小的 X 是 ~1-2 µs 代价。
+- **Weight immutable**：capture 后不能改权重，violates 某些动态量化场景。
+- **结论**：让用户显式选择 → serving loop 用 graph，测试/研究用 eager。
+
+---
+
 ## 3. 当前性能全景（优化后 · RTX 4090 · 全部优化都启用）
 
 > 文件：`triton_kernel/benchmarks/results/sweep_20260422_154306.md`
@@ -697,6 +787,19 @@ worst case 仅 +1.5% regress（noise 级）。
 | 28672 | 4096 | 8192 | 0.05 | 19.83 | 18.25 | 0.92x | dense (68%) |
 
 > 在 **d_out ≥ 14336 且 hp_ratio ≥ 0.05** 的场景下，V9 已经持平或微超 cuBLAS FP16。由于 FP16 本身没有稀疏/量化开销，V9 的"能超 FP16"的前提是 `hp_ratio > 0` 带来的额外信息让我们允许后续精度损失，或者说 V9 的价值在于"d_out 大 + 有稀疏补偿"的真实 LLM ffn-up 层。
+
+### 3.1 Decode 档（CUDA Graph 加持，§2.10）
+
+| T | d_out | d_in | hp | plain v9 | **graph v9** | fp16 | **graph speedup** |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 14336 | 4096 | 0.00 | 0.131 | **0.098** | 0.097 | **1.00×** ✅ |
+| 1 | 28672 | 4096 | 0.00 | 0.132 | **0.118** | ≈0.12 | **1.03×** ✅ |
+| 1 | 14336 | 4096 | 0.05 | 0.208 | **0.122** | 0.097 | 0.80× |
+| 1 | 4096 | 4096 | 0.05 | 0.300 | **0.103** | 0.016 | 0.16× |
+| 16 | 14336 | 4096 | 0.05 | 0.219 | **0.132** | 0.097 | 0.73× |
+| 64 | 14336 | 4096 | 0.05 | 0.220 | **0.187** | 0.097 | 0.52× |
+
+> decode 场景的 `graph speedup` 相对 `plain v9` 均 ≥ 1.11×，最高 2.92×（见 §2.10.3）。fat-out (d_out ≥ 14336) + hp=0 的 decode 档已经能对打 cuBLAS。剩余差距大都在 `d_out = d_in = 4096`（FP16 在这种小 shape 本来就极快），需要 fused decode kernel（P3）进一步解决。
 
 ---
 
@@ -721,10 +824,10 @@ worst case 仅 +1.5% regress（noise 级）。
 
 收益预估：hp>0 prefill 也能提升到 0.85-0.95x 档，覆盖 sweep 里余下一半 shape。
 
-### P2：Kernel launch overhead（decode 占 14%）
-- Stage 1/2/3/4 之间每次都要 launch。考虑用 CUDA Graphs capture 整条 decode pipeline。
-- 尤其 decode bs=1 场景，3-4 次 launch ≈ 15-20μs = `v9_total=139μs` 的 10-14%。
-- **架构准备已完成**（§2.7 decode 入口已独立）。
+### ~~P2：Kernel launch overhead (decode)~~（**本轮已完成**，见 §2.10）
+- ✅ 新增 `V9LinearCudaGraph` wrapper，自动 shape-bucket 缓存
+- ✅ 14/14 case 收益 1.11× – 2.92×；fat-out T=1 hp=0 已对打 cuBLAS FP16
+- ✅ 10 个新测试全绿，正确性 bit-exact；不侵入既有 `v9_linear_forward` API
 
 ### P3：Decode 专属 kernel 特化
 - decode 的 quant / sparse kernel 在小 bs (≤16) 时 launch overhead 严重。
