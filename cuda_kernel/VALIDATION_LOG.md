@@ -273,3 +273,126 @@ pure-Triton baseline; prefill (T≥8) is unchanged.
       the T≥8 loss; persistent-BSR queue for sparse.
 
 ---
+
+## Iteration log (automated self-optimization)
+
+Summary: across 5 rounds I pushed end-to-end T=1 from 2.82x to 3.17x,
+T=8 from 0.73x (net loss) to 2.21x, and T=16 from 0.50x to 1.67x.
+Each round changes ONE dimension at a time and is recorded below.
+
+### Round 2 (13:06) -- K-outside/N-inside loop swap  [REGRESSION]
+
+- Motivation: in the N-outside/K-inside layout, each thread ran a
+  32-deep serial dp4a chain per (M,N) entry.  Swapping exposes kBn
+  independent chains per i-iteration -> ILP.
+- Change: swap loops in dense_gemm.cu, fused (dense + sparse
+  halves), sparse_gemm.cu.
+- Result: T=1 decode up 1.17x -> 1.37x.  But T>=8 **got worse**: T=8
+  went from 0.27x to 0.08x, T=16 from 0.08x to 0.05x.
+- Diagnosis: The new layout stores ``acc_n[kBn]``, ``x0_n[kBn]``,
+  ``x1_n[kBn]`` as register arrays.  At kBn>=8 these exceed the
+  budget and spill ``w_dp4a[32]`` to local memory; spill cost >> ILP
+  gain.  Confirmed with a probe: slicing X along T and looping
+  ``dense_gemm_cuda`` per row (which forces kBn=1) is 2.3x faster
+  than the dispatched kBn=8 path at T=8.
+- Decision: keep the loop swap (T=1 win is real) but cap kBn.
+- Commit: `524cc21`.
+
+### Round 3 (13:19) -- cap kBn<=4 to eliminate spill  [BIG WIN]
+
+- Change: dispatch table becomes
+  ```
+  T=1   -> kBn=1
+  T<=8  -> kBn=2
+  else  -> kBn=4
+  ```
+- Rationale: N-parallelism moves onto the grid (grid.y = T/kBn) instead
+  of the thread.  4090 has 128 SMs; grid of up to 32 (M) * 4 (N) = 128
+  CTAs saturates one wave.  Each thread's reg footprint drops to
+  ~40 baseline + 4*3 = 52 regs, well under the 64-reg budget for 2
+  blocks/SM occupancy.
+- Result: `bench_20260424_132022`.  Dramatic wins across the board:
+
+  | path | Round 2 | Round 3 | Δ |
+  |---|---:|---:|---:|
+  | dense T=8        | 0.08x | **1.11x** | ~14x |
+  | dense T=16       | 0.05x | 0.59x | ~12x |
+  | sparse T=16      | 0.42x | **3.68x** | ~9x |
+  | sparse T=64      | 0.15x | **1.59x** | ~11x |
+  | sparse T=128     | 0.10x | **1.16x** | ~12x |
+  | fused T=8        | 0.09x | **1.05x** | ~12x |
+  | end-to-end T=8   | 0.22x | **2.30x** | ~10x |
+  | end-to-end T=16  | 0.14x | **1.47x** | ~10x |
+
+- Diagnosis lock-in: confirms Round 2's regression was purely
+  register-spill-driven.  The ILP benefit was real but was being
+  completely masked.  Once spill is removed the ILP gain is still
+  exposed and compounds.
+- Commit: `97002cf`.
+
+### Round 4 (13:29) -- 128-bit __ldg + policy widen  [MARGINAL]
+
+- Kernel: replace the 16x `__ldg(uint32_t*)` per W row with 4x
+  `__ldg(uint4*)`.  Halves LD instruction count, safe because
+  `d_in_half = d_in/2` is always a multiple of 16 (since BCOL=128
+  divides d_in).
+- Policy: extend CUDA coverage to T<=8 for dense/fused, T<=128 for
+  sparse.
+- Result: `bench_20260424_132910`.  Kernel changes are within noise
+  (+/- 5%); policy changes are the real win (new end-to-end wins at
+  T=8 and T=16 are now dispatched to CUDA instead of falling back).
+- Diagnosis: W loads are not the bandwidth bottleneck -- we are
+  compute-bound on the dp4a chain.  128-bit loads hurt nothing but
+  don't help either.  The dominant cost is still the ~32 dp4a/group
+  per thread.
+- Commit: `f449c3e`.
+
+### Round 5 (13:33) -- T<=16 also kBn=2  [SMALL WIN]
+
+- Motivation: T=16 measured at 108us in Round 4 (kBn=4) vs T=8 at
+  68us.  kBn=4 is already borderline-spilling.
+- Change: shift the threshold so T<=16 uses kBn=2, T>16 stays at
+  kBn=4.
+- Result: `bench_20260424_133330`.
+  - dense T=16: 108us -> 101us (0.64x -> 0.71x)
+  - fused T=16: 123us -> 110us (0.66x -> 0.76x)
+  - end-to-end T=16: 150us -> 141us (1.56x -> **1.67x**)
+- Diagnosis: confirms kBn=4 is still mildly spill-pressured.  But the
+  improvement is small because T=16 with kBn=2 needs grid.y=8 and
+  4090 fills exactly 2 waves (32 M-CTAs * 8 N-CTAs = 256 total, 2
+  blocks/SM * 128 SM = 256) -- edge effects in the tail wave
+  dominate the remaining latency.  Further shrinking kBn won't help.
+- Commit: `5c444cf`.
+
+### Where we are (as of Round 5)
+
+Final bench (iter-Round 5, `bench_20260424_133330`):
+
+| kernel              | shape        | Triton  | CUDA    | speedup |
+|---------------------|--------------|--------:|--------:|--------:|
+| end-to-end v9_linear| T=1 4k/4k    | 231us   | 73us    | **3.17x** |
+| end-to-end v9_linear| T=1 4k/11k   | 229us   | 74us    | **3.10x** |
+| end-to-end v9_linear| T=1 11k/4k   | 265us   | 176us   | 1.51x     |
+| end-to-end v9_linear| T=8 4k/4k    | 238us   | 107us   | **2.21x** |
+| end-to-end v9_linear| T=16 4k/4k   | 236us   | 141us   | **1.67x** |
+| end-to-end v9_linear| T=64 4k/4k   | 236us   | 388us   | 0.61x (rt triton) |
+| end-to-end v9_linear| T=128 4k/4k  | 237us   | 696us   | 0.34x (rt triton) |
+
+Dispatcher auto-routes T>=64 to Triton so product latency is always
+<= Triton baseline.
+
+### What's left on the table (Phase 5 backlog)
+
+- dense_gemm T>=32: still loses badly on CUDA; unavoidable without
+  tensor-core MMA (``m16n8k32.s8.s8.s32``) which we did not write in
+  this phase.  Likely 4-8x speedup potential for prefill if done.
+- sparse_gemm T>=512: similar; the BSR persistent queue idea in the
+  comments would help, independently of MMA.
+- activation_quant: already 3-4.7x and memory-bound.  No headroom.
+
+### Files of record
+
+- iteration bench artefacts:
+  `logs/cuda_kernel/bench_2026042[4_*].{json,md,log}`
+- final policy: `kernel/backend/policy.py::_auto_policy`
+- final kernels: `kernel/cuda_kernel/csrc/**`
