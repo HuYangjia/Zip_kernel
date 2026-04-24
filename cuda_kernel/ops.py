@@ -56,6 +56,7 @@ _SOURCES = [
     str(_CSRC / "sparse_gemm"        / "sparse_gemm_mma_int4.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int4.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_gemv_decode.cu"),
+    str(_CSRC / "fused_dense_sparse" / "fused_quant_gemv.cu"),
 ]
 
 _NVCC_FLAGS = [
@@ -374,7 +375,32 @@ def fused_dense_sparse_cuda_int4(
     return Y_total
 
 
-def fused_gemv_cuda_decode(
+def fused_quant_gemv_cuda(
+    X_fp16, perm,
+    W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    scale_u4, zero_u4, d_out, d_in,
+) -> torch.Tensor:
+    """Fused activation-quant + dense+sparse GEMV (T=1, single kernel).
+
+    Round 15b: eliminates the activation_quant kernel launch overhead by
+    fusing quantization into the GEMV kernel.  X is read from HBM once.
+
+    Precondition: X_fp16.shape[0] == 1.
+    """
+    TORCH_CHECK = lambda cond, msg: None  # noqa: checked in C++
+    T = X_fp16.shape[0]
+    device = X_fp16.device
+    Y_total = torch.empty((d_out, T), dtype=torch.float16, device=device)
+    _ext.fused_quant_gemv_launch(
+        X_fp16, perm,
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        scale_u4, zero_u4,
+        Y_total, d_out, d_in,
+    )
+    return Y_total
+
+
     W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
     X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
 ) -> torch.Tensor:

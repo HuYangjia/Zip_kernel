@@ -55,6 +55,15 @@ void launch(torch::Tensor W_low, torch::Tensor W_high_blocks,
             torch::Tensor Y_total,
             int d_out, int d_in);
 }
+
+namespace fused_quant_gemv {
+void launch(torch::Tensor X_fp16, torch::Tensor perm,
+            torch::Tensor W_low, torch::Tensor W_high_blocks,
+            torch::Tensor hp_row_offsets, torch::Tensor hp_col_indices,
+            torch::Tensor scale_u4, torch::Tensor zero_u4,
+            torch::Tensor Y_total,
+            int d_out, int d_in);
+}
 }  // namespace hkust_v9
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -122,6 +131,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("X_s4"),
         py::arg("scale_u4"), py::arg("zero_u4"),
         py::arg("sum_X"), py::arg("scale_x"),
+        py::arg("Y_total"),
+        py::arg("d_out"), py::arg("d_in")
+    );
+
+    m.def(
+        "fused_quant_gemv_launch",
+        &hkust_v9::fused_quant_gemv::launch,
+        "Fused activation quant + dense+sparse GEMV (T=1, single kernel)",
+        py::arg("X_fp16"), py::arg("perm"),
+        py::arg("W_low"), py::arg("W_high_blocks"),
+        py::arg("hp_row_offsets"), py::arg("hp_col_indices"),
+        py::arg("scale_u4"), py::arg("zero_u4"),
         py::arg("Y_total"),
         py::arg("d_out"), py::arg("d_in")
     );
