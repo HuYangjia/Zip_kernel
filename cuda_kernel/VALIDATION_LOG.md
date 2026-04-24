@@ -8,6 +8,123 @@ All timestamps in UTC+8 (server `autodl`).
 
 ---
 
+## Run 2026-04-24 15:40: MMA migration (dp4a → Tensor Core)
+
+### Motivation
+
+Round 10 of the dp4a path topped out at 0.16-0.33x cuBLAS FP16 in
+compute-bound regimes (T>=16, full prefill).  Ceiling is the SM89 CUDA
+Core INT8 peak (165 TOPS) vs cuBLAS FP16 Tensor Core (330 TFLOPS with
+FP16 accumulate).  To break past this ceiling we swap the inner MAC
+from `__dp4a` (SIMT) to Tensor Core MMA:
+
+- INT8 variant : `mma.m16n8k32.s8.s8.s32`  -- 660 TOPS peak on SM89
+  (4x over dp4a, 2x over cuBLAS FP16).  Requires s4 -> s8 decoding at
+  shmem stage.
+- INT4 variant : `mma.m16n8k64.s4.s4.s32`  -- nominally same 660 TOPS
+  on SM89 (INT4 MMA is *not* faster than INT8 MMA on Ada -- NVIDIA
+  deprecated s4 MMA in PTX 8.7 precisely because of this).  The
+  advantage is zero-cost operand packing (no s4 -> s8 decode) and
+  half the shmem footprint per K-step, which may help register
+  pressure / occupancy.
+
+### Files changed
+
+- NEW : `csrc/common/mma_utils.cuh`  -- inline-PTX wrappers for
+        ldmatrix.{x2,x4}[.trans].shared.b16,
+        mma.m16n8k32.s8.s8.s32, mma.m16n8k64.s4.s4.s32.
+- NEW : `csrc/dense_gemm/dense_gemm_mma_int8.cu`
+- NEW : `csrc/dense_gemm/dense_gemm_mma_int4.cu`
+- NEW : `csrc/sparse_gemm/sparse_gemm_mma_int8.cu`
+- NEW : `csrc/sparse_gemm/sparse_gemm_mma_int4.cu`
+- NEW : `csrc/fused_dense_sparse/fused_dense_sparse_mma_int8.cu`
+- NEW : `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu`
+- STUB: old `dense_gemm.cu` / `sparse_gemm.cu` / `fused_dense_sparse.cu`
+        retained as empty compilation-unit placeholders; removed from
+        `_SOURCES` in `ops.py`.
+- MOD : `csrc/bindings.cc`        -- 6 new `launch` symbols exposed;
+                                     3 dp4a symbols removed.
+- MOD : `ops.py`                  -- exposes 6 new entry points plus
+                                     backwards-compat aliases
+                                     `dense_gemm_cuda`, `sparse_gemm_cuda`,
+                                     `fused_dense_sparse_cuda` pointing
+                                     at the INT8 MMA variant.
+- MOD : `benchmarks/bench_kernels.py`
+                                  -- dropped Triton column; now compares
+                                     **fp16 | cuda_int8 | cuda_int4**
+                                     with cuBLAS FP16 as the sole baseline.
+- MOD : `tests/test_parity.py`    -- each GEMM test is now parameterised
+                                     over variant in {int8, int4} so
+                                     both MMA paths are checked against
+                                     the Triton reference.
+
+### Design notes (MMA kernel core)
+
+All three GEMM MMA kernels share the same macro-structure:
+
+- **Tile**: BM=128, BN in {8, 64, 128}, BK=128 (one BCOL group).
+- **CTA**: 128 threads = 4 warps.  Each warp owns 32 M rows, running
+  2 MMA M-sub tiles (16 rows each).
+- **Shared memory**: double-buffered sW and sX, packed-s4 staging
+  for the INT4 variants (8 KB/buffer), s8-expanded staging for the
+  INT8 variants (16 KB/buffer).  Expansion done by `unpack_s4_to_s8_x8`
+  in the issuer loop so the MMA inner loop sees only plain loads.
+- **Operand build**: for this first cut, A and B operand fragments
+  are built via per-lane scalar uint32 reads from shmem directly
+  matching the mma.m16n8k{32,64}.{s8,s4} per-lane PTX layout.
+  **ldmatrix is *not yet* used** -- correctness-first cut; hooking
+  ldmatrix in `csrc/common/mma_utils.cuh` is trivial and is the
+  next optimisation step if shmem bandwidth shows up in profiling.
+- **Epilogue**: per-group fp32 accumulate with `(acc - zero*sum_X) *
+  scale_u4 * scale_x` for the dense branch, `acc * scale_u4 * scale_x`
+  for the sparse branch, summed into `y_fp` registers and stored as
+  fp16 in a single writeback at the end.
+- **Fused kernel**: reuses the same MMA pass (in a lambda) for both
+  dense (n_groups iterations) and sparse (BSR iterations) branches,
+  differing only in the epilogue fold.
+
+### Expected outcomes (to validate on server)
+
+- T=1 decode: no improvement over dp4a expected (GEMV is BW-bound,
+  Tensor Core throughput is irrelevant).  Target: >=0.5x fp16.
+- T in 8..128: Tensor Core peak now unlocked.  Target: **>=1.0x fp16**
+  for dense_gemm_int8 across this range.
+- T>=512: strongly compute-bound; Tensor Core INT8 at 660 TOPS vs
+  cuBLAS FP16 at 330 TFLOPS => target **>=1.5x fp16** for INT8, with
+  INT4 slightly behind (nominally same TOPS but more register pressure).
+- INT4 MMA vs INT8 MMA: expected **~1.0-1.1x** (INT4 is not faster on
+  Ada, just smaller operands).  We bench it because the user explicitly
+  asked for the comparison; a negative result here confirms the Ada
+  whitepaper and informs the decision to exclusively maintain INT8 MMA
+  in prod paths.
+
+### Next run
+
+On `autodl`:
+
+```bash
+# 1) JIT compile (deletes cache so the MMA sources get re-emitted fresh)
+rm -rf ~/.cache/hkust_v9_cuda
+HKUST_V9_CUDA_VERBOSE=1 python -c "from kernel.cuda_kernel import ops"
+
+# 2) Parity (int8 AND int4)
+python -m pytest kernel/cuda_kernel/tests/test_parity.py -x -rA --tb=short
+
+# 3) Bench (fp16 vs int8 vs int4)
+python kernel/cuda_kernel/benchmarks/bench_kernels.py
+```
+
+Expected failure modes to check for:
+- ptxas rejection of `mma.m16n8k64.s4.s4.s32` on some nvcc versions
+  (prior to 11.8).  Cu126 ships nvcc 12.6 which still accepts it.
+- Parity drift >1 ULP on fused kernel at large T -- FP32 accumulate
+  order differs from Triton's tl.dot (our per-group FP32 fold is
+  mathematically equivalent but accumulates in a different order).
+
+---
+
+---
+
 ## Run 2026-04-24 11:52: first JIT + first parity attempt
 
 ### Build
@@ -653,3 +770,100 @@ matches/beats on the asymmetric d_out=11k MLP up-proj.**  For
 square 4k×4k attention projections at T=1, cuBLAS FP16 is still the
 fastest available option (at the cost of losing W4A8's accuracy
 preservation).
+
+---
+
+## Round 10 (15:09–15:18) — register spill diagnosis & dispatch fix
+
+### Motivation
+
+Two questions from the previous session:
+1. Is the Triton bench measuring correctly?
+2. Why does CUDA dense_gemm collapse at T≥64?
+
+### Triton bench correctness
+
+Confirmed: the official Triton bench (`bench_dense.py`) shows Triton
+at 0.54x–0.78x vs cuBLAS FP16 for T=256 square shapes.  Our bench
+numbers are consistent.  Triton is genuinely slower than cuBLAS FP16
+for T≥64 dense GEMM — this is expected (Triton W4A8 vs FP16 cuBLAS
+is only a win at T=1 decode due to memory-bandwidth savings).
+
+### Root cause of T≥64 collapse
+
+Used `cuobjdump -res-usage` to inspect register counts for all
+instantiated `dense_gemm_kernel<kBn>` variants:
+
+| kBn | REG  | STACK (spill) | blocks/SM |
+|-----|------|---------------|-----------|
+| 64  | 230  | 0             | 2         |
+| 32  | 128  | 0             | 4         |
+| 16  | 128  | 0             | 4         |
+| **8**  | **255** | **2752 B** | **1** (spill!) |
+| 4   | 62   | 0             | 8         |
+| 2   | 62   | 0             | 8         |
+| 1   | 48   | 0             | 8         |
+
+**kBn=8 with K-outside/N-inside path causes massive register spill
+(255 regs + 2752 B stack).** The `x0_n[8]` + `x1_n[8]` arrays
+declared inside the `#pragma unroll` loop body prevent nvcc from
+reusing registers across iterations, causing 16 × 2 × 8 = 256
+"live" int registers at peak.
+
+**kBn=16/32 with N-outside/K-inside path**: 128 regs, no spill, but
+the serial `nk` loop means only 1 dp4a chain active at a time →
+poor ILP → 935us at T=64 (vs 19us FP16).
+
+### Attempted fixes and results
+
+| Attempt | Change | T=64 result |
+|---------|--------|-------------|
+| Round 10a | kBn=8 K-out/N-in | **4453us** (spill!) |
+| Round 10b | kBn=16 N-out/K-in | 935us (serial ILP) |
+| Round 10 final | kBn=2 for T≤16, kBn=16 for T>16 | 935us (same) |
+
+### Key insight
+
+**dense_gemm CUDA has no advantage over cuBLAS FP16 at T>16.**
+The W4A8 decode advantage is memory-bandwidth-bound at T=1 only.
+For T>16, the matrix is large enough that cuBLAS FP16's tensor-core
+pipeline dominates.  The correct engineering decision is:
+
+- **T≤16**: CUDA (wins on sparse_gemm 5x, acceptable on dense_gemm)
+- **T>16**: route to Triton via policy (Triton ≈ 0.3–0.8x FP16,
+  better than CUDA's 0.02–0.04x)
+
+### Final dispatch table (all three kernels)
+
+```
+T=1       → kBn=1  (48 regs, 8 blocks/SM)
+T=2..16   → kBn=2  (62 regs, 8 blocks/SM)
+T=17..256 → kBn=16 (128 regs, 4 blocks/SM, fallback only)
+T>256     → kBn=32 (128 regs, 4 blocks/SM, fallback only)
+```
+
+kBn=16/32 are "fallback only" — policy routes T>16 dense/fused to
+Triton, so these variants are only hit if the user forces `cuda`.
+
+### Parity: 35/35 passed (bench_20260424_151809)
+
+### Final performance table (bench_20260424_151809, auto policy)
+
+| kernel              | shape         | fp16 (us) | cuda (us) | speedup  |
+|---------------------|---------------|----------:|----------:|---------:|
+| sparse_gemm         | dec_T1_4k_11k |  94       | **18**    | **5.30x** |
+| sparse_gemm         | dec_T1_11k_4k |  95       | **17**    | **5.46x** |
+| fused_dense_sparse  | dec_T1_4k_11k |  94       | **55**    | **1.72x** |
+| dense_gemm          | dec_T1_4k_11k |  77       | **50**    | **1.53x** |
+| end-to-end v9_linear| dec_T1_4k_11k |  94       | **72**    | **1.30x** |
+
+Numbers stable vs Round 9.  The T≥64 "collapse" is a non-issue in
+production because policy correctly routes those shapes to Triton.
+
+### Decision
+
+No further CUDA optimisation for dense_gemm at T>16 — the
+architecture (SIMT dp4a vs tensor-core FP16) makes it structurally
+impossible to beat cuBLAS FP16 at batch sizes where the matrix is
+compute-bound.  Future work: explore `mma.sync.m16n8k32.s8` PTX
+for T=8..64 (requires warp-level tiling redesign).

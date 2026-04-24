@@ -1,0 +1,382 @@
+// Dense UINT4 x SINT4 GEMM -- INT4 Tensor Core version (SM89).
+//
+// Semantic contract: identical to dense_gemm.cu / dense_gemm_mma_int8.cu.
+// Inner product uses mma.m16n8k64.s4.s4.s32, which on SM89 remains a
+// Tensor Core accelerated path (deprecated in SM90 but still fully
+// functional on Ada).
+//
+// Key differences from the INT8 version
+// --------------------------------------
+// 1. K-step width is 64 (not 32).  One BCOL=128 group => 2 MMA K-steps.
+// 2. A/B fragments are already s4-packed; no unpack to s8 needed.
+//    The operand registers directly use the project's pack_s4_le
+//    layout (low nibble = lane 0, high nibble = lane 1, ...).
+// 3. Staging buffers hold packed s4 bytes (half the size of INT8).
+//
+// Operand layout for mma.m16n8k64.s4.s4.s32 (PTX ISA):
+//   A (16x64 s4, row-major) : 4 regs/thread, each 8xs4.
+//     per-thread (lane):
+//       a0: row=(lane>>2),      cols=(lane&3)*8   + {0..7}      (k  [0..31] low half)
+//       a1: row=(lane>>2)+8,    cols=(lane&3)*8   + {0..7}
+//       a2: row=(lane>>2),      cols=(lane&3)*8+32+ {0..7}      (k [32..63] high half)
+//       a3: row=(lane>>2)+8,    cols=(lane&3)*8+32+ {0..7}
+//   B (64x8 s4, col-major)  : 2 regs/thread, each 8xs4.
+//       b0: rows=(lane&3)*8   + {0..7},  col=(lane>>2)
+//       b1: rows=(lane&3)*8+32+ {0..7},  col=(lane>>2)
+//   D (16x8 s32, row-major) : 4 regs/thread (same as INT8 D).
+//
+// Note: 8 s4 lanes == 4 packed bytes == 1 uint32.  So each A/B reg
+// equals one "group of 4 packed bytes" directly readable from our
+// pack_s4_le format.
+
+#include "common/arch.cuh"
+#include "common/mma_utils.cuh"
+
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAException.h>
+#include <cuda_fp16.h>
+#include <torch/extension.h>
+
+#include <cstdint>
+#include <type_traits>
+
+namespace hkust_v9 {
+namespace dense_gemm_mma_int4 {
+
+template <int kBn>
+__global__ void dense_gemm_mma_int4_kernel(
+    const uint8_t* __restrict__ W,         // (d_out, d_in/2)
+    const uint8_t* __restrict__ X,         // (T, d_in/2)
+    const __half* __restrict__ scale_u4,
+    const __half* __restrict__ zero_u4,
+    const int* __restrict__ sum_X,
+    const __half* __restrict__ scale_x,
+    __half* __restrict__ Y,
+    int d_out, int d_in, int T,
+    int n_groups,
+    int64_t stride_w_m,   int64_t stride_w_k,
+    int64_t stride_x_n,   int64_t stride_x_k,
+    int64_t stride_su_m,  int64_t stride_su_g,
+    int64_t stride_zu_m,  int64_t stride_zu_g,
+    int64_t stride_sx_n,  int64_t stride_sx_g,
+    int64_t stride_y_m,   int64_t stride_y_n
+) {
+    constexpr int kBm = 128;
+    constexpr int kBk = 128;                 // one group
+    constexpr int kMmaK = 64;
+    constexpr int kKSteps = kBk / kMmaK;     // 2
+    constexpr int kMsubPerWarp = 2;
+    constexpr int kNsubPerCta = (kBn + 7) / 8;
+
+    const int tid = threadIdx.x;
+    const int warp_id = tid >> 5;
+    const int lane = tid & 31;
+
+    const int m_tile = blockIdx.x * kBm;
+    const int n_tile = blockIdx.y * kBn;
+
+    const int bytes_per_group = BCOL >> 1;   // 64
+    const int d_in_half = d_in >> 1;
+
+    // Shared memory: packed s4 bytes only (no unpack).
+    //   sW: 128 rows * 64 packed bytes = 8 KB per buffer.
+    //   sX: kBn rows * 64 packed bytes = up to 8 KB per buffer.
+    __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
+    __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
+    __shared__ __half s_scale_x[kBn];
+    __shared__ int s_sum_X[2][kBn];
+
+    if (tid < kBn) {
+        int n = n_tile + tid;
+        s_scale_x[tid] = (n < T) ? scale_x[n] : __half(0);
+    }
+
+    float y_fp[kMsubPerWarp][kNsubPerCta][4];
+    #pragma unroll
+    for (int im = 0; im < kMsubPerWarp; ++im)
+      #pragma unroll
+      for (int in = 0; in < kNsubPerCta; ++in)
+        #pragma unroll
+        for (int r = 0; r < 4; ++r) y_fp[im][in][r] = 0.0f;
+
+    // Loaders (packed bytes, no unpack).
+    auto issue_w_load = [&](int g, int buf) {
+        // 128 threads, 128 rows * 64 bytes -> 1 row/thread, 4 uint4 each
+        int m = m_tile + tid;
+        uint8_t* dst = &sW[buf][tid][0];
+        if (m < d_out) {
+            const uint8_t* src = W + (int64_t)m * stride_w_m
+                                   + (int64_t)(g * bytes_per_group) * stride_w_k;
+            // 64 bytes = 4 uint4 = 16 uint32
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
+                *reinterpret_cast<uint4*>(dst + i * 16) = v;
+            }
+        } else {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
+            }
+        }
+    };
+
+    auto issue_x_load = [&](int g, int buf) {
+        // kBn rows * 4 uint4 (64 bytes) = kBn*4 quads.  Stride loop.
+        const int total_quads = kBn * 4;
+        for (int q = tid; q < total_quads; q += kBm) {
+            int row = q >> 2;
+            int quad = q & 3;
+            int n = n_tile + row;
+            uint4 v;
+            if (n < T) {
+                int64_t off = (int64_t)n * stride_x_n
+                            + (int64_t)(g * bytes_per_group + quad * 16) * stride_x_k;
+                v = *reinterpret_cast<const uint4*>(X + off);
+            } else {
+                v = make_uint4(0, 0, 0, 0);
+            }
+            *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = v;
+        }
+        for (int nk = tid; nk < kBn; nk += kBm) {
+            int n = n_tile + nk;
+            s_sum_X[buf][nk] = (n < T) ?
+                sum_X[(int64_t)n * stride_sx_n + (int64_t)g * stride_sx_g] : 0;
+        }
+    };
+
+    __syncthreads();
+    issue_w_load(0, 0);
+    issue_x_load(0, 0);
+    __syncthreads();
+
+    for (int g = 0; g < n_groups; ++g) {
+        const int buf = g & 1;
+        if (g + 1 < n_groups) {
+            issue_w_load(g + 1, buf ^ 1);
+            issue_x_load(g + 1, buf ^ 1);
+        }
+
+        int d_acc[kMsubPerWarp][kNsubPerCta][4];
+        #pragma unroll
+        for (int im = 0; im < kMsubPerWarp; ++im)
+          #pragma unroll
+          for (int in = 0; in < kNsubPerCta; ++in)
+            #pragma unroll
+            for (int r = 0; r < 4; ++r) d_acc[im][in][r] = 0;
+
+        // K-step: 2 iters of 64 s4 each.
+        #pragma unroll
+        for (int ks = 0; ks < kKSteps; ++ks) {
+            // k in [ks*64, ks*64+64) s4 == packed-byte range
+            // [ks*32, ks*32+32) within the group's 64 bytes.
+            const int kpb_base = ks * 32;     // byte offset within group
+
+            // A fragments.  Per lane we need:
+            //   a0: row=msub+(lane>>2),     cols=(lane&3)*8 + {0..7}   (low 32 s4)
+            //   a1: row=msub+(lane>>2)+8,   same cols
+            //   a2: row=msub+(lane>>2),     cols=(lane&3)*8+32 + {0..7} (high 32 s4)
+            //   a3: row=msub+(lane>>2)+8,   same
+            // Cols in s4 -> bytes: (lane&3)*4 within a 32-byte stripe.
+            // Half select: ks==0 low, ks==1 high.  But with kKSteps=2,
+            // for ks=0 we're filling "low half" (cols 0..31 s4),
+            //           a0/a1 use cols (lane&3)*8+{0..7} s4 -> byte (lane&3)*4+{0..3}
+            //           a2/a3 use cols (lane&3)*8+32+{0..7} s4 -> byte (lane&3)*4+16+{0..3}
+            // But wait -- one K-step is 64 s4 wide, i.e. 32 bytes wide.
+            // a0/a1 low-half column set: s4 cols (lane&3)*8 + {0..7}
+            //   -> packed byte col (lane&3)*4 + {0..3}
+            // a2/a3 high-half column set: s4 cols (lane&3)*8 + 32 + {0..7}
+            //   -> packed byte col (lane&3)*4 + 16 + {0..3}
+            // These are 16 packed bytes apart.  So within a 32-byte
+            // k-step we read 4 packed bytes at base (lane&3)*4 for a0/a1
+            // and 4 packed bytes at base (lane&3)*4 + 16 for a2/a3.
+            uint32_t a_regs[kMsubPerWarp][4];
+            #pragma unroll
+            for (int im = 0; im < kMsubPerWarp; ++im) {
+                int msub_base = warp_id * 32 + im * 16;
+                int row0 = msub_base + (lane >> 2);
+                int row1 = row0 + 8;
+                int col_low  = kpb_base + (lane & 3) * 4;
+                int col_high = col_low + 16;
+                uint32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                if (row0 < kBm) {
+                    a0 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col_low]);
+                    a2 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col_high]);
+                }
+                if (row1 < kBm) {
+                    a1 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col_low]);
+                    a3 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col_high]);
+                }
+                a_regs[im][0] = a0;
+                a_regs[im][1] = a1;
+                a_regs[im][2] = a2;
+                a_regs[im][3] = a3;
+            }
+
+            // B fragments.  Per lane:
+            //   b0: rows=(lane&3)*8 + {0..7}        col=(lane>>2)
+            //   b1: rows=(lane&3)*8+32 + {0..7}     col=(lane>>2)
+            // In sX (packed bytes indexed by byte-col within group),
+            // N col is the N-row in sX; K row is the byte col.
+            // 8 s4 lanes == 4 packed bytes.  For a fixed N col and
+            // K row set, read 4 packed bytes starting at byte
+            // position (lane&3)*4 within the current k-step (ks=0 low,
+            // ks=1 high) for b0, and (lane&3)*4+16 for b1.
+            uint32_t b_regs[kNsubPerCta][2];
+            #pragma unroll
+            for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+                int n_row_in_sub = lane >> 2;         // 0..7
+                int n_row = in_sub * 8 + n_row_in_sub;
+                int col_low  = kpb_base + (lane & 3) * 4;
+                int col_high = col_low + 16;
+                uint32_t b0 = 0, b1 = 0;
+                if (n_row < kBn) {
+                    b0 = *reinterpret_cast<const uint32_t*>(&sX[buf][n_row][col_low]);
+                    b1 = *reinterpret_cast<const uint32_t*>(&sX[buf][n_row][col_high]);
+                }
+                b_regs[in_sub][0] = b0;
+                b_regs[in_sub][1] = b1;
+            }
+
+            // MMA.
+            #pragma unroll
+            for (int im = 0; im < kMsubPerWarp; ++im) {
+                #pragma unroll
+                for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+                    mma_m16n8k64_s4s4s32(
+                        d_acc[im][in_sub][0], d_acc[im][in_sub][1],
+                        d_acc[im][in_sub][2], d_acc[im][in_sub][3],
+                        a_regs[im][0], a_regs[im][1], a_regs[im][2], a_regs[im][3],
+                        b_regs[in_sub][0], b_regs[in_sub][1],
+                        d_acc[im][in_sub][0], d_acc[im][in_sub][1],
+                        d_acc[im][in_sub][2], d_acc[im][in_sub][3]
+                    );
+                }
+            }
+        }
+
+        // Epilogue.
+        #pragma unroll
+        for (int im = 0; im < kMsubPerWarp; ++im) {
+            int msub_base = warp_id * 32 + im * 16;
+            #pragma unroll
+            for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+                int nsub_base = in_sub * 8;
+                #pragma unroll
+                for (int r = 0; r < 4; ++r) {
+                    int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
+                    int col_local = (lane & 3) * 2 + (r & 1);
+                    int m_global = m_tile + msub_base + row_local;
+                    int n_local = nsub_base + col_local;
+                    if (n_local >= kBn) continue;
+                    int n_global = n_tile + n_local;
+                    if (m_global >= d_out) continue;
+                    if (n_global >= T) continue;
+                    float z = __half2float(
+                        zero_u4[(int64_t)m_global * stride_zu_m
+                              + (int64_t)g * stride_zu_g]
+                    );
+                    float s = __half2float(
+                        scale_u4[(int64_t)m_global * stride_su_m
+                               + (int64_t)g * stride_su_g]
+                    );
+                    float sxn = __half2float(s_scale_x[n_local]);
+                    float sumxn = static_cast<float>(s_sum_X[buf][n_local]);
+                    float corrected = static_cast<float>(d_acc[im][in_sub][r])
+                                    - z * sumxn;
+                    y_fp[im][in_sub][r] += corrected * s * sxn;
+                }
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // Writeback.
+    #pragma unroll
+    for (int im = 0; im < kMsubPerWarp; ++im) {
+        int msub_base = warp_id * 32 + im * 16;
+        #pragma unroll
+        for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+            int nsub_base = in_sub * 8;
+            #pragma unroll
+            for (int r = 0; r < 4; ++r) {
+                int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
+                int col_local = (lane & 3) * 2 + (r & 1);
+                int m_global = m_tile + msub_base + row_local;
+                int n_local = nsub_base + col_local;
+                if (n_local >= kBn) continue;
+                int n_global = n_tile + n_local;
+                if (m_global >= d_out) continue;
+                if (n_global >= T) continue;
+                int64_t y_off = (int64_t)m_global * stride_y_m
+                              + (int64_t)n_global * stride_y_n;
+                Y[y_off] = __float2half(y_fp[im][in_sub][r]);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Host-side launcher
+// ---------------------------------------------------------------------------
+
+void launch(
+    torch::Tensor W_low, torch::Tensor X_s4,
+    torch::Tensor scale_u4, torch::Tensor zero_u4,
+    torch::Tensor sum_X, torch::Tensor scale_x,
+    torch::Tensor Y_low
+) {
+    TORCH_CHECK(W_low.dtype() == torch::kInt8, "W_low must be int8");
+    TORCH_CHECK(X_s4.dtype() == torch::kInt8, "X_s4 must be int8");
+    TORCH_CHECK(scale_u4.dtype() == torch::kHalf, "scale_u4 must be fp16");
+    TORCH_CHECK(zero_u4.dtype() == torch::kHalf, "zero_u4 must be fp16");
+    TORCH_CHECK(sum_X.dtype() == torch::kInt32, "sum_X must be int32");
+    TORCH_CHECK(scale_x.dtype() == torch::kHalf, "scale_x must be fp16");
+    TORCH_CHECK(Y_low.dtype() == torch::kHalf, "Y_low must be fp16");
+    TORCH_CHECK(W_low.stride(1) == 1, "W_low must be K-contiguous");
+    TORCH_CHECK(X_s4.stride(1) == 1, "X_s4 must be K-contiguous");
+    TORCH_CHECK(scale_x.stride(0) == 1, "scale_x must be contiguous");
+
+    const int d_out = W_low.size(0);
+    const int d_in_half = W_low.size(1);
+    const int d_in = d_in_half * 2;
+    const int T = X_s4.size(0);
+    TORCH_CHECK(X_s4.size(1) == d_in_half, "X_s4/W_low d_in mismatch");
+    TORCH_CHECK(d_in % BCOL == 0, "d_in must be divisible by BCOL=128");
+    const int n_groups = d_in / BCOL;
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    constexpr int kBm = 128;
+
+    auto do_launch = [&](auto kBn_c) {
+        constexpr int kBn = decltype(kBn_c)::value;
+        dim3 block(kBm, 1, 1);
+        dim3 grid(ceil_div(d_out, kBm), ceil_div(T, kBn), 1);
+        dense_gemm_mma_int4_kernel<kBn><<<grid, block, 0, stream>>>(
+            reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
+            reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
+            reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
+            reinterpret_cast<const __half*>(zero_u4.data_ptr<at::Half>()),
+            sum_X.data_ptr<int>(),
+            reinterpret_cast<const __half*>(scale_x.data_ptr<at::Half>()),
+            reinterpret_cast<__half*>(Y_low.data_ptr<at::Half>()),
+            d_out, d_in, T, n_groups,
+            W_low.stride(0), W_low.stride(1),
+            X_s4.stride(0), X_s4.stride(1),
+            scale_u4.stride(0), scale_u4.stride(1),
+            zero_u4.stride(0), zero_u4.stride(1),
+            sum_X.stride(0), sum_X.stride(1),
+            Y_low.stride(0), Y_low.stride(1)
+        );
+    };
+
+    if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
+    else if (T <= 64)   do_launch(std::integral_constant<int, 64>{});
+    else                do_launch(std::integral_constant<int, 128>{});
+
+    C10_CUDA_CHECK(cudaGetLastError());
+}
+
+}  // namespace dense_gemm_mma_int4
+}  // namespace hkust_v9

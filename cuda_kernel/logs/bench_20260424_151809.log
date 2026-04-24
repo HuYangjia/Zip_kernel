@@ -1,0 +1,50 @@
+15:18:09 INFO bench_kernels output dir: /root/logs/cuda_kernel
+15:18:09 INFO bench_kernels backend status: {'cuda_available': True, 'cuda_import_error': None, 'cuda_kernels': ['activation_quant', 'dense_gemm', 'fused_dense_sparse', 'sparse_gemm'], 'active_policy': '_auto_policy'}
+15:18:09 INFO bench_kernels baseline for speedup is cuBLAS FP16 matmul (torch.matmul)
+15:18:10 INFO bench_kernels activation_quant       dec_T1_4k_4k       fp16=   6.76us  triton=  63.55us  cuda=  19.87us  cuda/fp16=0.34x  triton/fp16=0.11x
+15:18:10 INFO bench_kernels activation_quant       dec_T1_4k_11k      fp16=   6.47us  triton=  63.26us  cuda=  19.84us  cuda/fp16=0.33x  triton/fp16=0.10x
+15:18:10 INFO bench_kernels activation_quant       dec_T1_11k_4k      fp16=   6.62us  triton= 113.97us  cuda=  24.27us  cuda/fp16=0.27x  triton/fp16=0.06x
+15:18:10 INFO bench_kernels activation_quant       dec_T8_4k_4k       fp16=   6.53us  triton=  62.81us  cuda=  20.05us  cuda/fp16=0.33x  triton/fp16=0.10x
+15:18:10 INFO bench_kernels activation_quant       dec_T16_4k_4k      fp16=   6.66us  triton=  64.55us  cuda=  20.38us  cuda/fp16=0.33x  triton/fp16=0.10x
+15:18:10 INFO bench_kernels activation_quant       bat_T64_4k_4k      fp16=   6.72us  triton=  62.52us  cuda=  20.32us  cuda/fp16=0.33x  triton/fp16=0.11x
+15:18:10 INFO bench_kernels activation_quant       bat_T128_4k_4k     fp16=   5.18us  triton=  54.89us  cuda=  17.76us  cuda/fp16=0.29x  triton/fp16=0.09x
+15:18:10 INFO bench_kernels activation_quant       pre_T512_4k_4k     fp16=   4.96us  triton=  54.99us  cuda=  18.15us  cuda/fp16=0.27x  triton/fp16=0.09x
+15:18:12 INFO bench_kernels activation_quant       pre_T1024_4k_4k    fp16=   5.26us  triton=  63.08us  cuda=  19.01us  cuda/fp16=0.28x  triton/fp16=0.08x
+15:18:14 INFO bench_kernels dense_gemm             dec_T1_4k_4k       fp16=  16.36us  triton=  71.16us  cuda=  49.95us  cuda/fp16=0.33x  triton/fp16=0.23x
+15:18:16 INFO bench_kernels dense_gemm             dec_T1_4k_11k      fp16=  77.06us  triton=  70.00us  cuda=  50.36us  cuda/fp16=1.53x  triton/fp16=1.10x
+15:18:18 INFO bench_kernels dense_gemm             dec_T1_11k_4k      fp16=  74.01us  triton= 135.11us  cuda= 132.98us  cuda/fp16=0.56x  triton/fp16=0.55x
+15:18:20 INFO bench_kernels dense_gemm             dec_T8_4k_4k       fp16=  14.85us  triton=  69.28us  cuda=  66.03us  cuda/fp16=0.22x  triton/fp16=0.21x
+15:18:22 INFO bench_kernels dense_gemm             dec_T16_4k_4k      fp16=  15.77us  triton=  68.67us  cuda=  95.68us  cuda/fp16=0.16x  triton/fp16=0.23x
+15:18:24 INFO bench_kernels dense_gemm             bat_T64_4k_4k      fp16=  19.70us  triton=  69.90us  cuda= 935.06us  cuda/fp16=0.02x  triton/fp16=0.28x
+15:18:26 INFO bench_kernels dense_gemm             bat_T128_4k_4k     fp16=  30.82us  triton=  70.07us  cuda= 962.83us  cuda/fp16=0.03x  triton/fp16=0.44x
+15:18:29 INFO bench_kernels dense_gemm             pre_T512_4k_4k     fp16= 110.12us  triton= 143.49us  cuda=2689.78us  cuda/fp16=0.04x  triton/fp16=0.77x
+15:18:34 INFO bench_kernels dense_gemm             pre_T1024_4k_4k    fp16= 214.14us  triton= 284.71us  cuda=5051.43us  cuda/fp16=0.04x  triton/fp16=0.75x
+15:18:34 INFO bench_kernels sparse_gemm            dec_T1_4k_4k       fp16=  16.31us  triton=  68.16us  cuda=  17.51us  cuda/fp16=0.93x  triton/fp16=0.24x
+15:18:35 INFO bench_kernels sparse_gemm            dec_T1_4k_11k      fp16=  93.98us  triton=  69.06us  cuda=  17.72us  cuda/fp16=5.30x  triton/fp16=1.36x
+15:18:35 INFO bench_kernels sparse_gemm            dec_T1_11k_4k      fp16=  94.80us  triton=  68.30us  cuda=  17.35us  cuda/fp16=5.46x  triton/fp16=1.39x
+15:18:36 INFO bench_kernels sparse_gemm            dec_T8_4k_4k       fp16=  14.89us  triton=  67.85us  cuda=  17.35us  cuda/fp16=0.86x  triton/fp16=0.22x
+15:18:36 INFO bench_kernels sparse_gemm            dec_T16_4k_4k      fp16=  16.06us  triton=  68.75us  cuda=  17.29us  cuda/fp16=0.93x  triton/fp16=0.23x
+15:18:36 INFO bench_kernels sparse_gemm            bat_T64_4k_4k      fp16=  19.28us  triton=  68.22us  cuda= 137.35us  cuda/fp16=0.14x  triton/fp16=0.28x
+15:18:37 INFO bench_kernels sparse_gemm            bat_T128_4k_4k     fp16=  32.44us  triton=  67.52us  cuda= 135.88us  cuda/fp16=0.24x  triton/fp16=0.48x
+15:18:37 INFO bench_kernels sparse_gemm            pre_T512_4k_4k     fp16= 110.98us  triton=  68.01us  cuda= 279.88us  cuda/fp16=0.40x  triton/fp16=1.63x
+15:18:38 INFO bench_kernels sparse_gemm            pre_T1024_4k_4k    fp16= 215.39us  triton=  67.83us  cuda= 425.66us  cuda/fp16=0.51x  triton/fp16=3.18x
+15:18:39 INFO bench_kernels fused_dense_sparse     dec_T1_4k_4k       fp16=  16.20us  triton=  82.15us  cuda=  54.74us  cuda/fp16=0.30x  triton/fp16=0.20x
+15:18:41 INFO bench_kernels fused_dense_sparse     dec_T1_4k_11k      fp16=  93.92us  triton=  83.04us  cuda=  54.72us  cuda/fp16=1.72x  triton/fp16=1.13x
+15:18:42 INFO bench_kernels fused_dense_sparse     dec_T1_11k_4k      fp16=  94.84us  triton= 161.03us  cuda= 144.61us  cuda/fp16=0.66x  triton/fp16=0.59x
+15:18:43 INFO bench_kernels fused_dense_sparse     dec_T8_4k_4k       fp16=  14.97us  triton=  82.64us  cuda=  81.08us  cuda/fp16=0.18x  triton/fp16=0.18x
+15:18:44 INFO bench_kernels fused_dense_sparse     dec_T16_4k_4k      fp16=  15.77us  triton=  82.17us  cuda= 109.83us  cuda/fp16=0.14x  triton/fp16=0.19x
+15:18:46 INFO bench_kernels fused_dense_sparse     bat_T64_4k_4k      fp16=  19.27us  triton=  82.37us  cuda=1051.16us  cuda/fp16=0.02x  triton/fp16=0.23x
+15:18:48 INFO bench_kernels fused_dense_sparse     bat_T128_4k_4k     fp16=  32.05us  triton=  82.27us  cuda=1074.61us  cuda/fp16=0.03x  triton/fp16=0.39x
+15:18:51 INFO bench_kernels fused_dense_sparse     pre_T512_4k_4k     fp16= 111.67us  triton= 161.29us  cuda=4076.12us  cuda/fp16=0.03x  triton/fp16=0.69x
+15:18:57 INFO bench_kernels fused_dense_sparse     pre_T1024_4k_4k    fp16= 214.36us  triton= 312.42us  cuda=8108.70us  cuda/fp16=0.03x  triton/fp16=0.69x
+15:18:57 INFO bench_kernels end_to_end_v9_linear   dec_T1_4k_4k       fp16=  16.67us  triton= 230.42us  cuda=  71.80us  cuda/fp16=0.23x  triton/fp16=0.07x
+15:18:57 INFO bench_kernels end_to_end_v9_linear   dec_T1_4k_11k      fp16=  93.86us  triton= 228.40us  cuda=  72.47us  cuda/fp16=1.30x  triton/fp16=0.41x
+15:18:57 INFO bench_kernels end_to_end_v9_linear   dec_T1_11k_4k      fp16=  94.82us  triton= 265.13us  cuda= 172.22us  cuda/fp16=0.55x  triton/fp16=0.36x
+15:18:58 INFO bench_kernels end_to_end_v9_linear   dec_T8_4k_4k       fp16=  15.05us  triton= 235.23us  cuda= 104.94us  cuda/fp16=0.14x  triton/fp16=0.06x
+15:18:58 INFO bench_kernels end_to_end_v9_linear   dec_T16_4k_4k      fp16=  16.51us  triton= 235.50us  cuda= 134.94us  cuda/fp16=0.12x  triton/fp16=0.07x
+15:18:59 INFO bench_kernels end_to_end_v9_linear   bat_T64_4k_4k      fp16=  19.29us  triton= 236.38us  cuda=1101.25us  cuda/fp16=0.02x  triton/fp16=0.08x
+15:18:59 INFO bench_kernels end_to_end_v9_linear   bat_T128_4k_4k     fp16=  32.28us  triton= 238.86us  cuda=1126.83us  cuda/fp16=0.03x  triton/fp16=0.14x
+15:19:02 INFO bench_kernels end_to_end_v9_linear   pre_T512_4k_4k     fp16= 112.17us  triton= 246.22us  cuda=4123.77us  cuda/fp16=0.03x  triton/fp16=0.46x
+15:19:06 INFO bench_kernels end_to_end_v9_linear   pre_T1024_4k_4k    fp16= 214.86us  triton= 423.61us  cuda=8185.53us  cuda/fp16=0.03x  triton/fp16=0.51x
+15:19:06 INFO bench_kernels wrote /root/logs/cuda_kernel/bench_20260424_151809.json
+15:19:06 INFO bench_kernels wrote /root/logs/cuda_kernel/bench_20260424_151809.md

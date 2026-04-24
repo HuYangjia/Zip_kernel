@@ -24,6 +24,16 @@ from __future__ import annotations
 # Importing ``ops`` triggers the JIT build; leave it eager so that
 # :mod:`kernel.backend.registry` can detect build failures at import
 # time and downgrade the CUDA backend cleanly.
+#
+# Kernel set (all Tensor-Core based):
+#   activation_quant (fused per-token quant)
+#   dense_gemm_mma_int8 / dense_gemm_mma_int4
+#   sparse_gemm_mma_int8 / sparse_gemm_mma_int4
+#   fused_dense_sparse_mma_int8 / fused_dense_sparse_mma_int4
+#
+# The dp4a (SIMT) implementations that preceded this phase have been
+# retired -- on SM89 the INT8 Tensor Core path supersedes them by
+# ~4x peak throughput.
 from . import ops  # noqa: F401
 
 __all__ = ["ops"]

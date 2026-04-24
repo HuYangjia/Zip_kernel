@@ -6,20 +6,20 @@ a signature that matches the corresponding Triton wrapper in
 :mod:`kernel.triton_kernel`.  This signature match is what allows
 :mod:`kernel.backend.dispatcher` to swap backends transparently.
 
-Stub semantics
---------------
-Kernels that are not yet implemented in this phase set their
-``<name>_cuda`` symbol to ``None``.  ``kernel.backend.registry`` checks
-for ``callable(fn)`` and skips stubs automatically, so the dispatcher
-transparently routes those calls back to Triton without any explicit
-branching elsewhere.
+Kernel set
+----------
+- activation_quant (CUDA, fused per-token quant)
+- dense_gemm_cuda_int8   : mma.m16n8k32.s8.s8.s32 (INT8 Tensor Core)
+- dense_gemm_cuda_int4   : mma.m16n8k64.s4.s4.s32 (INT4 Tensor Core)
+- sparse_gemm_cuda_int8  : ditto for BSR s4xs4
+- sparse_gemm_cuda_int4  : ditto, INT4 MMA
+- fused_dense_sparse_cuda_int8 / _int4
 
-Phase 1 implementation status
------------------------------
-- activation_quant        : implemented (see csrc/activation_quant/)
-- dense_gemm              : STUB (Phase 2)
-- sparse_gemm             : STUB (Phase 3)
-- fused_dense_sparse      : STUB (Phase 4)
+For backward compatibility with existing callers
+(:mod:`kernel.backend.dispatcher`), ``dense_gemm_cuda`` /
+``sparse_gemm_cuda`` / ``fused_dense_sparse_cuda`` are aliased to the
+INT8 variant (the performance-robust default on SM89; INT4 MMA on Ada
+is deprecated hardware path).
 """
 
 from __future__ import annotations
@@ -47,27 +47,22 @@ _CSRC = _HERE / "csrc"
 _SOURCES = [
     str(_CSRC / "bindings.cc"),
     str(_CSRC / "activation_quant" / "activation_quant.cu"),
-    # --- Phase 2+ sources are declared here but their .cu files will
-    # --- contain empty host launchers until the real kernels land, so
-    # --- the extension still links.
-    str(_CSRC / "dense_gemm" / "dense_gemm.cu"),
-    str(_CSRC / "sparse_gemm" / "sparse_gemm.cu"),
-    str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse.cu"),
+    # MMA variants (Tensor Core); the dp4a .cu files in each subdir are
+    # left as empty stubs and deliberately excluded from the source
+    # list so that we don't spend compile time on them.
+    str(_CSRC / "dense_gemm"         / "dense_gemm_mma_int8.cu"),
+    str(_CSRC / "dense_gemm"         / "dense_gemm_mma_int4.cu"),
+    str(_CSRC / "sparse_gemm"        / "sparse_gemm_mma_int8.cu"),
+    str(_CSRC / "sparse_gemm"        / "sparse_gemm_mma_int4.cu"),
+    str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int8.cu"),
+    str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int4.cu"),
 ]
 
 _NVCC_FLAGS = [
     "-O3",
     "-std=c++17",
-    # SM89 = RTX 4090 / Ada Lovelace.  We deliberately do NOT emit PTX
-    # (``-gencode=arch=compute_89,code=sm_89`` only, no ``,compute_89``
-    # trailing fragment) to keep the .so small; running on a different
-    # arch will fail loudly rather than silently JIT-recompile PTX.
+    # SM89 = RTX 4090 / Ada Lovelace.
     "-gencode=arch=compute_89,code=sm_89",
-    # NB: --use_fast_math is deliberately NOT set.  It would enable
-    # --prec-div=false which turns ``x / s`` into an approximate
-    # reciprocal-multiply, breaking the bit-exact parity we require
-    # against the Triton reference in activation_quant.  We can opt
-    # individual GEMM kernels into fast-math later via pragmas.
     "--fmad=true",
     "-U__CUDA_NO_HALF_OPERATORS__",
     "-U__CUDA_NO_HALF_CONVERSIONS__",
@@ -76,6 +71,10 @@ _NVCC_FLAGS = [
     "--ptxas-options=-v",
     "--expt-relaxed-constexpr",
     "--expt-extended-lambda",
+    # mma.s4 is deprecated starting with PTX 8.7 (the compiler we use
+    # still accepts it and ptxas still maps it to Tensor Core on Ada,
+    # but emits a warning); suppress to keep build logs clean.
+    "-Wno-deprecated-declarations",
 ]
 
 _CXX_FLAGS = [
@@ -86,11 +85,6 @@ _CXX_FLAGS = [
 
 
 def _build_extension():
-    """JIT-build the CUDA extension.  Returns the loaded module.
-
-    Raises on failure; caller (:mod:`kernel.backend.registry`) catches
-    all exceptions and downgrades the CUDA backend to unavailable.
-    """
     from torch.utils.cpp_extension import load
 
     include_dirs = [str(_CSRC)]
@@ -101,7 +95,7 @@ def _build_extension():
     os.makedirs(build_dir, exist_ok=True)
 
     logger.info(
-        "Building V9 CUDA extension (SM89); build dir = %s", build_dir
+        "Building V9 CUDA extension (SM89, MMA); build dir = %s", build_dir
     )
     mod = load(
         name="hkust_v9_cuda",
@@ -115,14 +109,11 @@ def _build_extension():
     return mod
 
 
-# Eager build at import time.  On SM89 this is a 20-40 s one-shot cost
-# (cached by ninja); on non-SM89 machines this raises and
-# :mod:`kernel.backend.registry` downgrades to Triton-only silently.
 _ext = _build_extension()
 
 
 # ---------------------------------------------------------------------------
-# Python-level wrappers
+# activation_quant (unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -131,20 +122,7 @@ def activation_quant_cuda(
     perm: torch.Tensor,
     bcol: int = BCOL,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Fused per-token SINT4 activation quantization (CUDA).
-
-    Signature is byte-compatible with
-    :func:`kernel.triton_kernel.activation_quant.quantize_activation_s4`:
-    the wrapper accepts 2D or 3D ``X_fp16`` and returns the same three
-    tensors (``X_s4``, ``scale_x``, ``sum_X``) with identical dtype /
-    shape / memory-layout contract.
-
-    The CUDA kernel always handles the permuted gather on-chip; the
-    Triton version's ``_L2_THRASH_THRESHOLD_ELEMS`` pre-permute path is
-    unnecessary because our gather is tile-local and uses LDG.128 with
-    better L1 hit rate.  We still respect the contract that a ``perm ==
-    arange`` input produces identity-order output.
-    """
+    """Fused per-token SINT4 activation quantization (CUDA)."""
     assert X_fp16.is_cuda, "activation_quant_cuda requires a CUDA tensor"
     assert X_fp16.dtype == torch.float16, "X must be fp16"
     assert perm.dtype in (torch.int32, torch.int64), "perm must be int32/int64"
@@ -179,26 +157,18 @@ def activation_quant_cuda(
 
 
 # ---------------------------------------------------------------------------
-# Stubs (Phase 2+) -- set to None so the registry skips them and the
-# dispatcher falls back to Triton for these kernels.
+# Common argument prep shared by all GEMM variants.
 # ---------------------------------------------------------------------------
 
 
-def dense_gemm_cuda(
+def _prepare_dense_args(
     W_low_packed: torch.Tensor,
     X_s4: torch.Tensor,
     scale_u4: torch.Tensor,
     zero_u4: torch.Tensor,
     sum_X: torch.Tensor,
     scale_x: torch.Tensor,
-) -> torch.Tensor:
-    """Dense UINT4 x SINT4 GEMM (CUDA).
-
-    Signature matches :func:`kernel.triton_kernel.dense_u4s4_gemm.dense_gemm_u4_s4`
-    exactly: accepts packed LE SINT4 weights/activations plus the
-    per-group dequant metadata and returns ``Y_low`` of shape
-    ``(d_out, T)`` in fp16.
-    """
+):
     assert W_low_packed.is_cuda and X_s4.is_cuda
     assert W_low_packed.dtype == torch.int8 and X_s4.dtype == torch.int8
     d_out, d_in_half = W_low_packed.shape
@@ -221,35 +191,51 @@ def dense_gemm_cuda(
 
     Y_low = torch.empty((d_out, T), dtype=torch.float16,
                         device=W_low_packed.device)
-    _ext.dense_gemm_launch(
-        W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x, Y_low
-    )
-    return Y_low
+    return (W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x, Y_low)
 
 
-def sparse_gemm_cuda(
-    W_high_blocks_packed: torch.Tensor,
-    hp_row_offsets: torch.Tensor,
-    hp_col_indices: torch.Tensor,
-    X_s4: torch.Tensor,
-    scale_u4: torch.Tensor,
-    scale_x: torch.Tensor,
-    d_out: int,
-    d_in: int,
+# ---------------------------------------------------------------------------
+# Dense GEMM -- INT8 and INT4 MMA variants
+# ---------------------------------------------------------------------------
+
+
+def dense_gemm_cuda_int8(
+    W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
 ) -> torch.Tensor:
-    """BSR sparse SINT4 x SINT4 GEMM (CUDA).
+    """Dense UINT4 x SINT4 GEMM via mma.m16n8k32.s8 (CUDA, SM89)."""
+    args = _prepare_dense_args(W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x)
+    _ext.dense_gemm_mma_int8_launch(*args)
+    return args[-1]
 
-    Signature matches
-    :func:`kernel.triton_kernel.sparse_s4s4_gemm.sparse_gemm_s4_s4`.
-    Returns a freshly-allocated ``Y_high`` of shape ``(d_out, T)`` in
-    fp16, zero-initialized for block-rows with no high-precision blocks.
-    """
+
+def dense_gemm_cuda_int4(
+    W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
+) -> torch.Tensor:
+    """Dense UINT4 x SINT4 GEMM via mma.m16n8k64.s4 (CUDA, SM89)."""
+    args = _prepare_dense_args(W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x)
+    _ext.dense_gemm_mma_int4_launch(*args)
+    return args[-1]
+
+
+# Default alias: INT8 MMA (robust on SM89).
+dense_gemm_cuda = dense_gemm_cuda_int8
+
+
+# ---------------------------------------------------------------------------
+# Sparse GEMM
+# ---------------------------------------------------------------------------
+
+
+def _prepare_sparse_args(
+    W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    X_s4, scale_u4, scale_x, d_out, d_in,
+):
     assert X_s4.is_cuda
     T = X_s4.shape[0]
 
     Y_high = torch.zeros((d_out, T), dtype=torch.float16, device=X_s4.device)
     if W_high_blocks_packed.shape[0] == 0:
-        return Y_high
+        return None, Y_high  # signal: empty BSR; skip launch
 
     W_high_blocks_packed = W_high_blocks_packed.contiguous()
     hp_row_offsets = hp_row_offsets.contiguous().to(torch.int32)
@@ -258,33 +244,58 @@ def sparse_gemm_cuda(
     scale_u4 = scale_u4.contiguous().to(torch.float16)
     scale_x = scale_x.contiguous().to(torch.float16)
 
-    _ext.sparse_gemm_launch(
-        W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-        X_s4, scale_u4, scale_x, Y_high,
-        int(d_out), int(d_in),
+    return (
+        (W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+         X_s4, scale_u4, scale_x, Y_high,
+         int(d_out), int(d_in)),
+        Y_high,
     )
+
+
+def sparse_gemm_cuda_int8(
+    W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    X_s4, scale_u4, scale_x, d_out, d_in,
+) -> torch.Tensor:
+    """BSR sparse SINT4 x SINT4 GEMM via mma.m16n8k32.s8 (CUDA, SM89)."""
+    prepared = _prepare_sparse_args(
+        W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, scale_x, d_out, d_in
+    )
+    args, Y_high = prepared
+    if args is None:
+        return Y_high
+    _ext.sparse_gemm_mma_int8_launch(*args)
     return Y_high
 
 
-def fused_dense_sparse_cuda(
-    W_low_packed: torch.Tensor,
-    W_high_blocks_packed: torch.Tensor,
-    hp_row_offsets: torch.Tensor,
-    hp_col_indices: torch.Tensor,
-    X_s4: torch.Tensor,
-    scale_u4: torch.Tensor,
-    zero_u4: torch.Tensor,
-    sum_X: torch.Tensor,
-    scale_x: torch.Tensor,
-    d_out: int,
-    d_in: int,
+def sparse_gemm_cuda_int4(
+    W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    X_s4, scale_u4, scale_x, d_out, d_in,
 ) -> torch.Tensor:
-    """Fused dense + sparse GEMM (CUDA).
+    """BSR sparse SINT4 x SINT4 GEMM via mma.m16n8k64.s4 (CUDA, SM89)."""
+    prepared = _prepare_sparse_args(
+        W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, scale_x, d_out, d_in
+    )
+    args, Y_high = prepared
+    if args is None:
+        return Y_high
+    _ext.sparse_gemm_mma_int4_launch(*args)
+    return Y_high
 
-    Semantics:  ``Y_total[m, n] = Y_low[m, n] + 16 * Y_high[m, n]``.
-    Signature matches
-    :func:`kernel.triton_kernel.fused_dense_sparse_gemm.fused_dense_sparse_gemm`.
-    """
+
+sparse_gemm_cuda = sparse_gemm_cuda_int8
+
+
+# ---------------------------------------------------------------------------
+# Fused dense+sparse GEMM
+# ---------------------------------------------------------------------------
+
+
+def _prepare_fused_args(
+    W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+):
     assert W_low_packed.is_cuda and X_s4.is_cuda
     assert W_low_packed.dtype == torch.int8 and X_s4.dtype == torch.int8
     T = X_s4.shape[0]
@@ -303,8 +314,6 @@ def fused_dense_sparse_cuda(
     sum_X = sum_X.contiguous().to(torch.int32)
     scale_x = scale_x.contiguous().to(torch.float16)
 
-    # Normalise empty BSR: the CUDA launcher also handles this, but we
-    # materialise the zero tensor on this side so stride(2)==1 holds.
     if W_high_blocks_packed.numel() == 0:
         W_high_blocks_packed = torch.zeros(
             (0, 128, BCOL // 2),
@@ -317,20 +326,57 @@ def fused_dense_sparse_cuda(
 
     Y_total = torch.empty((d_out, T), dtype=torch.float16,
                           device=W_low_packed.device)
-    _ext.fused_dense_sparse_launch(
+    return (
         W_low_packed, W_high_blocks_packed,
         hp_row_offsets, hp_col_indices,
         X_s4,
         scale_u4, zero_u4, sum_X, scale_x,
         Y_total,
         int(d_out), int(d_in),
+    ), Y_total
+
+
+def fused_dense_sparse_cuda_int8(
+    W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+) -> torch.Tensor:
+    """Fused dense+sparse GEMM via mma.m16n8k32.s8 (CUDA, SM89)."""
+    args, Y_total = _prepare_fused_args(
+        W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
     )
+    _ext.fused_dense_sparse_mma_int8_launch(*args)
     return Y_total
+
+
+def fused_dense_sparse_cuda_int4(
+    W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+) -> torch.Tensor:
+    """Fused dense+sparse GEMM via mma.m16n8k64.s4 (CUDA, SM89)."""
+    args, Y_total = _prepare_fused_args(
+        W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+    )
+    _ext.fused_dense_sparse_mma_int4_launch(*args)
+    return Y_total
+
+
+fused_dense_sparse_cuda = fused_dense_sparse_cuda_int8
 
 
 __all__ = [
     "activation_quant_cuda",
+    # GEMM default aliases (INT8 MMA)
     "dense_gemm_cuda",
     "sparse_gemm_cuda",
     "fused_dense_sparse_cuda",
+    # Explicit INT8 MMA entry points
+    "dense_gemm_cuda_int8",
+    "sparse_gemm_cuda_int8",
+    "fused_dense_sparse_cuda_int8",
+    # Explicit INT4 MMA entry points
+    "dense_gemm_cuda_int4",
+    "sparse_gemm_cuda_int4",
+    "fused_dense_sparse_cuda_int4",
 ]
