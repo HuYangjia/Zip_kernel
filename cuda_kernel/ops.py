@@ -401,6 +401,7 @@ def fused_quant_gemv_cuda(
     return Y_total
 
 
+def fused_gemv_cuda_decode(
     W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
     X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
 ) -> torch.Tensor:
