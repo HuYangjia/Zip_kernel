@@ -47,14 +47,12 @@ _CSRC = _HERE / "csrc"
 _SOURCES = [
     str(_CSRC / "bindings.cc"),
     str(_CSRC / "activation_quant" / "activation_quant.cu"),
-    # MMA variants (Tensor Core); the dp4a .cu files in each subdir are
-    # left as empty stubs and deliberately excluded from the source
-    # list so that we don't spend compile time on them.
-    str(_CSRC / "dense_gemm"         / "dense_gemm_mma_int8.cu"),
+    # Round 12: INT8 MMA variants archived; INT4 MMA is the production
+    # path on SM89 (measured 1.7-1.9x faster than INT8 MMA across every
+    # shape, see VALIDATION_LOG Round 11).  The INT8 sources remain on
+    # disk for future reference but are excluded from the build list.
     str(_CSRC / "dense_gemm"         / "dense_gemm_mma_int4.cu"),
-    str(_CSRC / "sparse_gemm"        / "sparse_gemm_mma_int8.cu"),
     str(_CSRC / "sparse_gemm"        / "sparse_gemm_mma_int4.cu"),
-    str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int8.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int4.cu"),
 ]
 
@@ -199,13 +197,12 @@ def _prepare_dense_args(
 # ---------------------------------------------------------------------------
 
 
-def dense_gemm_cuda_int8(
-    W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
-) -> torch.Tensor:
-    """Dense UINT4 x SINT4 GEMM via mma.m16n8k32.s8 (CUDA, SM89)."""
-    args = _prepare_dense_args(W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x)
-    _ext.dense_gemm_mma_int8_launch(*args)
-    return args[-1]
+def dense_gemm_cuda_int8(*args, **kwargs):
+    """Archived: INT8 MMA dense GEMM (not built into current extension)."""
+    raise RuntimeError(
+        "dense_gemm_cuda_int8 is archived as of Round 12; use "
+        "dense_gemm_cuda_int4 (the production INT4 MMA path)."
+    )
 
 
 def dense_gemm_cuda_int4(
@@ -217,8 +214,9 @@ def dense_gemm_cuda_int4(
     return args[-1]
 
 
-# Default alias: INT8 MMA (robust on SM89).
-dense_gemm_cuda = dense_gemm_cuda_int8
+# Default alias: INT4 MMA (1.7-1.9x faster than INT8 MMA on SM89 per
+# Round 11 bench; see VALIDATION_LOG).
+dense_gemm_cuda = dense_gemm_cuda_int4
 
 
 # ---------------------------------------------------------------------------
@@ -252,20 +250,12 @@ def _prepare_sparse_args(
     )
 
 
-def sparse_gemm_cuda_int8(
-    W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-    X_s4, scale_u4, scale_x, d_out, d_in,
-) -> torch.Tensor:
-    """BSR sparse SINT4 x SINT4 GEMM via mma.m16n8k32.s8 (CUDA, SM89)."""
-    prepared = _prepare_sparse_args(
-        W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-        X_s4, scale_u4, scale_x, d_out, d_in
+def sparse_gemm_cuda_int8(*args, **kwargs):
+    """Archived: INT8 MMA sparse GEMM (not built into current extension)."""
+    raise RuntimeError(
+        "sparse_gemm_cuda_int8 is archived as of Round 12; use "
+        "sparse_gemm_cuda_int4."
     )
-    args, Y_high = prepared
-    if args is None:
-        return Y_high
-    _ext.sparse_gemm_mma_int8_launch(*args)
-    return Y_high
 
 
 def sparse_gemm_cuda_int4(
@@ -284,7 +274,7 @@ def sparse_gemm_cuda_int4(
     return Y_high
 
 
-sparse_gemm_cuda = sparse_gemm_cuda_int8
+sparse_gemm_cuda = sparse_gemm_cuda_int4
 
 
 # ---------------------------------------------------------------------------
@@ -336,17 +326,12 @@ def _prepare_fused_args(
     ), Y_total
 
 
-def fused_dense_sparse_cuda_int8(
-    W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-    X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
-) -> torch.Tensor:
-    """Fused dense+sparse GEMM via mma.m16n8k32.s8 (CUDA, SM89)."""
-    args, Y_total = _prepare_fused_args(
-        W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-        X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+def fused_dense_sparse_cuda_int8(*args, **kwargs):
+    """Archived: INT8 MMA fused GEMM (not built into current extension)."""
+    raise RuntimeError(
+        "fused_dense_sparse_cuda_int8 is archived as of Round 12; use "
+        "fused_dense_sparse_cuda_int4."
     )
-    _ext.fused_dense_sparse_mma_int8_launch(*args)
-    return Y_total
 
 
 def fused_dense_sparse_cuda_int4(
@@ -362,7 +347,7 @@ def fused_dense_sparse_cuda_int4(
     return Y_total
 
 
-fused_dense_sparse_cuda = fused_dense_sparse_cuda_int8
+fused_dense_sparse_cuda = fused_dense_sparse_cuda_int4
 
 
 __all__ = [

@@ -1,8 +1,12 @@
 // Block-sparse SINT4 x SINT4 GEMM -- INT4 Tensor Core version (SM89).
 //
-// Drop-in replacement for sparse_gemm.cu (dp4a).  Uses
-// mma.m16n8k64.s4.s4.s32; s4 packed bytes feed the MMA directly
-// without an s4 -> s8 unpack step.
+// Round 12 optimisations:
+//   - kBn capped at 64 (eliminates 255-reg spill at kBn=128).
+//   - Per-block scale_u4 prefetched to shmem: for each BSR block, the
+//     kBm scale values (scale_u4[m_tile:m_tile+kBm, bc]) are cooperatively
+//     loaded once and reused by all lanes in the epilogue.
+//
+// Uses mma.m16n8k64.s4.s4.s32 (Tensor Core on Ada SM89).
 
 #include "common/arch.cuh"
 #include "common/mma_utils.cuh"
@@ -53,6 +57,7 @@ __global__ void sparse_gemm_mma_int4_kernel(
     __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
     __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
     __shared__ __half s_scale_x[kBn];
+    __shared__ __half s_scale_block[kBm];   // scale_u4[m_tile:, bc] per block
 
     if (tid < kBn) {
         int n = n_tile + tid;
@@ -100,6 +105,14 @@ __global__ void sparse_gemm_mma_int4_kernel(
         }
     };
 
+    // Cooperative load of scale_u4[m_tile + 0..kBm, bc] into shmem.
+    auto issue_scale_load = [&](int bc) {
+        int m = m_tile + tid;
+        s_scale_block[tid] = (m < d_out)
+            ? scale_u4[(int64_t)m * stride_su_m + (int64_t)bc * stride_su_g]
+            : __half(0);
+    };
+
     __syncthreads();
 
     if (blk_start < blk_end) {
@@ -117,6 +130,7 @@ __global__ void sparse_gemm_mma_int4_kernel(
             issue_w_load(block_idx + 1, buf ^ 1);
             issue_x_load(bc_next, buf ^ 1);
         }
+        issue_scale_load(bc);
 
         int d_acc[kMsubPerWarp][kNsubPerCta][4];
         #pragma unroll
@@ -128,7 +142,7 @@ __global__ void sparse_gemm_mma_int4_kernel(
 
         #pragma unroll
         for (int ks = 0; ks < kKSteps; ++ks) {
-            const int kpb_base = ks * 32;   // byte offset within 64B group
+            const int kpb_base = ks * 32;
 
             uint32_t a_regs[kMsubPerWarp][4];
             #pragma unroll
@@ -185,6 +199,7 @@ __global__ void sparse_gemm_mma_int4_kernel(
             }
         }
 
+        // Epilogue: scale via shmem, not HBM.
         #pragma unroll
         for (int im = 0; im < kMsubPerWarp; ++im) {
             int msub_base = warp_id * 32 + im * 16;
@@ -195,16 +210,14 @@ __global__ void sparse_gemm_mma_int4_kernel(
                 for (int r = 0; r < 4; ++r) {
                     int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
                     int col_local = (lane & 3) * 2 + (r & 1);
-                    int m_global = m_tile + msub_base + row_local;
+                    int m_local = msub_base + row_local;
+                    int m_global = m_tile + m_local;
                     int n_local = nsub_base + col_local;
                     if (n_local >= kBn) continue;
                     int n_global = n_tile + n_local;
                     if (m_global >= d_out) continue;
                     if (n_global >= T) continue;
-                    float s = __half2float(
-                        scale_u4[(int64_t)m_global * stride_su_m
-                               + (int64_t)bc * stride_su_g]
-                    );
+                    float s = __half2float(s_scale_block[m_local]);
                     float sxn = __half2float(s_scale_x[n_local]);
                     y_fp[im][in_sub][r] += static_cast<float>(d_acc[im][in_sub][r])
                                          * s * sxn;
@@ -286,9 +299,10 @@ void launch(
         );
     };
 
+    // Round 12: cap kBn at 64.
     if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 64)   do_launch(std::integral_constant<int, 64>{});
-    else                do_launch(std::integral_constant<int, 128>{});
+    else if (T <= 32)   do_launch(std::integral_constant<int, 32>{});
+    else                do_launch(std::integral_constant<int, 64>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
 }

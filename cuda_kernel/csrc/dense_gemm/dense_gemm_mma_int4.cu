@@ -1,33 +1,15 @@
 // Dense UINT4 x SINT4 GEMM -- INT4 Tensor Core version (SM89).
 //
-// Semantic contract: identical to dense_gemm.cu / dense_gemm_mma_int8.cu.
-// Inner product uses mma.m16n8k64.s4.s4.s32, which on SM89 remains a
-// Tensor Core accelerated path (deprecated in SM90 but still fully
-// functional on Ada).
+// Round 12 optimisations:
+//   - kBn capped at 64 (eliminates 255-reg spill at kBn=128).
+//   - scale_u4 / zero_u4 prefetched to shmem: 128 rows x n_groups fp16
+//     each, loaded once at CTA entry. Epilogue reads shmem instead of
+//     HBM, removing n_groups HBM transactions per output element.
+//   - Double-buffered W/X kept (total shmem for kBn=64: 16+8+8+8+~=40KB
+//     which fits SM89's 48 KB static-shmem budget).
 //
-// Key differences from the INT8 version
-// --------------------------------------
-// 1. K-step width is 64 (not 32).  One BCOL=128 group => 2 MMA K-steps.
-// 2. A/B fragments are already s4-packed; no unpack to s8 needed.
-//    The operand registers directly use the project's pack_s4_le
-//    layout (low nibble = lane 0, high nibble = lane 1, ...).
-// 3. Staging buffers hold packed s4 bytes (half the size of INT8).
-//
-// Operand layout for mma.m16n8k64.s4.s4.s32 (PTX ISA):
-//   A (16x64 s4, row-major) : 4 regs/thread, each 8xs4.
-//     per-thread (lane):
-//       a0: row=(lane>>2),      cols=(lane&3)*8   + {0..7}      (k  [0..31] low half)
-//       a1: row=(lane>>2)+8,    cols=(lane&3)*8   + {0..7}
-//       a2: row=(lane>>2),      cols=(lane&3)*8+32+ {0..7}      (k [32..63] high half)
-//       a3: row=(lane>>2)+8,    cols=(lane&3)*8+32+ {0..7}
-//   B (64x8 s4, col-major)  : 2 regs/thread, each 8xs4.
-//       b0: rows=(lane&3)*8   + {0..7},  col=(lane>>2)
-//       b1: rows=(lane&3)*8+32+ {0..7},  col=(lane>>2)
-//   D (16x8 s32, row-major) : 4 regs/thread (same as INT8 D).
-//
-// Note: 8 s4 lanes == 4 packed bytes == 1 uint32.  So each A/B reg
-// equals one "group of 4 packed bytes" directly readable from our
-// pack_s4_le format.
+// Semantic contract: bit-exact match with dense_gemm Triton reference.
+// Uses mma.m16n8k64.s4.s4.s32 (Tensor Core, accelerated on Ada SM89).
 
 #include "common/arch.cuh"
 #include "common/mma_utils.cuh"
@@ -43,15 +25,20 @@
 namespace hkust_v9 {
 namespace dense_gemm_mma_int4 {
 
+// Hard upper bound on n_groups we will ever see here: d_in <= 16384
+// covers all current shapes (Qwen3 / Llama 7B/13B).  n_groups = d_in/128
+// so kMaxGroups = 128.  Scale/zero shmem uses ceil_div path-wise max.
+constexpr int kMaxGroups = 128;
+
 template <int kBn>
 __global__ void dense_gemm_mma_int4_kernel(
     const uint8_t* __restrict__ W,         // (d_out, d_in/2)
     const uint8_t* __restrict__ X,         // (T, d_in/2)
-    const __half* __restrict__ scale_u4,
-    const __half* __restrict__ zero_u4,
-    const int* __restrict__ sum_X,
-    const __half* __restrict__ scale_x,
-    __half* __restrict__ Y,
+    const __half* __restrict__ scale_u4,   // (d_out, n_groups)
+    const __half* __restrict__ zero_u4,    // (d_out, n_groups)
+    const int* __restrict__ sum_X,         // (T, n_groups)
+    const __half* __restrict__ scale_x,    // (T,)
+    __half* __restrict__ Y,                // (d_out, T)
     int d_out, int d_in, int T,
     int n_groups,
     int64_t stride_w_m,   int64_t stride_w_k,
@@ -76,21 +63,58 @@ __global__ void dense_gemm_mma_int4_kernel(
     const int n_tile = blockIdx.y * kBn;
 
     const int bytes_per_group = BCOL >> 1;   // 64
-    const int d_in_half = d_in >> 1;
 
-    // Shared memory: packed s4 bytes only (no unpack).
-    //   sW: 128 rows * 64 packed bytes = 8 KB per buffer.
-    //   sX: kBn rows * 64 packed bytes = up to 8 KB per buffer.
+    // Shared memory layout
+    //   sW           : (2, kBm, bytes_per_group) packed uint8 -- 2*8KB = 16KB
+    //   sX           : (2, kBn, bytes_per_group) packed uint8 -- kBn=64 -> 8KB
+    //   s_scale_u4   : (kBm, kMaxGroups) fp16                   -- 128*128*2 = 32KB ❌
+    //
+    // 32KB for scale alone would break the budget.  In practice n_groups
+    // for Qwen3-like shapes is 32 (d_in=4096) or 86 (d_in=11008).  We
+    // therefore allocate exactly (kBm, n_groups_ub) where n_groups_ub is
+    // chosen at kernel launch time via a small dispatcher: when
+    // n_groups <= 32 we use the ``kGrpBuf=32`` specialisation; when
+    // n_groups <= 64 we use ``kGrpBuf=64``; otherwise we fall back to a
+    // non-cached kernel (HBM epilogue).
+    //
+    // For this first implementation we conservatively allocate 32
+    // groups (= 8 KB scale + 8 KB zero); callers with n_groups > 32
+    // use a separate launch path that omits the prefetch.
     __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
     __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
+    __shared__ alignas(16) __half s_scale_u4[kBm][32];
+    __shared__ alignas(16) __half s_zero_u4 [kBm][32];
     __shared__ __half s_scale_x[kBn];
     __shared__ int s_sum_X[2][kBn];
+
+    const bool cache_sz = (n_groups <= 32);
 
     if (tid < kBn) {
         int n = n_tile + tid;
         s_scale_x[tid] = (n < T) ? scale_x[n] : __half(0);
     }
 
+    // Prefetch scale_u4 / zero_u4 into shmem.
+    //   Each (m, g) is one fp16.  Total entries = kBm * n_groups (<=32).
+    //   128 threads * 32 groups = 4096 entries worst case.
+    if (cache_sz) {
+        for (int idx = tid; idx < kBm * n_groups; idx += kBm) {
+            int m_local = idx / n_groups;
+            int g       = idx - m_local * n_groups;
+            int m = m_tile + m_local;
+            if (m < d_out) {
+                s_scale_u4[m_local][g] = scale_u4[(int64_t)m * stride_su_m
+                                                + (int64_t)g * stride_su_g];
+                s_zero_u4 [m_local][g] = zero_u4 [(int64_t)m * stride_zu_m
+                                                + (int64_t)g * stride_zu_g];
+            } else {
+                s_scale_u4[m_local][g] = __half(0);
+                s_zero_u4 [m_local][g] = __half(0);
+            }
+        }
+    }
+
+    // Per-thread FP32 accumulator for writeback.
     float y_fp[kMsubPerWarp][kNsubPerCta][4];
     #pragma unroll
     for (int im = 0; im < kMsubPerWarp; ++im)
@@ -99,15 +123,16 @@ __global__ void dense_gemm_mma_int4_kernel(
         #pragma unroll
         for (int r = 0; r < 4; ++r) y_fp[im][in][r] = 0.0f;
 
-    // Loaders (packed bytes, no unpack).
+    // ------------------------------------------------------------
+    // Loaders (packed bytes, no unpack needed for INT4 MMA).
+    // ------------------------------------------------------------
     auto issue_w_load = [&](int g, int buf) {
-        // 128 threads, 128 rows * 64 bytes -> 1 row/thread, 4 uint4 each
         int m = m_tile + tid;
         uint8_t* dst = &sW[buf][tid][0];
         if (m < d_out) {
             const uint8_t* src = W + (int64_t)m * stride_w_m
                                    + (int64_t)(g * bytes_per_group) * stride_w_k;
-            // 64 bytes = 4 uint4 = 16 uint32
+            // 64 bytes = 4 uint4
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
                 uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
@@ -122,7 +147,6 @@ __global__ void dense_gemm_mma_int4_kernel(
     };
 
     auto issue_x_load = [&](int g, int buf) {
-        // kBn rows * 4 uint4 (64 bytes) = kBn*4 quads.  Stride loop.
         const int total_quads = kBn * 4;
         for (int q = tid; q < total_quads; q += kBm) {
             int row = q >> 2;
@@ -165,31 +189,10 @@ __global__ void dense_gemm_mma_int4_kernel(
             #pragma unroll
             for (int r = 0; r < 4; ++r) d_acc[im][in][r] = 0;
 
-        // K-step: 2 iters of 64 s4 each.
         #pragma unroll
         for (int ks = 0; ks < kKSteps; ++ks) {
-            // k in [ks*64, ks*64+64) s4 == packed-byte range
-            // [ks*32, ks*32+32) within the group's 64 bytes.
-            const int kpb_base = ks * 32;     // byte offset within group
+            const int kpb_base = ks * 32;
 
-            // A fragments.  Per lane we need:
-            //   a0: row=msub+(lane>>2),     cols=(lane&3)*8 + {0..7}   (low 32 s4)
-            //   a1: row=msub+(lane>>2)+8,   same cols
-            //   a2: row=msub+(lane>>2),     cols=(lane&3)*8+32 + {0..7} (high 32 s4)
-            //   a3: row=msub+(lane>>2)+8,   same
-            // Cols in s4 -> bytes: (lane&3)*4 within a 32-byte stripe.
-            // Half select: ks==0 low, ks==1 high.  But with kKSteps=2,
-            // for ks=0 we're filling "low half" (cols 0..31 s4),
-            //           a0/a1 use cols (lane&3)*8+{0..7} s4 -> byte (lane&3)*4+{0..3}
-            //           a2/a3 use cols (lane&3)*8+32+{0..7} s4 -> byte (lane&3)*4+16+{0..3}
-            // But wait -- one K-step is 64 s4 wide, i.e. 32 bytes wide.
-            // a0/a1 low-half column set: s4 cols (lane&3)*8 + {0..7}
-            //   -> packed byte col (lane&3)*4 + {0..3}
-            // a2/a3 high-half column set: s4 cols (lane&3)*8 + 32 + {0..7}
-            //   -> packed byte col (lane&3)*4 + 16 + {0..3}
-            // These are 16 packed bytes apart.  So within a 32-byte
-            // k-step we read 4 packed bytes at base (lane&3)*4 for a0/a1
-            // and 4 packed bytes at base (lane&3)*4 + 16 for a2/a3.
             uint32_t a_regs[kMsubPerWarp][4];
             #pragma unroll
             for (int im = 0; im < kMsubPerWarp; ++im) {
@@ -213,19 +216,10 @@ __global__ void dense_gemm_mma_int4_kernel(
                 a_regs[im][3] = a3;
             }
 
-            // B fragments.  Per lane:
-            //   b0: rows=(lane&3)*8 + {0..7}        col=(lane>>2)
-            //   b1: rows=(lane&3)*8+32 + {0..7}     col=(lane>>2)
-            // In sX (packed bytes indexed by byte-col within group),
-            // N col is the N-row in sX; K row is the byte col.
-            // 8 s4 lanes == 4 packed bytes.  For a fixed N col and
-            // K row set, read 4 packed bytes starting at byte
-            // position (lane&3)*4 within the current k-step (ks=0 low,
-            // ks=1 high) for b0, and (lane&3)*4+16 for b1.
             uint32_t b_regs[kNsubPerCta][2];
             #pragma unroll
             for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
-                int n_row_in_sub = lane >> 2;         // 0..7
+                int n_row_in_sub = lane >> 2;
                 int n_row = in_sub * 8 + n_row_in_sub;
                 int col_low  = kpb_base + (lane & 3) * 4;
                 int col_high = col_low + 16;
@@ -238,7 +232,6 @@ __global__ void dense_gemm_mma_int4_kernel(
                 b_regs[in_sub][1] = b1;
             }
 
-            // MMA.
             #pragma unroll
             for (int im = 0; im < kMsubPerWarp; ++im) {
                 #pragma unroll
@@ -255,7 +248,8 @@ __global__ void dense_gemm_mma_int4_kernel(
             }
         }
 
-        // Epilogue.
+        // Per-group fold to y_fp.
+        //   scale/zero reads: shmem when cache_sz, HBM otherwise.
         #pragma unroll
         for (int im = 0; im < kMsubPerWarp; ++im) {
             int msub_base = warp_id * 32 + im * 16;
@@ -266,20 +260,27 @@ __global__ void dense_gemm_mma_int4_kernel(
                 for (int r = 0; r < 4; ++r) {
                     int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
                     int col_local = (lane & 3) * 2 + (r & 1);
-                    int m_global = m_tile + msub_base + row_local;
+                    int m_local = msub_base + row_local;
+                    int m_global = m_tile + m_local;
                     int n_local = nsub_base + col_local;
                     if (n_local >= kBn) continue;
                     int n_global = n_tile + n_local;
                     if (m_global >= d_out) continue;
                     if (n_global >= T) continue;
-                    float z = __half2float(
-                        zero_u4[(int64_t)m_global * stride_zu_m
-                              + (int64_t)g * stride_zu_g]
-                    );
-                    float s = __half2float(
-                        scale_u4[(int64_t)m_global * stride_su_m
-                               + (int64_t)g * stride_su_g]
-                    );
+                    float z, s;
+                    if (cache_sz) {
+                        z = __half2float(s_zero_u4 [m_local][g]);
+                        s = __half2float(s_scale_u4[m_local][g]);
+                    } else {
+                        z = __half2float(
+                            zero_u4[(int64_t)m_global * stride_zu_m
+                                  + (int64_t)g * stride_zu_g]
+                        );
+                        s = __half2float(
+                            scale_u4[(int64_t)m_global * stride_su_m
+                                   + (int64_t)g * stride_su_g]
+                        );
+                    }
                     float sxn = __half2float(s_scale_x[n_local]);
                     float sumxn = static_cast<float>(s_sum_X[buf][n_local]);
                     float corrected = static_cast<float>(d_acc[im][in_sub][r])
@@ -371,9 +372,13 @@ void launch(
         );
     };
 
+    // Round 12: cap kBn at 64 (eliminates 255-reg spill at kBn=128).
+    //   T<=8   -> kBn=8   (decode)
+    //   T<=32  -> kBn=32  (small prefill, reduces wasted N lanes)
+    //   else   -> kBn=64
     if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 64)   do_launch(std::integral_constant<int, 64>{});
-    else                do_launch(std::integral_constant<int, 128>{});
+    else if (T <= 32)   do_launch(std::integral_constant<int, 32>{});
+    else                do_launch(std::integral_constant<int, 64>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
 }

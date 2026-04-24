@@ -1,5 +1,11 @@
 // Fused Dense+Sparse GEMM -- INT4 Tensor Core version (SM89).
-// Uses mma.m16n8k64.s4.s4.s32; s4 bytes fed directly to MMA.
+//
+// Round 12 optimisations:
+//   - kBn capped at 64 (eliminate 255-reg spill).
+//   - Dense-branch scale_u4/zero_u4 cached in shmem when n_groups <= 32.
+//   - Sparse-branch scale_u4[m_tile:, bc] cached in shmem per BSR block.
+//
+// Uses mma.m16n8k64.s4.s4.s32 (Tensor Core on Ada SM89).
 
 #include "common/arch.cuh"
 #include "common/mma_utils.cuh"
@@ -40,7 +46,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
     constexpr int kBm = BROW;
     constexpr int kBk = BCOL;
     constexpr int kMmaK = 64;
-    constexpr int kKSteps = kBk / kMmaK;      // 2
+    constexpr int kKSteps = kBk / kMmaK;
     constexpr int kMsubPerWarp = 2;
     constexpr int kNsubPerCta = (kBn + 7) / 8;
 
@@ -55,12 +61,34 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
 
     __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
     __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
+    __shared__ alignas(16) __half s_scale_u4[kBm][32];  // used if cache_sz
+    __shared__ alignas(16) __half s_zero_u4 [kBm][32];
     __shared__ __half s_scale_x[kBn];
+    __shared__ __half s_scale_block[kBm];               // per BSR block
     __shared__ int s_sum_X[2][kBn];
+
+    const bool cache_sz = (n_groups <= 32);
 
     if (tid < kBn) {
         int n = n_tile + tid;
         s_scale_x[tid] = (n < T) ? scale_x[n] : __half(0);
+    }
+
+    if (cache_sz) {
+        for (int idx = tid; idx < kBm * n_groups; idx += kBm) {
+            int m_local = idx / n_groups;
+            int g       = idx - m_local * n_groups;
+            int m = m_tile + m_local;
+            if (m < d_out) {
+                s_scale_u4[m_local][g] = scale_u4[(int64_t)m * stride_su_m
+                                                + (int64_t)g * stride_su_g];
+                s_zero_u4 [m_local][g] = zero_u4 [(int64_t)m * stride_zu_m
+                                                + (int64_t)g * stride_zu_g];
+            } else {
+                s_scale_u4[m_local][g] = __half(0);
+                s_zero_u4 [m_local][g] = __half(0);
+            }
+        }
     }
 
     float y_fp[kMsubPerWarp][kNsubPerCta][4];
@@ -126,6 +154,13 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
             *reinterpret_cast<uint4*>(dst + i * 16) = v;
         }
+    };
+
+    auto issue_scale_block_load = [&](int bc) {
+        int m = m_tile + tid;
+        s_scale_block[tid] = (m < d_out)
+            ? scale_u4[(int64_t)m * stride_su_m + (int64_t)bc * stride_su_g]
+            : __half(0);
     };
 
     auto run_mma_pass = [&](int buf, auto fold_fn, int g_or_bc) {
@@ -206,14 +241,15 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                 for (int r = 0; r < 4; ++r) {
                     int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
                     int col_local = (lane & 3) * 2 + (r & 1);
-                    int m_global = m_tile + msub_base + row_local;
+                    int m_local = msub_base + row_local;
+                    int m_global = m_tile + m_local;
                     int n_local = nsub_base + col_local;
                     if (n_local >= kBn) continue;
                     int n_global = n_tile + n_local;
                     if (m_global >= d_out) continue;
                     if (n_global >= T) continue;
-                    fold_fn(d_acc[im][in_sub][r], m_global, n_local, g_or_bc,
-                            im, in_sub, r, buf);
+                    fold_fn(d_acc[im][in_sub][r], m_global, m_local, n_local,
+                            g_or_bc, im, in_sub, r, buf);
                 }
             }
         }
@@ -235,16 +271,18 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             issue_sum_X_load(g + 1, buf ^ 1);
         }
 
-        auto fold_dense = [&](int d_val, int m_global, int n_local,
+        auto fold_dense = [&](int d_val, int m_global, int m_local, int n_local,
                               int gg, int im, int in_sub, int r, int bb) {
-            float z = __half2float(
-                zero_u4[(int64_t)m_global * stride_zu_m
-                      + (int64_t)gg * stride_zu_g]
-            );
-            float s = __half2float(
-                scale_u4[(int64_t)m_global * stride_su_m
-                       + (int64_t)gg * stride_su_g]
-            );
+            float z, s;
+            if (cache_sz) {
+                z = __half2float(s_zero_u4 [m_local][gg]);
+                s = __half2float(s_scale_u4[m_local][gg]);
+            } else {
+                z = __half2float(zero_u4 [(int64_t)m_global * stride_zu_m
+                                        + (int64_t)gg * stride_zu_g]);
+                s = __half2float(scale_u4[(int64_t)m_global * stride_su_m
+                                        + (int64_t)gg * stride_su_g]);
+            }
             float sxn = __half2float(s_scale_x[n_local]);
             float sumxn = static_cast<float>(s_sum_X[bb][n_local]);
             float corrected = static_cast<float>(d_val) - z * sumxn;
@@ -273,13 +311,11 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                 issue_w_sparse_load(block_idx + 1, buf ^ 1);
                 issue_x_load(bc_next, buf ^ 1);
             }
+            issue_scale_block_load(bc);
 
-            auto fold_sparse = [&](int d_val, int m_global, int n_local,
+            auto fold_sparse = [&](int d_val, int m_global, int m_local, int n_local,
                                    int bc_idx, int im, int in_sub, int r, int bb) {
-                float s = __half2float(
-                    scale_u4[(int64_t)m_global * stride_su_m
-                           + (int64_t)bc_idx * stride_su_g]
-                );
+                float s = __half2float(s_scale_block[m_local]);
                 float sxn = __half2float(s_scale_x[n_local]);
                 y_fp[im][in_sub][r] += 16.0f * static_cast<float>(d_val) * s * sxn;
             };
@@ -381,8 +417,8 @@ void launch(
     };
 
     if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 64)   do_launch(std::integral_constant<int, 64>{});
-    else                do_launch(std::integral_constant<int, 128>{});
+    else if (T <= 32)   do_launch(std::integral_constant<int, 32>{});
+    else                do_launch(std::integral_constant<int, 64>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
 }

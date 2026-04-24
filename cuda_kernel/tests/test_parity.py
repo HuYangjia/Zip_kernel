@@ -127,7 +127,7 @@ def test_activation_quant_parity(T, D, perm_kind):
 
 
 # ---------------------------------------------------------------------------
-# dense_gemm (INT8 MMA, INT4 MMA)
+# dense_gemm (INT4 MMA only; INT8 MMA archived in Round 12)
 # ---------------------------------------------------------------------------
 
 
@@ -144,21 +144,16 @@ DENSE_SHAPES = [
 @pytest.mark.parametrize("T,d_out,d_in", DENSE_SHAPES)
 @pytest.mark.parametrize(
     "variant",
-    ["int8", "int4"],
+    ["int4"],
 )
 def test_dense_gemm_parity(T, d_out, d_in, variant):
     W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x = _make_dense_inputs(
         T, d_out, d_in
     )
     Y_ref = dense_gemm_u4_s4(W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x)
-    if variant == "int8":
-        Y_cuda = cuda_ops.dense_gemm_cuda_int8(
-            W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
-        )
-    else:
-        Y_cuda = cuda_ops.dense_gemm_cuda_int4(
-            W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
-        )
+    Y_cuda = cuda_ops.dense_gemm_cuda_int4(
+        W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
+    )
     _assert_fp16_close(
         Y_cuda, Y_ref, f"dense_gemm_{variant} T={T} d_out={d_out} d_in={d_in}"
     )
@@ -179,7 +174,7 @@ SPARSE_CASES = [
 
 
 @pytest.mark.parametrize("T,d_out,d_in,n_hp_ratio", SPARSE_CASES)
-@pytest.mark.parametrize("variant", ["int8", "int4"])
+@pytest.mark.parametrize("variant", ["int4"])
 def test_sparse_gemm_parity(T, d_out, d_in, n_hp_ratio, variant):
     (
         _W_low, W_high_blocks_packed,
@@ -200,16 +195,10 @@ def test_sparse_gemm_parity(T, d_out, d_in, n_hp_ratio, variant):
         W_high_blocks_packed, hp_row_offsets, hp_col_indices,
         X_s4, scale_u4, scale_x, d_out, d_in,
     )
-    if variant == "int8":
-        Y_cuda = cuda_ops.sparse_gemm_cuda_int8(
-            W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-            X_s4, scale_u4, scale_x, d_out, d_in,
-        )
-    else:
-        Y_cuda = cuda_ops.sparse_gemm_cuda_int4(
-            W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-            X_s4, scale_u4, scale_x, d_out, d_in,
-        )
+    Y_cuda = cuda_ops.sparse_gemm_cuda_int4(
+        W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, scale_x, d_out, d_in,
+    )
     _assert_fp16_close(
         Y_cuda, Y_ref, f"sparse_gemm_{variant} T={T} hp={n_hp_ratio}"
     )
@@ -229,7 +218,7 @@ FUSED_CASES = [
 
 
 @pytest.mark.parametrize("T,d_out,d_in,n_hp_ratio", FUSED_CASES)
-@pytest.mark.parametrize("variant", ["int8", "int4"])
+@pytest.mark.parametrize("variant", ["int4"])
 def test_fused_dense_sparse_parity(T, d_out, d_in, n_hp_ratio, variant):
     (
         W_low_packed, W_high_blocks_packed,
@@ -243,20 +232,12 @@ def test_fused_dense_sparse_parity(T, d_out, d_in, n_hp_ratio, variant):
         X_s4, scale_u4, zero_u4, sum_X, scale_x,
         d_out, d_in,
     )
-    if variant == "int8":
-        Y_cuda = cuda_ops.fused_dense_sparse_cuda_int8(
-            W_low_packed, W_high_blocks_packed,
-            hp_row_offsets, hp_col_indices,
-            X_s4, scale_u4, zero_u4, sum_X, scale_x,
-            d_out, d_in,
-        )
-    else:
-        Y_cuda = cuda_ops.fused_dense_sparse_cuda_int4(
-            W_low_packed, W_high_blocks_packed,
-            hp_row_offsets, hp_col_indices,
-            X_s4, scale_u4, zero_u4, sum_X, scale_x,
-            d_out, d_in,
-        )
+    Y_cuda = cuda_ops.fused_dense_sparse_cuda_int4(
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+        d_out, d_in,
+    )
     _assert_fp16_close(
         Y_cuda, Y_ref,
         f"fused_{variant} T={T} d_out={d_out} d_in={d_in} hp={n_hp_ratio}"
