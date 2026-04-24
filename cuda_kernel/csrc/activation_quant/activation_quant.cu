@@ -251,6 +251,149 @@ __global__ void activation_quant_kernel(
 }
 
 // ---------------------------------------------------------------------------
+// Single-pass kernel (Round 15 optimisation, T <= 8)
+// ---------------------------------------------------------------------------
+//
+// Rationale: the 2-pass kernel above gathers X[perm[.]] twice (once for
+// max-abs, once for quant+pack), which doubles HBM traffic on the
+// gather path.  For T=1 decode on 4k->4k this dominates runtime.
+//
+// The single-pass variant caches the gathered X into shared memory
+// during Pass 1 and reuses it in Pass 2, cutting gather traffic by 2x.
+//
+// Shape: block = (kLanesPerGroup=128, kBt), grid = (ceil_div(T, kBt),).
+// Shmem: kBt * D fp16 values + small staging area.  D can be up to
+//   ~11008 for the shapes we care about, so per-kBt footprint is
+//   11008*2 = ~22 KB.  With kBt=1, total shmem ~22 KB (well under the
+//   SM89 per-CTA limit).  For safety we gate on ``D <= kMaxShmemD`` at
+//   launch time and fall back to the 2-pass kernel otherwise.
+
+constexpr int kMaxShmemDPerToken = 16384;   // 32 KB per token (fp16)
+
+template <int kBt>
+__global__ void activation_quant_kernel_sp(
+    const __half* __restrict__ X,
+    const int* __restrict__ perm,
+    int8_t* __restrict__ X_s4,
+    __half* __restrict__ scale_x,
+    int* __restrict__ sum_X,
+    int T, int D,
+    int64_t stride_xt, int64_t stride_xd,
+    int64_t stride_qt, int64_t stride_qd,
+    int64_t stride_st, int64_t stride_sg
+) {
+    static_assert(kLanesPerGroup == 128, "sp kernel hard-codes 128-wide lane group");
+
+    extern __shared__ unsigned char s_raw[];
+    // Layout: s_x[kBt][D] fp16,  s_warp_part[kBt][4] float,
+    //         s_warp_part_int[kBt][4] int, s_scale_math[kBt] float,
+    //         s_scale_zero[kBt] uchar.
+    __half* s_x = reinterpret_cast<__half*>(s_raw);
+    float*  s_warp_part     = reinterpret_cast<float*>(s_x + kBt * D);
+    int*    s_warp_part_int = reinterpret_cast<int*>(s_warp_part + kBt * 4);
+    float*  s_scale_math    = reinterpret_cast<float*>(s_warp_part_int + kBt * 4);
+    unsigned char* s_scale_zero = reinterpret_cast<unsigned char*>(s_scale_math + kBt);
+
+    const int lane_x = threadIdx.x;
+    const int lane_y = threadIdx.y;
+    const int warp_id_x = lane_x / kWarpSize;
+    const int lane_in_warp = lane_x & (kWarpSize - 1);
+
+    const int t_base = blockIdx.x * kBt;
+    const int t = t_base + lane_y;
+    const bool t_active = t < T;
+
+    // ------------------------------------------------------------------
+    // Pass 1: gather X[t, perm[d]] into shmem AND track local max-abs.
+    // ------------------------------------------------------------------
+    float local_max = 0.0f;
+    for (int d = lane_x; d < D; d += kLanesPerGroup) {
+        int pidx = __ldg(perm + d);
+        __half h = __half(0);
+        if (t_active) {
+            h = __ldg(X + (int64_t)t * stride_xt + (int64_t)pidx * stride_xd);
+        }
+        s_x[lane_y * D + d] = h;
+        float v = __half2float(h);
+        local_max = fmaxf(local_max, fabsf(v));
+    }
+
+    float warp_max = warp_max_abs(local_max);
+    if (lane_in_warp == 0) {
+        s_warp_part[lane_y * 4 + warp_id_x] = warp_max;
+    }
+    __syncthreads();
+
+    // Lane 0 of warp 0 finalises per token and writes scale.
+    if (warp_id_x == 0 && lane_in_warp == 0) {
+        float m0 = s_warp_part[lane_y * 4 + 0];
+        float m1 = s_warp_part[lane_y * 4 + 1];
+        float m2 = s_warp_part[lane_y * 4 + 2];
+        float m3 = s_warp_part[lane_y * 4 + 3];
+        float token_max = fmaxf(fmaxf(m0, m1), fmaxf(m2, m3));
+
+        float scale_fp32 = token_max / 7.0f;
+        __half scale_h = __float2half(scale_fp32);
+        float scale_math = __half2float(scale_h);
+        bool is_zero = !(scale_math > 0.0f);
+        s_scale_math[lane_y] = is_zero ? 1.0f : scale_math;
+        s_scale_zero[lane_y] = is_zero ? 1 : 0;
+        if (t_active) {
+            scale_x[t] = scale_h;
+        }
+    }
+    __syncthreads();
+
+    // ------------------------------------------------------------------
+    // Pass 2: read X from shmem, quantize, pack, per-group sum.
+    // ------------------------------------------------------------------
+    const float scale_math = s_scale_math[lane_y];
+    const bool  is_zero = s_scale_zero[lane_y] != 0;
+    const int n_groups = D / BCOL;
+
+    for (int g = 0; g < n_groups; ++g) {
+        const int d = g * BCOL + lane_x;
+        __half h = s_x[lane_y * D + d];
+        float x = __half2float(h);
+        int q = quantize_one(x, scale_math, is_zero);
+
+        // Per-group sum: 128-wide reduction (4 warps).
+        int wsum = warp_sum(q);
+        if (lane_in_warp == 0) {
+            s_warp_part_int[lane_y * 4 + warp_id_x] = wsum;
+        }
+        __syncthreads();
+        if (warp_id_x == 0 && lane_in_warp == 0) {
+            int total = s_warp_part_int[lane_y * 4 + 0]
+                      + s_warp_part_int[lane_y * 4 + 1]
+                      + s_warp_part_int[lane_y * 4 + 2]
+                      + s_warp_part_int[lane_y * 4 + 3];
+            if (t_active) {
+                sum_X[(int64_t)t * stride_st + (int64_t)g * stride_sg] = total;
+            }
+        }
+
+        // Pack LE: even lane low nibble, odd lane high nibble.
+        int q_neighbour = __shfl_xor_sync(0xffffffff, q, 1);
+        if (t_active && (lane_x & 1) == 0) {
+            int low = q & 0x0F;
+            int high = q_neighbour & 0x0F;
+            int packed = (high << 4) | low;
+            int64_t byte_off = (int64_t)t * stride_qt
+                             + (int64_t)(d >> 1) * stride_qd;
+            X_s4[byte_off] = static_cast<int8_t>(
+                packed >= 128 ? packed - 256 : packed
+            );
+        }
+        // No global sync required between groups: s_x is read-only in
+        // Pass 2 and s_warp_part_int is overwritten fresh next iter.
+        // But we do need lane-0 writers to finish before the next
+        // iter reuses the slot, so a lightweight syncthreads is kept.
+        __syncthreads();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Host-side launcher
 // ---------------------------------------------------------------------------
 
@@ -269,15 +412,13 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
     TORCH_CHECK(scale_x.scalar_type() == torch::kHalf, "scale_x must be fp16");
     TORCH_CHECK(sum_X.scalar_type() == torch::kInt32, "sum_X must be int32");
 
-    // Pick kBt based on T: small blocks for decode (less wasted
-    // threads), larger blocks for prefill (better ILP).  We skip the
-    // Triton-style autotune because the shmem footprint is tiny and
-    // the overall kernel is memory-bound; picking across {1, 4, 16,
-    // 64} covers the whole T range with < 5% variance from the
-    // theoretical best.
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-    auto dispatch = [&](auto kBtConst) {
+    // Decide between single-pass (low T, D fits in shmem) and 2-pass
+    // (fallback for large T or unusually large D).
+    const bool sp_ok = (T <= 8) && (D <= kMaxShmemDPerToken);
+
+    auto dispatch_2p = [&](auto kBtConst) {
         constexpr int kBt = decltype(kBtConst)::value;
         dim3 block(kLanesPerGroup, kBt, 1);
         dim3 grid(ceil_div(T, kBt), 1, 1);
@@ -294,16 +435,39 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
         );
     };
 
-    // std::integral_constant trick to feed kBt as a template arg.
-    //
-    // Block size constraint: block.x * block.y = kLanesPerGroup * kBt
-    // = 128 * kBt must be <= 1024 (SM89 hardware limit), so kBt must
-    // be <= 8.  We keep kBt in {1, 4, 8} and let larger T just spawn
-    // more CTAs along grid.x.  Empirically Triton owns prefill anyway
-    // (policy.py routes T >= 256 away from CUDA).
-    if      (T <= 1)   dispatch(std::integral_constant<int, 1>{});
-    else if (T <= 4)   dispatch(std::integral_constant<int, 4>{});
-    else               dispatch(std::integral_constant<int, 8>{});
+    auto dispatch_sp = [&](auto kBtConst) {
+        constexpr int kBt = decltype(kBtConst)::value;
+        dim3 block(kLanesPerGroup, kBt, 1);
+        dim3 grid(ceil_div(T, kBt), 1, 1);
+        size_t shmem = kBt * (size_t)D * sizeof(__half)
+                     + kBt * 4 * sizeof(float)
+                     + kBt * 4 * sizeof(int)
+                     + kBt * sizeof(float)
+                     + kBt * sizeof(unsigned char);
+        // Round up to 16-byte alignment; CUDA requires.
+        shmem = (shmem + 15) & ~size_t(15);
+        activation_quant_kernel_sp<kBt><<<grid, block, shmem, stream>>>(
+            reinterpret_cast<const __half*>(X_fp16.data_ptr<at::Half>()),
+            perm.data_ptr<int>(),
+            X_s4.data_ptr<int8_t>(),
+            reinterpret_cast<__half*>(scale_x.data_ptr<at::Half>()),
+            sum_X.data_ptr<int>(),
+            T, D,
+            X_fp16.stride(0), X_fp16.stride(1),
+            X_s4.stride(0),    X_s4.stride(1),
+            sum_X.stride(0),   sum_X.stride(1)
+        );
+    };
+
+    if (sp_ok) {
+        if      (T <= 1) dispatch_sp(std::integral_constant<int, 1>{});
+        else if (T <= 4) dispatch_sp(std::integral_constant<int, 4>{});
+        else             dispatch_sp(std::integral_constant<int, 8>{});
+    } else {
+        if      (T <= 1) dispatch_2p(std::integral_constant<int, 1>{});
+        else if (T <= 4) dispatch_2p(std::integral_constant<int, 4>{});
+        else             dispatch_2p(std::integral_constant<int, 8>{});
+    }
 
     C10_CUDA_CHECK(cudaGetLastError());
 }
