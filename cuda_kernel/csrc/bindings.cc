@@ -45,6 +45,16 @@ void launch(torch::Tensor W_low, torch::Tensor W_high_blocks,
             torch::Tensor Y_total,
             int d_out, int d_in);
 }
+
+namespace fused_gemv_decode {
+void launch(torch::Tensor W_low, torch::Tensor W_high_blocks,
+            torch::Tensor hp_row_offsets, torch::Tensor hp_col_indices,
+            torch::Tensor X_s4,
+            torch::Tensor scale_u4, torch::Tensor zero_u4,
+            torch::Tensor sum_X, torch::Tensor scale_x,
+            torch::Tensor Y_total,
+            int d_out, int d_in);
+}
 }  // namespace hkust_v9
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -94,6 +104,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "fused_dense_sparse_mma_int4_launch",
         &hkust_v9::fused_dense_sparse_mma_int4::launch,
         "Fused dense + sparse GEMM via mma.m16n8k64.s4 (CUDA)",
+        py::arg("W_low"), py::arg("W_high_blocks"),
+        py::arg("hp_row_offsets"), py::arg("hp_col_indices"),
+        py::arg("X_s4"),
+        py::arg("scale_u4"), py::arg("zero_u4"),
+        py::arg("sum_X"), py::arg("scale_x"),
+        py::arg("Y_total"),
+        py::arg("d_out"), py::arg("d_in")
+    );
+
+    m.def(
+        "fused_gemv_decode_launch",
+        &hkust_v9::fused_gemv_decode::launch,
+        "Fused dense + sparse GEMV (T=1 decode specialisation, dp4a)",
         py::arg("W_low"), py::arg("W_high_blocks"),
         py::arg("hp_row_offsets"), py::arg("hp_col_indices"),
         py::arg("X_s4"),
