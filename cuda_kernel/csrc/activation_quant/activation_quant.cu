@@ -416,7 +416,13 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
 
     // Decide between single-pass (low T, D fits in shmem) and 2-pass
     // (fallback for large T or unusually large D).
-    const bool sp_ok = (T <= 8) && (D <= kMaxShmemDPerToken);
+    //
+    // Per-CTA dynamic shmem limit on SM89 is 48 KB without opt-in.
+    // sp shmem = kBt * D * 2 bytes; with D=4096, kBt=4 needs 32 KB
+    // which fits, but kBt=8 needs 64 KB.  We cap sp at kBt<=4.
+    //   The crossover point is roughly when (kBt*D*2) > 48*1024.
+    const bool sp_ok = (T <= 4) && (D <= kMaxShmemDPerToken)
+                    && ((size_t)T * D * 2u <= 48u * 1024u);
 
     auto dispatch_2p = [&](auto kBtConst) {
         constexpr int kBt = decltype(kBtConst)::value;
@@ -461,8 +467,8 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
 
     if (sp_ok) {
         if      (T <= 1) dispatch_sp(std::integral_constant<int, 1>{});
-        else if (T <= 4) dispatch_sp(std::integral_constant<int, 4>{});
-        else             dispatch_sp(std::integral_constant<int, 8>{});
+        else if (T <= 2) dispatch_sp(std::integral_constant<int, 2>{});
+        else             dispatch_sp(std::integral_constant<int, 4>{});
     } else {
         if      (T <= 1) dispatch_2p(std::integral_constant<int, 1>{});
         else if (T <= 4) dispatch_2p(std::integral_constant<int, 4>{});
