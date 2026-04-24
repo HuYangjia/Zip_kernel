@@ -111,32 +111,56 @@ __global__ void fused_dense_sparse_kernel(
     #pragma unroll
     for (int k = 0; k < kBn; ++k) y_acc[k] = 0.0f;
 
-    __shared__ uint8_t sX[kBn][64];
-    __shared__ int s_sum_X[kBn];
+    // Double-buffered shmem for dense-branch X tile (Round 6 optim).
+    // Keeps per-bank alignas(16) for cp.async.cg.  Total 2*kBn*64 <= 512 B.
+    __shared__ alignas(16) uint8_t sX[2][kBn][64];
+    __shared__ int s_sum_X[2][kBn];
 
     __syncthreads();  // publish s_scale_x
 
-    // =================================================================
-    // DENSE branch : full K sweep
-    // =================================================================
-    for (int g = 0; g < n_groups; ++g) {
-        const int total_x_bytes = kBn * 64;
-        for (int idx = tid; idx < total_x_bytes; idx += kBm) {
-            int row = idx >> 6;
-            int col = idx & 63;
+    // -----------------------------------------------------------------
+    // cp.async X loader for the dense branch (see dense_gemm.cu Round 6).
+    // -----------------------------------------------------------------
+    auto issue_dense_x_load = [&](int g, int buf) {
+        const int total_quads = kBn * 4;
+        if (tid < total_quads) {
+            int row = tid >> 2;
+            int quad = tid & 3;
             int n = n_base + row;
-            uint8_t v = 0;
             if (n < T) {
                 int64_t off = (int64_t)n * stride_x_n
-                            + (int64_t)(g * bytes_per_group + col) * stride_x_k;
-                v = X[off];
+                            + (int64_t)(g * bytes_per_group + quad * 16) * stride_x_k;
+                cp_async_cg_16(
+                    &sX[buf][row][quad * 16],
+                    X + off
+                );
+            } else {
+                uint4 zero = make_uint4(0, 0, 0, 0);
+                *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = zero;
             }
-            sX[row][col] = v;
         }
         if (tid < kBn) {
             int n = n_base + tid;
-            s_sum_X[tid] = (n < T) ?
+            s_sum_X[buf][tid] = (n < T) ?
                 sum_X[(int64_t)n * stride_sx_n + (int64_t)g * stride_sx_g] : 0;
+        }
+    };
+
+    // =================================================================
+    // DENSE branch : full K sweep with cp.async double buffering.
+    // =================================================================
+    issue_dense_x_load(0, 0);
+    cp_async_commit();
+
+    for (int g = 0; g < n_groups; ++g) {
+        const int buf = g & 1;
+
+        if (g + 1 < n_groups) {
+            issue_dense_x_load(g + 1, buf ^ 1);
+            cp_async_commit();
+            cp_async_wait_group<1>();
+        } else {
+            cp_async_wait_group<0>();
         }
         __syncthreads();
 
@@ -183,7 +207,7 @@ __global__ void fused_dense_sparse_kernel(
                 int x0_n[kBn], x1_n[kBn];
                 #pragma unroll
                 for (int nk = 0; nk < kBn; ++nk) {
-                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
+                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[buf][nk][0])[i];
                     unpack_4bytes_to_2int32(xp, x0_n[nk], x1_n[nk]);
                 }
                 int w0 = w_dp4a[2*i];
@@ -200,7 +224,7 @@ __global__ void fused_dense_sparse_kernel(
                 int n = n_base + nk;
                 if (n >= T) break;
                 float corrected = static_cast<float>(acc_n[nk])
-                                - zero_g * static_cast<float>(s_sum_X[nk]);
+                                - zero_g * static_cast<float>(s_sum_X[buf][nk]);
                 float sxn = __half2float(s_scale_x[nk]);
                 y_acc[nk] += corrected * scale_g * sxn;
             }
@@ -210,7 +234,7 @@ __global__ void fused_dense_sparse_kernel(
     }
 
     // =================================================================
-    // SPARSE branch    // SPARSE branch : BSR loop for this block-row, contributes
+    // SPARSE branch    // SPARSE branch    // SPARSE branch : BSR loop for this block-row, contributes
     // 16 * dot(W_high, X_s4_bc) * scale[m, bc] * scale_x[n] to y_acc.
     // =================================================================
     const int blk_start = hp_row_offsets[br];
@@ -219,6 +243,10 @@ __global__ void fused_dense_sparse_kernel(
     for (int block_idx = blk_start; block_idx < blk_end; ++block_idx) {
         const int bc = hp_col_indices[block_idx];
 
+        // Sparse branch stages X into sX[0] only (single-buffered --
+        // BSR indirection via bc makes prefetching the next block's
+        // X expensive; the BSR loop is short anyway for realistic
+        // sparsity so this isn't the bottleneck).
         const int total_x_bytes = kBn * 64;
         for (int idx = tid; idx < total_x_bytes; idx += kBm) {
             int row = idx >> 6;
@@ -230,7 +258,7 @@ __global__ void fused_dense_sparse_kernel(
                             + (int64_t)(bc * bytes_per_group + col) * stride_x_k;
                 v = X[off];
             }
-            sX[row][col] = v;
+            sX[0][row][col] = v;
         }
         __syncthreads();
 
@@ -273,7 +301,7 @@ __global__ void fused_dense_sparse_kernel(
                 int x0_n[kBn], x1_n[kBn];
                 #pragma unroll
                 for (int nk = 0; nk < kBn; ++nk) {
-                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
+                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[0][nk][0])[i];
                     unpack_4bytes_to_2int32(xp, x0_n[nk], x1_n[nk]);
                 }
                 int w0 = w_dp4a[2*i];
