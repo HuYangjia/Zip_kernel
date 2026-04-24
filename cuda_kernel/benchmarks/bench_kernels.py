@@ -218,7 +218,8 @@ def bench_fused(shape: Shape, log: logging.Logger):
     X_fp = torch.randn(shape.T, shape.d_in, dtype=torch.float16, device="cuda") * 0.4
     W_fp = data["W_fp"]
     t_fp = _bench_fn(lambda: torch.matmul(W_fp, X_fp.t()))
-    t_i4 = _bench_fn(lambda: cuda_ops.fused_dense_sparse_cuda_int4(*args))
+    # Auto-dispatch: T=1 -> dp4a GEMV (Round 14); T>1 -> INT4 MMA (Round 12).
+    t_i4 = _bench_fn(lambda: cuda_ops.fused_dense_sparse_cuda(*args))
     return {"fp16_us": t_fp, "int4_us": t_i4}
 
 
@@ -241,7 +242,7 @@ def bench_end_to_end(shape: Shape, log: logging.Logger):
 
     def run_pipeline():
         X_s4, scale_x, sum_X = cuda_ops.activation_quant_cuda(X_fp, perm)
-        return cuda_ops.fused_dense_sparse_cuda_int4(
+        return cuda_ops.fused_dense_sparse_cuda(
             W_low_packed, W_high_blocks_packed,
             hp_row_offsets, hp_col_indices,
             X_s4, scale_u4, zero_u4, sum_X, scale_x,
