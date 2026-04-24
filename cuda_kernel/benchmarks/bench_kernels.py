@@ -190,7 +190,8 @@ def bench_dense_gemm(shape: Shape, log: logging.Logger):
      sum_X, scale_x, W_fp) = _make_dense_inputs(shape.T, shape.d_out, shape.d_in)
     X_fp = torch.randn(shape.T, shape.d_in, dtype=torch.float16, device="cuda") * 0.4
     t_fp = _bench_fn(lambda: torch.matmul(W_fp, X_fp.t()))
-    t_i4 = _bench_fn(lambda: cuda_ops.dense_gemm_cuda_int4(
+    # Auto-dispatch: T=1 -> dp4a GEMV kernel (Round 13); T>1 -> INT4 MMA (Round 12).
+    t_i4 = _bench_fn(lambda: cuda_ops.dense_gemm_cuda(
         W, X_s4, scale_u4, zero_u4, sum_X, scale_x
     ))
     return {"fp16_us": t_fp, "int4_us": t_i4}
