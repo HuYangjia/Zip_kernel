@@ -170,6 +170,27 @@ __global__ void dense_gemm_mma_int4_kernel(
     };
 
     __syncthreads();
+
+    // Round 19: precompute sxn (scale_x per output N position) into
+    // registers once.  sxn depends only on (in_sub, r&1, lane) - not on
+    // group g - so hoisting this out of the inner group loop saves
+    // (kMsubPerWarp * kNsubPerCta * 4) = 64 shmem reads per warp per
+    // group (kBn=64 case).  Must run AFTER the first __syncthreads so
+    // that s_scale_x is fully populated by the prefetch phase.
+    float sxn_reg[kNsubPerCta][2];
+    #pragma unroll
+    for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+        int nsub_base = in_sub * 8;
+        #pragma unroll
+        for (int rp = 0; rp < 2; ++rp) {
+            int col_local = (lane & 3) * 2 + rp;
+            int n_local = nsub_base + col_local;
+            sxn_reg[in_sub][rp] = (n_local < kBn)
+                ? __half2float(s_scale_x[n_local])
+                : 0.0f;
+        }
+    }
+
     issue_w_load(0, 0);
     issue_x_load(0, 0);
     __syncthreads();
@@ -193,28 +214,27 @@ __global__ void dense_gemm_mma_int4_kernel(
         for (int ks = 0; ks < kKSteps; ++ks) {
             const int kpb_base = ks * 32;
 
-            // Round 19: Use ldmatrix.x4 for A operand.
-            //   Per-lane address: lane i provides the b16-granularity
-            //   shmem address of row (msub_base + i%16), byte column
-            //   kpb_base + (i/16)*16.  ldmatrix then produces 4 regs
-            //   per lane matching the m16k32.s8 (==m16k64.s4 half) A
-            //   fragment layout exactly:
-            //     reg 0 = rows  0..7, bytes 0..15  = s4 cols 0..31
-            //     reg 1 = rows  8..15, bytes 0..15
-            //     reg 2 = rows  0..7, bytes 16..31 = s4 cols 32..63
-            //     reg 3 = rows  8..15, bytes 16..31
             uint32_t a_regs[kMsubPerWarp][4];
             #pragma unroll
             for (int im = 0; im < kMsubPerWarp; ++im) {
                 int msub_base = warp_id * 32 + im * 16;
-                int a_row = msub_base + (lane & 15);
-                int a_col_byte = kpb_base + ((lane >> 4) * 16);
-                // All rows < kBm because msub_base + 15 <= 127 for
-                // warp_id in {0..3} and im in {0..1}.
-                const void* addr = &sW[buf][a_row][a_col_byte];
-                ldmatrix_x4_b16(addr,
-                                a_regs[im][0], a_regs[im][1],
-                                a_regs[im][2], a_regs[im][3]);
+                int row0 = msub_base + (lane >> 2);
+                int row1 = row0 + 8;
+                int col_low  = kpb_base + (lane & 3) * 4;
+                int col_high = col_low + 16;
+                uint32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                if (row0 < kBm) {
+                    a0 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col_low]);
+                    a2 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col_high]);
+                }
+                if (row1 < kBm) {
+                    a1 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col_low]);
+                    a3 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col_high]);
+                }
+                a_regs[im][0] = a0;
+                a_regs[im][1] = a1;
+                a_regs[im][2] = a2;
+                a_regs[im][3] = a3;
             }
 
             uint32_t b_regs[kNsubPerCta][2];
@@ -282,7 +302,7 @@ __global__ void dense_gemm_mma_int4_kernel(
                                    + (int64_t)g * stride_su_g]
                         );
                     }
-                    float sxn = __half2float(s_scale_x[n_local]);
+                    float sxn = sxn_reg[in_sub][r & 1];
                     float sumxn = static_cast<float>(s_sum_X[buf][n_local]);
                     float corrected = static_cast<float>(d_acc[im][in_sub][r])
                                     - z * sumxn;
