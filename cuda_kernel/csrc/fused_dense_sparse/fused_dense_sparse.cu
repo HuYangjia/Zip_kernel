@@ -101,7 +101,10 @@ __global__ void fused_dense_sparse_kernel(
     __shared__ __half s_scale_x[kBn];
     if (tid < kBn) {
         int n = n_base + tid;
-        s_scale_x[tid] = (n < T) ? scale_x[(int64_t)n * stride_sx_n] : __half(0);
+        // scale_x is 1D contiguous (T,) stride=1 (enforced by
+        // launcher).  Do not reuse stride_sx_n which is sum_X's row
+        // stride (n_groups) here.
+        s_scale_x[tid] = (n < T) ? scale_x[n] : __half(0);
     }
 
     float y_acc[kBn];
@@ -295,6 +298,7 @@ void launch(
     TORCH_CHECK(Y_total.dtype() == torch::kHalf, "Y_total must be fp16");
     TORCH_CHECK(W_low.stride(1) == 1, "W_low must be K-contiguous");
     TORCH_CHECK(X_s4.stride(1) == 1, "X_s4 must be K-contiguous");
+    TORCH_CHECK(scale_x.stride(0) == 1, "scale_x must be contiguous");
 
     const int d_in_half = W_low.size(1);
     TORCH_CHECK(d_in_half * 2 == d_in, "W_low d_in mismatch");

@@ -72,14 +72,19 @@ __device__ __forceinline__ int warp_sum(int v) {
 }
 
 // IEEE round-half-to-even for fp32 -> int32, matching Triton's
-// ``tl.libdevice.rint`` + cast.  Uses a single fp32 division (not
-// multiply-by-reciprocal) to match the Triton reference bit-exactly;
-// see the comment in ``quantize_activation_kernel`` on why a single
-// rounding matters for the bytes-identical contract.
+// ``tl.libdevice.rint`` + cast.  Bit-exact match requires reproducing
+// Triton's fp32 division behaviour -- Triton lowers ``x / s`` to PTX
+// ``div.approx.f32`` (single-precision, ~0.5 ULP via Newton-Raphson),
+// which is NOT what nvcc emits for plain C++ ``x / s`` (that path
+// picks ``div.rn.f32``, a fully-rounded IEEE div).  The two can
+// disagree by 1 ULP on the dividend, which shifts results across
+// ``rint``'s half-integer boundary and changes ~5-20 packed nibbles
+// per 256K quantized values.  We therefore use ``__fdividef`` to
+// force the approx-div path and get bytes-identical packed output.
 __device__ __forceinline__ int quantize_one(float x, float scale_safe,
                                              bool scale_is_zero) {
     if (scale_is_zero) return 0;
-    float q = rintf(x / scale_safe);
+    float q = rintf(__fdividef(x, scale_safe));
     q = fmaxf(fminf(q, 7.0f), -8.0f);
     return static_cast<int>(q);
 }

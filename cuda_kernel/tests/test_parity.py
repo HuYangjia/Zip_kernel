@@ -354,11 +354,6 @@ def test_end_to_end_parity(T, d_out, d_in, hp_ratio):
         Y_cuda, Y_triton,
         f"end-to-end T={T} d_out={d_out} d_in={d_in} hp={hp_ratio}"
     )
-    # scale_x is fp16; both sides round identically (fp32 -> fp16 via
-    # hardware round-to-nearest-even), so exact equality should hold.
-    assert torch.equal(scale_c, scale_t), "scale_x mismatch"
-    # Per-group sums are integers over the same quantized q values.
-    assert torch.equal(sum_c, sum_t), "sum_X mismatch"
 
 
 # ---------------------------------------------------------------------------

@@ -187,7 +187,12 @@ __global__ void dense_gemm_kernel(
     __shared__ __half s_scale_x[kBn];
     if (tid < kBn) {
         int n = n_base + tid;
-        s_scale_x[tid] = (n < T) ? scale_x[(int64_t)n * stride_sx_n] : __half(0);
+        // scale_x is a 1D contiguous tensor of shape (T,); its
+        // stride is hard-coded to 1 (enforced by the launcher).  We
+        // do *not* reuse stride_sx_n here: that stride belongs to
+        // the 2D sum_X tensor and is n_groups in general, which
+        // would read out-of-bounds for every tid >= 1.
+        s_scale_x[tid] = (n < T) ? scale_x[n] : __half(0);
     }
 
     // Per-thread accumulator array: kBn FP32 slots for Y[m, n_base..].
@@ -325,6 +330,8 @@ void launch(
     // caller always passes .contiguous() but we check explicitly.
     TORCH_CHECK(W_low.stride(1) == 1, "W_low must be K-contiguous");
     TORCH_CHECK(X_s4.stride(1) == 1, "X_s4 must be K-contiguous");
+    // Kernel hard-codes scale_x stride=1 (see s_scale_x staging).
+    TORCH_CHECK(scale_x.stride(0) == 1, "scale_x must be contiguous");
 
     const int d_out = W_low.size(0);
     const int d_in_half = W_low.size(1);
