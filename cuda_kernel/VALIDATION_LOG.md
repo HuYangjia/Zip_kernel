@@ -1495,3 +1495,97 @@ architecture (SIMT dp4a vs tensor-core FP16) makes it structurally
 impossible to beat cuBLAS FP16 at batch sizes where the matrix is
 compute-bound.  Future work: explore `mma.sync.m16n8k32.s8` PTX
 for T=8..64 (requires warp-level tiling redesign).
+
+---
+
+## Round 19 — ldmatrix & epilogue micro-optimisations (negative result, reverted)
+
+Targeted the observed "固定成本" plateau of the kBn=64 MMA kernel on
+T>=256 shapes (T=256 124us, T=512 150us, T=1024 266us).  Two
+independent changes were attempted:
+
+### 19.A  `ldmatrix.x4.shared.b16` for A operand
+
+Replaced the 8 scalar uint32 shmem reads per `ks` iteration with 2
+`ldmatrix.x4` instructions (`kMsubPerWarp=2`).  Address layout:
+
+```
+lane i -> sW[buf][msub_base + (i & 15)][kpb_base + ((i >> 4) * 16)]
+```
+
+Parity: 10/10 passed (dense tests).
+
+Performance (bench vs pre-R19 baseline, dense_gemm_mma_int4 only):
+
+| T    | pre    | post-A | delta |
+|-----:|-------:|-------:|------:|
+|   64 |  78.93 |  81.44 |  +3%  |
+|  128 |  79.45 |  82.10 |  +3%  |
+|  256 | 124.72 | 124.65 |   0%  |
+|  512 | 150.17 | 151.54 |   0%  |
+| 1024 | 266.09 | 278.17 |  +4%  |
+
+**Reason ldmatrix was not helpful**: the existing scalar uint32 load
+pattern `sW[row0=msub+lane/4][col_low=kpb+(lane&3)*4]` is *already*
+warp-coalesced into a single LDS.32 transaction (lanes 0..3 read
+adjacent 4-byte words of the same row).  ldmatrix is a peer-optimal
+instruction for this case and does not reduce shmem transactions; it
+only adds a warp-sync fence.  Reverted.
+
+### 19.B  Hoist `sxn = s_scale_x[n_local]` out of the group loop
+
+Pre-computed `float sxn_reg[kNsubPerCta][2]` once before the g-loop
+and read from register in the per-group fold.  This saves
+`kMsubPerWarp * kNsubPerCta * 4 = 64` shmem reads per warp per group
+in the kBn=64 case (approximately -25% of epilogue shmem traffic).
+
+Parity: 10/10 passed.
+
+Performance:
+
+| T    | pre    | post-B | delta |
+|-----:|-------:|-------:|------:|
+|   64 |  78.93 |  79.25 |   0%  |
+|  128 |  79.45 |  79.94 |   0%  |
+|  256 | 124.72 | 121.85 |  -2%  |
+|  512 | 150.17 | 142.93 |  -5%  |
+| 1024 | 266.09 | 280.74 |  +5%  |
+
+**Reason the hoist was marginal**: the register cost is
+`kNsubPerCta * 2 = 16 fp32 regs/lane` (kBn=64 case).  This pushes
+ptxas to spill or lowers occupancy.  The T=1024 regression is the
+tell: its grid=(32, 16)=512 CTAs is the most register-pressured
+configuration; occupancy loss outweighs shmem savings.  Reverted.
+
+### Combined diagnostic
+
+After the revert, the pre-R19 T-sweep on dense_gemm_mma_int4 stands:
+
+```
+T=   64  fp16=  20.94us  cuda=  78.93us  ratio=3.77x  (0.27x fp16)
+T=  128  fp16=  35.12us  cuda=  79.45us  ratio=2.26x  (0.44x fp16)
+T=  256  fp16=  57.23us  cuda= 124.72us  ratio=2.18x  (0.46x fp16)
+T=  512  fp16= 116.74us  cuda= 150.17us  ratio=1.29x  (0.78x fp16)
+T= 1024  fp16= 220.23us  cuda= 266.09us  ratio=1.22x  (0.83x fp16)
+```
+
+**Key insight**: the pre-R19 baseline's shmem & compute paths are
+already close to SM89's peak-utilisation envelope for this tile
+shape (kBm=128, kBn=64, kBk=128).  The remaining gap to FP16 at
+T=512..1024 is not due to a single micro-optimisable bottleneck;
+it is architectural (s4 MMA issue rate vs FP16 MMA issue rate,
+plus shmem staging overhead).
+
+### Decision
+
+Close out Round 19 with revert and document two negative-result
+directions.  Next productive step requires either:
+
+1.  ncu access to measure `smsp__pipe_tensor_core_util` and
+    `smsp__inst_executed_pipe_lsu_util` -- currently unmeasured.
+2.  A structural redesign (warp-specialised producer-consumer via
+    shmem ring buffer) estimated at ~1000 LOC.
+
+Both are deferred.  The R18 dispatch-tuned kernel remains
+production-grade.
+

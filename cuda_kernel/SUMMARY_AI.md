@@ -122,27 +122,28 @@ End-to-end v9_linear, auto-dispatch, cuBLAS FP16 baseline:
 Each directive includes: **target shape, expected gain, risk class,
 implementation sketch**.
 
-#### 6.1 [HIGH-ROI, LOW-RISK] ldmatrix for MMA kernels -- target T>=512
+#### 6.1 [ATTEMPTED R19, NO GAIN] ldmatrix for MMA kernels -- target T>=512
 
 - **Target shapes**: `pre_T512_4k_4k` (0.70x -> expected 0.95x-1.05x),
   `pre_T1024_4k_4k` (0.74x -> expected 1.0x-1.1x), and by transitivity
   all T>=128 kBn=64 path.
-- **Why it works here**: prefill is compute-bound; the current per-lane
-  scalar shmem loads for A/B operand fragments issue ~8 shmem.b16 loads
-  per MMA.  `ldmatrix.x4.trans.shared.b16` does the same in 1 instruction.
-- **Implementation sketch**:
-  1. Rework sW/sX stagers so A-fragment tiles are laid out in the
-     b16 row-col pattern that `ldmatrix.x4` expects
-     (already documented in `csrc/common/mma_utils.cuh`).
-  2. Replace the per-lane uint32 read loop with a single
-     `ldmatrix_x4_trans_b16(addr, frag[4])` call per warp.
-  3. B-fragment similarly with `ldmatrix.x2`.
-- **Risk**: **medium**.  The operand layout is well-specified in NVIDIA's
-  PTX ISA 8.7 section 9.7.13.4.  Parity can be verified against current
-  kernel output on one shape before generalizing.
-- **Deferred reason so far**: no ncu/nsight access on AutoDL to measure
-  shmem-LSU occupancy, so the expected speedup is a
-  microarchitecture-model estimate, not measured.
+- **R19 result**: **negative**.  Replaced 8-scalar-uint32 A loads with
+  2 `ldmatrix.x4.shared.b16` per `ks`.  Parity 10/10 passed; wall time
+  regressed +3% at T=64/128 and +4% at T=1024, all other T unchanged.
+- **Explanation**: the existing A load pattern
+  `sW[msub + lane/4][kpb + (lane&3)*4]` is already maximally warp-
+  coalesced into a single `LDS.32` per 4-byte word (lanes 0..3 of each
+  quad read adjacent words in the same row).  ldmatrix would be an
+  improvement only if the operand were staged in a banked layout that
+  otherwise required bank-conflict resolution -- not our case.
+- **Remaining sub-direction (untested)**: `ldmatrix.x2.trans.shared.b16`
+  for B operand.  Current B-load is `kNsubPerCta` = 8 scalar reads per
+  lane per ks (for kBn=64), and the shmem layout `sX[n_row][col]` is
+  not optimally coalesced because `n_row = in_sub*8 + lane/4` means
+  different in_sub values spread lanes across different n_row strides.
+  Replacing with ldmatrix.x2.trans may yield a true reduction in LDS
+  transactions.  Not attempted because the trans-variant address
+  arithmetic is subtle and R19.A negative result lowered priority.
 
 #### 6.2 [HIGH-ROI, MEDIUM-RISK] cp.async double-buffer for MMA kernels
 
