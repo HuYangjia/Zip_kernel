@@ -150,9 +150,9 @@ __global__ void dense_gemv_decode_kernel(
         uint32_t w_s8x4 = unpack_s4_to_s8x4(w_packed);
         uint32_t x_s8x4 = unpack_s4_to_s8x4(x_packed);
 
-        // Per-thread partial dot product.
+        // Per-thread partial dot product (signed s8 * s8 -> s32).
         int dot = 0;
-        dot = __dp4a(w_s8x4, x_s8x4, dot);
+        dot = __dp4a(static_cast<int>(w_s8x4), static_cast<int>(x_s8x4), dot);
 
         // Warp-level reduce (32 lanes -> lane 0 holds the group sum).
         #pragma unroll
