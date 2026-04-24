@@ -426,7 +426,22 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
     //   (<=48 KB), while multiple CTAs handle T/kBt tokens in parallel.
     //   The SP path halves HBM gather traffic vs 2-pass, which is the
     //   dominant cost at T=8..64 (wall time ~19 us is mostly gather).
-    const size_t sp_budget_bytes = 48u * 1024u;
+    //
+    // Round 21 fix: the total sp shmem is
+    //     kBt * D * sizeof(half) + kBt * 4 * sizeof(float)
+    //         + kBt * 4 * sizeof(int) + kBt * sizeof(float)
+    //         + kBt * sizeof(unsigned char)   (rounded up to 16 bytes)
+    //   so `kBt * D * 2` alone is NOT the full budget -- the staging
+    //   area costs up to ~100 bytes per kBt plus alignment padding.
+    //   Qwen3-1.7B down_proj (D=6144) triggered this: 4*6144*2 = 49152
+    //   bytes alone already fit, but the total shmem was 49300 bytes,
+    //   which exceeds SM89's default 48 KiB dynamic-shmem cap and made
+    //   the launch fail with cudaErrorInvalidArgument.
+    //
+    //   Subtract a conservative 1 KiB safety margin for the staging
+    //   area + alignment so the gate matches the real launch budget.
+    constexpr size_t kSpSafetyMargin = 1024u;    // room for staging/align
+    const size_t sp_budget_bytes = 48u * 1024u - kSpSafetyMargin;
     // Pick largest kBt (1, 2, 4) such that kBt * D * 2 fits in shmem.
     int sp_kBt = 0;
     if ((size_t)4 * D * 2u <= sp_budget_bytes)      sp_kBt = 4;
