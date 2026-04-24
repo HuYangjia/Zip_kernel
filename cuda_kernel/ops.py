@@ -56,6 +56,7 @@ _SOURCES = [
     str(_CSRC / "sparse_gemm"        / "sparse_gemm_mma_int4.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int4.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_gemv_decode.cu"),
+    str(_CSRC / "fused_dense_sparse" / "fused_gemv_smallT.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_quant_gemv.cu"),
 ]
 
@@ -421,13 +422,37 @@ def fused_gemv_cuda_decode(
     return Y_total
 
 
+def fused_gemv_cuda_smallT(
+    W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+) -> torch.Tensor:
+    """Fused dense+sparse GEMV for small T (T<=16, dp4a, Round 16).
+
+    For T in [2, 16], the INT4 MMA kernel fills only T/8 of its N=8
+    slice.  This kernel uses 1 warp per output row and loops over T
+    columns with dp4a, achieving 100% arithmetic utilisation.
+    """
+    args, Y_total = _prepare_fused_args(
+        W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+    )
+    _ext.fused_gemv_smallT_launch(*args)
+    return Y_total
+
+
 # Default alias: auto-dispatch on T.
 def fused_dense_sparse_cuda(
     W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
     X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
 ) -> torch.Tensor:
-    if X_s4.shape[0] == 1:
+    T = X_s4.shape[0]
+    if T == 1:
         return fused_gemv_cuda_decode(
+            W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+            X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+        )
+    if T <= 16:
+        return fused_gemv_cuda_smallT(
             W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
             X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
         )
@@ -454,4 +479,8 @@ __all__ = [
     # T=1 decode specialisations (Round 13/14)
     "dense_gemv_cuda_decode",
     "fused_gemv_cuda_decode",
+    # T>=2 smallT specialisation (Round 16)
+    "fused_gemv_cuda_smallT",
+    # T=1 fused quant+GEMV single kernel (Round 15)
+    "fused_quant_gemv_cuda",
 ]
