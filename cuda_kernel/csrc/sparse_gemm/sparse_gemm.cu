@@ -123,7 +123,9 @@ __global__ void sparse_gemm_kernel(
     #pragma unroll
     for (int k = 0; k < kBn; ++k) y_acc[k] = 0.0f;
 
-    __shared__ uint8_t sX[kBn][64];
+    // Double-buffered shmem X tile (Round 7).  Prefetches the next
+    // BSR block's X via cp.async while computing on the current.
+    __shared__ alignas(16) uint8_t sX[2][kBn][64];
 
     // Fetch BSR slice for this block-row.
     const int blk_start = hp_row_offsets[br];
@@ -131,22 +133,45 @@ __global__ void sparse_gemm_kernel(
 
     __syncthreads();  // publish s_scale_x
 
-    for (int block_idx = blk_start; block_idx < blk_end; ++block_idx) {
-        const int bc = hp_col_indices[block_idx];
-
-        // --- Stage X rows for group bc (same 64 bytes per row as dense) ---
-        const int total_x_bytes = kBn * 64;
-        for (int idx = tid; idx < total_x_bytes; idx += kBm) {
-            int row = idx >> 6;
-            int col = idx & 63;
+    // cp.async X loader for BSR block given bc (the group/col index).
+    auto issue_x_load = [&](int bc, int buf) {
+        const int total_quads = kBn * 4;
+        if (tid < total_quads) {
+            int row = tid >> 2;
+            int quad = tid & 3;
             int n = n_base + row;
-            uint8_t v = 0;
             if (n < T) {
                 int64_t off = (int64_t)n * stride_x_n
-                            + (int64_t)(bc * bytes_per_group + col) * stride_x_k;
-                v = X[off];
+                            + (int64_t)(bc * bytes_per_group + quad * 16) * stride_x_k;
+                cp_async_cg_16(
+                    &sX[buf][row][quad * 16],
+                    X + off
+                );
+            } else {
+                uint4 zero = make_uint4(0, 0, 0, 0);
+                *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = zero;
             }
-            sX[row][col] = v;
+        }
+    };
+
+    if (blk_start < blk_end) {
+        int bc0 = __ldg(&hp_col_indices[blk_start]);
+        issue_x_load(bc0, 0);
+        cp_async_commit();
+    }
+
+    for (int block_idx = blk_start; block_idx < blk_end; ++block_idx) {
+        const int bc = __ldg(&hp_col_indices[block_idx]);
+        const int buf = (block_idx - blk_start) & 1;
+
+        // Prefetch next block's X (if any) before waiting on this one.
+        if (block_idx + 1 < blk_end) {
+            int bc_next = __ldg(&hp_col_indices[block_idx + 1]);
+            issue_x_load(bc_next, buf ^ 1);
+            cp_async_commit();
+            cp_async_wait_group<1>();
+        } else {
+            cp_async_wait_group<0>();
         }
         __syncthreads();
 
@@ -191,7 +216,7 @@ __global__ void sparse_gemm_kernel(
                 int x0_n[kBn], x1_n[kBn];
                 #pragma unroll
                 for (int nk = 0; nk < kBn; ++nk) {
-                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
+                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[buf][nk][0])[i];
                     unpack_4bytes_to_2int32(xp, x0_n[nk], x1_n[nk]);
                 }
                 int w0 = w_dp4a[2*i];
