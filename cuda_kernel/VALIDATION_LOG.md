@@ -199,6 +199,81 @@ Priority order:
 3. Implement ldmatrix for A/B operand loading.
 4. Re-run bench to confirm dense_gemm crosses 1.0x FP16 at T>=64.
 
+## Round 12: archive INT8 MMA + INT4 shmem caching (2026-04-24 16:38)
+
+### Decisions
+
+1. **INT8 MMA archived.** Round 11 showed INT4 MMA 1.7-1.9x faster than
+   INT8 MMA on every tested shape.  Bindings, Python aliases, parity
+   tests, and bench removed the INT8 path (source files kept on disk,
+   excluded from sources list; Python entry points raise a clear
+   RuntimeError).
+
+2. **INT4 kernel optimisations:**
+   - kBn capped at 64 (was 128).  Eliminates the 255-register +
+     588B spill footprint of the kBn=128 path that killed T>=64 perf.
+     New dispatch: T<=8 -> kBn=8, T<=32 -> kBn=32, else kBn=64.
+   - scale_u4 / zero_u4 prefetched to shmem in dense + fused kernels
+     when n_groups <= 32 (covers all current Qwen3/Llama shapes with
+     d_in <= 4096).  Removes per-epilogue HBM reads.
+   - Sparse kernel: per-BSR-block scale (kBm fp16 = 256 B) cached in
+     shmem once per block.  Same optimisation for the fused kernel's
+     sparse branch.
+
+### ptxas footprint (R12)
+
+| kernel | kBn | regs | smem | spill |
+|---|---:|---:|---:|---:|
+| dense_int4 | 64 | 166 | 41 KB | 0 |
+| dense_int4 | 32 | 165 | 37 KB | 0 |
+| dense_int4 | 8 | 72 | 34 KB | 0 |
+| sparse_int4 | 64 | 170 | 25 KB | 0 |
+| sparse_int4 | 32 | 130 | 21 KB | 0 |
+| sparse_int4 | 8 | 60 | 17 KB | 0 |
+| fused_int4 | 64 | 170 | 42 KB | 0 |
+| fused_int4 | 32 | 166 | 37 KB | 0 |
+| fused_int4 | 8 | 80 | 34 KB | 0 |
+
+Zero register spill across the board; 45-63% register-count reduction
+vs the R11 kBn=128 path.
+
+### Parity: 27/27 PASSED ✅
+
+### Benchmark (bench_20260424_163858.md)
+
+Key speedups vs cuBLAS FP16 (and Round 11 deltas):
+
+| kernel/shape | R11 int4 | **R12 int4** | delta |
+|---|---:|---:|---:|
+| dense  T=1 4k→11k | 1.52x | **1.93x** | +27% |
+| dense  T=128      | 0.13x | **0.29x** | +123% |
+| dense  T=512      | 0.42x | **0.81x** | +92% |
+| dense  T=1024     | 0.64x | **0.79x** | +23% |
+| sparse T=1 4k→11k | 5.29x | 5.28x | flat |
+| sparse T=128      | 1.16x | **1.84x** | +59% |
+| sparse T=512      | 3.50x | **4.62x** | +32% |
+| fused  T=1 4k→11k | 1.88x | **2.21x** | +17% |
+| fused  T=128      | 0.12x | **0.28x** | +133% |
+| fused  T=512      | 0.40x | **0.79x** | +98% |
+| e2e    T=1 4k→11k | 1.59x | **1.83x** | +15% |
+
+### Remaining bottlenecks (for Round 13+)
+
+1. **T=1 d_out<=d_in still slow** (0.41x / 0.54x).  FP16 GEMV on cuBLAS
+   is simply faster than anything that touches W=128*128 s4 tiles when
+   only 1 N column is active; the INT4 MMA's N=8 slice is 87% idle.
+   Fix: dedicated split-K GEMV kernel with N=1 path (no MMA).
+
+2. **T=64..128 dense dip** (0.18-0.29x).  MMA compute is now free but
+   HBM W traffic dominates.  Fix: cp.async double-buffer X (not yet
+   restored in R12; R12 kept the simple single-buffer pattern inherited
+   from R10's INT4 code).
+
+3. **Scalar shmem reads for A/B** (not ldmatrix).  Each thread issues
+   6 shmem loads per MMA (4 for A, 2 for B) instead of 1 ldmatrix.x4 +
+   1 ldmatrix.x2.  The mma_utils wrappers exist; just need to rework
+   the shmem stager to match the ldmatrix-expected b16 layout.
+
 ### Next run
 
 On `autodl`:
