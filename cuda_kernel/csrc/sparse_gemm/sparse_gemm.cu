@@ -176,21 +176,34 @@ __global__ void sparse_gemm_kernel(
                 scale_u4[(int64_t)m * stride_su_m + (int64_t)bc * stride_su_g]
             );
 
+            // ILP-friendly K-outside / N-inside loop (see dense_gemm.cu).
+            int acc_n[kBn];
+            #pragma unroll
+            for (int nk = 0; nk < kBn; ++nk) acc_n[nk] = 0;
+
+            #pragma unroll
+            for (int i = 0; i < 16; ++i) {
+                int x0_n[kBn], x1_n[kBn];
+                #pragma unroll
+                for (int nk = 0; nk < kBn; ++nk) {
+                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
+                    unpack_4bytes_to_2int32(xp, x0_n[nk], x1_n[nk]);
+                }
+                int w0 = w_dp4a[2*i];
+                int w1 = w_dp4a[2*i + 1];
+                #pragma unroll
+                for (int nk = 0; nk < kBn; ++nk) {
+                    acc_n[nk] = __dp4a(w0, x0_n[nk], acc_n[nk]);
+                    acc_n[nk] = __dp4a(w1, x1_n[nk], acc_n[nk]);
+                }
+            }
+
             #pragma unroll
             for (int nk = 0; nk < kBn; ++nk) {
                 int n = n_base + nk;
                 if (n >= T) break;
-                int acc_b = 0;
-                #pragma unroll
-                for (int i = 0; i < 16; ++i) {
-                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
-                    int x0, x1;
-                    unpack_4bytes_to_2int32(xp, x0, x1);
-                    acc_b = __dp4a(w_dp4a[2*i    ], x0, acc_b);
-                    acc_b = __dp4a(w_dp4a[2*i + 1], x1, acc_b);
-                }
                 float sxn = __half2float(s_scale_x[nk]);
-                y_acc[nk] += static_cast<float>(acc_b) * scale_bc * sxn;
+                y_acc[nk] += static_cast<float>(acc_n[nk]) * scale_bc * sxn;
             }
         }
 

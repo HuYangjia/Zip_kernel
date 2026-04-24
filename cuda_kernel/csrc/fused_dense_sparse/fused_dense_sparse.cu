@@ -166,20 +166,35 @@ __global__ void fused_dense_sparse_kernel(
                 zero_u4[(int64_t)m * stride_zu_m + (int64_t)g * stride_zu_g]
             );
 
+            // ILP-friendly loop swap (see dense_gemm.cu for rationale):
+            // K outside, N inside, so kBn independent dp4a chains feed
+            // the scheduler at once and hide the 4-6 cycle dp4a latency.
+            int acc_n[kBn];
+            #pragma unroll
+            for (int nk = 0; nk < kBn; ++nk) acc_n[nk] = 0;
+
+            #pragma unroll
+            for (int i = 0; i < 16; ++i) {
+                int x0_n[kBn], x1_n[kBn];
+                #pragma unroll
+                for (int nk = 0; nk < kBn; ++nk) {
+                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
+                    unpack_4bytes_to_2int32(xp, x0_n[nk], x1_n[nk]);
+                }
+                int w0 = w_dp4a[2*i];
+                int w1 = w_dp4a[2*i + 1];
+                #pragma unroll
+                for (int nk = 0; nk < kBn; ++nk) {
+                    acc_n[nk] = __dp4a(w0, x0_n[nk], acc_n[nk]);
+                    acc_n[nk] = __dp4a(w1, x1_n[nk], acc_n[nk]);
+                }
+            }
+
             #pragma unroll
             for (int nk = 0; nk < kBn; ++nk) {
                 int n = n_base + nk;
                 if (n >= T) break;
-                int acc_g = 0;
-                #pragma unroll
-                for (int i = 0; i < 16; ++i) {
-                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
-                    int x0, x1;
-                    unpack_4bytes_to_2int32(xp, x0, x1);
-                    acc_g = __dp4a(w_dp4a[2*i    ], x0, acc_g);
-                    acc_g = __dp4a(w_dp4a[2*i + 1], x1, acc_g);
-                }
-                float corrected = static_cast<float>(acc_g)
+                float corrected = static_cast<float>(acc_n[nk])
                                 - zero_g * static_cast<float>(s_sum_X[nk]);
                 float sxn = __half2float(s_scale_x[nk]);
                 y_acc[nk] += corrected * scale_g * sxn;
@@ -190,7 +205,7 @@ __global__ void fused_dense_sparse_kernel(
     }
 
     // =================================================================
-    // SPARSE branch : BSR loop for this block-row, contributes
+    // SPARSE branch    // SPARSE branch : BSR loop for this block-row, contributes
     // 16 * dot(W_high, X_s4_bc) * scale[m, bc] * scale_x[n] to y_acc.
     // =================================================================
     const int blk_start = hp_row_offsets[br];
@@ -238,23 +253,36 @@ __global__ void fused_dense_sparse_kernel(
                 scale_u4[(int64_t)m * stride_su_m + (int64_t)bc * stride_su_g]
             );
 
+            // ILP-friendly K-outside / N-inside loop (see dense kernel).
+            int acc_n[kBn];
+            #pragma unroll
+            for (int nk = 0; nk < kBn; ++nk) acc_n[nk] = 0;
+
+            #pragma unroll
+            for (int i = 0; i < 16; ++i) {
+                int x0_n[kBn], x1_n[kBn];
+                #pragma unroll
+                for (int nk = 0; nk < kBn; ++nk) {
+                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
+                    unpack_4bytes_to_2int32(xp, x0_n[nk], x1_n[nk]);
+                }
+                int w0 = w_dp4a[2*i];
+                int w1 = w_dp4a[2*i + 1];
+                #pragma unroll
+                for (int nk = 0; nk < kBn; ++nk) {
+                    acc_n[nk] = __dp4a(w0, x0_n[nk], acc_n[nk]);
+                    acc_n[nk] = __dp4a(w1, x1_n[nk], acc_n[nk]);
+                }
+            }
+
             #pragma unroll
             for (int nk = 0; nk < kBn; ++nk) {
                 int n = n_base + nk;
                 if (n >= T) break;
-                int acc_b = 0;
-                #pragma unroll
-                for (int i = 0; i < 16; ++i) {
-                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
-                    int x0, x1;
-                    unpack_4bytes_to_2int32(xp, x0, x1);
-                    acc_b = __dp4a(w_dp4a[2*i    ], x0, acc_b);
-                    acc_b = __dp4a(w_dp4a[2*i + 1], x1, acc_b);
-                }
                 float sxn = __half2float(s_scale_x[nk]);
                 // 16x factor: matches Triton fused kernel's
                 // ``y_acc += 16.0 * acc_block * scale_bc * sxn``.
-                y_acc[nk] += 16.0f * static_cast<float>(acc_b) * scale_bc * sxn;
+                y_acc[nk] += 16.0f * static_cast<float>(acc_n[nk]) * scale_bc * sxn;
             }
         }
 
