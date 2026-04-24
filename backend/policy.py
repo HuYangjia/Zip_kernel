@@ -110,7 +110,10 @@ def _auto_policy(kernel_name: str, ctx: ShapeContext) -> str:
         return "triton"
 
     if kernel_name == KERNEL_SPARSE_GEMM:
-        if ctx.T <= 128:
+        # Round 7 cp.async helped T<=16 (3.8x->3.95x) but pushed T>=64
+        # into a loss zone due to a kBn=4 spill + prefetch pressure.
+        # Narrow the window to T<=16 where the win is robust.
+        if ctx.T <= 16:
             return "cuda"
         return "triton"
 

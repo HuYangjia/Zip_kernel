@@ -364,22 +364,94 @@ Each round changes ONE dimension at a time and is recorded below.
   dominate the remaining latency.  Further shrinking kBn won't help.
 - Commit: `5c444cf`.
 
-### Where we are (as of Round 5)
+### Round 6 (13:52) -- cp.async double-buffered X for dense_gemm  [BIG WIN T=1]
 
-Final bench (iter-Round 5, `bench_20260424_133330`):
+- Motivation: T=1 dense was stuck at 1.17-1.37x (~63us wall time).
+  Profiling suggested the 32-group K-loop was serialising HBM load
+  and dp4a; specifically, each group's sX staging was a ~60-cycle
+  latency bubble before dp4a could start consuming it.
+- Change: introduce cp.async helpers in common/arch.cuh
+  (cp_async_cg_16, cp_async_commit, cp_async_wait_group<N>).
+  dense_gemm now allocates two alignas(16) shmem banks sX[2][kBn][64]
+  and s_sum_X[2][kBn].  Prologue kicks off group 0; per-iter body
+  issues g+1's load, commits, waits on group 1 stack, syncs, and
+  computes on bank (g&1).  Last iteration waits<0> (drain).
+- Gotchas resolved:
+  1. Removed the `#if __CUDA_ARCH__ >= 800` guard around the helpers
+     in arch.cuh -- with it on, nvcc's host-pass elided the definitions
+     and the subsequent device pass reported them as undefined.  The
+     header already #errors for arch<800 at the top so it's safe to
+     declare them unconditionally.
+  2. Added `alignas(16)` to the sX shmem array; without it CUDA
+     raised "misaligned address" at runtime because cp.async.cg
+     requires 16-byte aligned shmem destination.
+- Result: `bench_20260424_134230`.
+  - dense T=1 4k/4k:  61us -> **48us** (1.17x -> **1.46x**), +25%
+  - dense T=1 4k/11k: 63us -> **48us** (1.08x -> **1.43x**), +32%
+  - dense T=1 11k/4k: 179us -> 129us (0.74x -> **1.04x**), flipped
+  - T>=8: small noise-level changes, still within budget
+- End-to-end T=1: 73us -> 70us (3.17x -> **3.26x**)
+- Commits: `dafb642`, `6c05ee6`, `d7d1aa9`.
+
+### Round 6b (13:58) -- extend cp.async to fused dense branch
+
+- Same double-buffer template applied to the dense half of
+  fused_dense_sparse.cu; sparse half (BSR loop) left single-buffered
+  for now.  sX is now alignas(16) sX[2][kBn][64] and sparse uses
+  sX[0].
+- Result:
+  - fused T=1 4k/4k:  68us -> **52us** (1.19x -> **1.55x**), +25%
+  - fused T=1 4k/11k: 75us -> **52us** (1.07x -> **1.54x**), +42%
+  - end-to-end T=1: unchanged at 70us (already dominated by dense)
+- Commit: `dadede5`.
+
+### Round 7 (14:02) -- cp.async for sparse_gemm BSR loop
+
+- BSR indirection makes prefetch non-trivial: we need bc_next =
+  __ldg(&hp_col_indices[block_idx+1]) before we can issue the next
+  cp.async.  Luckily hp_col_indices is small and fully cached in L1.
+- Result mixed:
+  - sparse T=1 4k/4k:   18us -> **17.7us** (3.78x -> **3.89x**)
+  - sparse T=1 4k/11k:  18us -> **17.5us** (3.83x -> **3.96x**)
+  - sparse T=8 4k/4k:   18us -> **17.7us** (3.84x -> **3.95x**)
+  - sparse T=16 4k/4k:  18us -> **17.6us** (3.76x -> **3.93x**)
+  - sparse T=64 4k/4k:  42us -> 82us (1.59x -> 0.84x) REGRESSION
+  - sparse T=128 4k/4k: 60us -> 128us (1.16x -> 0.54x) REGRESSION
+- Diagnosis: at T>=64 the kBn=4 path already has per-thread register
+  pressure (acc_n[4]+x0_n[4]+x1_n[4]+w_dp4a[32]=44 regs), and the
+  added register pressure from the cp.async bc_next prefetch path
+  + double-buffered addressing tipped us over the spill threshold.
+  Rather than re-engineer, narrow policy: sparse -> cuda only for T<=16.
+- Commit: `ab5f5de`, policy tweak `f9d5a9`.
+
+### Where we are (as of Round 7)
+
+Final bench (iter-Round 7, `bench_20260424_140158`):
 
 | kernel              | shape        | Triton  | CUDA    | speedup |
 |---------------------|--------------|--------:|--------:|--------:|
-| end-to-end v9_linear| T=1 4k/4k    | 231us   | 73us    | **3.17x** |
-| end-to-end v9_linear| T=1 4k/11k   | 229us   | 74us    | **3.10x** |
-| end-to-end v9_linear| T=1 11k/4k   | 265us   | 176us   | 1.51x     |
-| end-to-end v9_linear| T=8 4k/4k    | 238us   | 107us   | **2.21x** |
-| end-to-end v9_linear| T=16 4k/4k   | 236us   | 141us   | **1.67x** |
-| end-to-end v9_linear| T=64 4k/4k   | 236us   | 388us   | 0.61x (rt triton) |
-| end-to-end v9_linear| T=128 4k/4k  | 237us   | 696us   | 0.34x (rt triton) |
+| dense_gemm          | T=1 4k/4k    | 69us    | 48us    | **1.46x** |
+| dense_gemm          | T=1 4k/11k   | 69us    | 48us    | **1.43x** |
+| dense_gemm          | T=1 11k/4k   | 135us   | 129us   | 1.04x     |
+| dense_gemm          | T=8 4k/4k    | 69us    | 66us    | 1.04x     |
+| sparse_gemm         | T=1 4k/4k    | 69us    | 17.7us  | **3.89x** |
+| sparse_gemm         | T=8 4k/4k    | 70us    | 17.7us  | **3.95x** |
+| sparse_gemm         | T=16 4k/4k   | 69us    | 17.6us  | **3.93x** |
+| fused_dense_sparse  | T=1 4k/4k    | 81us    | 52us    | **1.55x** |
+| fused_dense_sparse  | T=1 4k/11k   | 81us    | 52us    | **1.54x** |
+| fused_dense_sparse  | T=1 11k/4k   | 161us   | 135us   | 1.19x     |
+| fused_dense_sparse  | T=8 4k/4k    | 80us    | 77us    | 1.04x     |
+| end-to-end v9_linear| T=1 4k/4k    | 229us   | 69us    | **3.31x** |
+| end-to-end v9_linear| T=1 4k/11k   | 229us   | 70us    | **3.26x** |
+| end-to-end v9_linear| T=1 11k/4k   | 266us   | 170us   | **1.56x** |
+| end-to-end v9_linear| T=8 4k/4k    | 240us   | 105us   | **2.29x** |
+| end-to-end v9_linear| T=16 4k/4k   | 239us   | 142us   | **1.68x** |
 
-Dispatcher auto-routes T>=64 to Triton so product latency is always
-<= Triton baseline.
+Final policy:
+  - activation_quant   -> cuda always
+  - dense_gemm         -> cuda iff T<=8 AND d_out<=d_in
+  - sparse_gemm        -> cuda iff T<=16
+  - fused_dense_sparse -> cuda iff T<=8 AND d_out<=d_in
 
 ### What's left on the table (Phase 5 backlog)
 
