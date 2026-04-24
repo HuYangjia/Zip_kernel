@@ -518,6 +518,71 @@ Remaining gap at T=1 4k→4k (0.83x):
   To beat FP16 at 4k→4k we would need to reduce W bandwidth by 4x
   (which W4 does) but the quant overhead partially offsets this.
 
+## Round 16: smallT GEMV specialisation (T=2..16) -- **FAILED EXPERIMENT** (2026-04-24 17:47)
+
+### Hypothesis
+
+Following the R13/R14 GEMV wins at T=1, I hypothesised the same
+architecture (1 warp per output row + dp4a) could beat MMA at T=2..16
+because MMA's N=8 slice is filled only T/8 at T<8.
+
+### Implementation
+
+New kernel ``fused_gemv_smallT.cu``: per-warp architecture with a
+``#pragma unroll`` T-loop that issues ``T`` dp4a + warp-reduce per
+group, using T fp32 accumulators per warp.
+
+Parity: max_rel < 1.5e-3 vs MMA on 12 shapes (T in {2,4,8,16} x 3
+shapes).  A handful of entries differ by up to 1.6e-2 abs (4-8 fp16
+ULPs at the output magnitude), but this is the expected fp32
+accumulation-order difference between MMA internal ordering and dp4a
+warp-reduce ordering.
+
+### Benchmark (smallT path enabled, bench_20260424_174604)
+
+| shape | FP16 | MMA (R15) | **smallT** | MMA/FP16 | **smallT/FP16** |
+|---|---:|---:|---:|---:|---:|
+| fused T=8  4k→4k | 14.93us | 43.21us | **62.48us** | 0.35x | **0.24x** 🔴 |
+| fused T=16 4k→4k | 16.24us | 64.49us | **110.26us** | 0.25x | **0.15x** 🔴 |
+| e2e T=8 4k→4k    | 14.91us | 60.89us | **82.22us** | 0.25x | **0.18x** 🔴 |
+| e2e T=16 4k→4k   | 16.20us | 81.92us | **130.66us** | 0.20x | **0.12x** 🔴 |
+
+**smallT is consistently 30-60% slower than MMA at T=8..16**.
+
+### Root cause analysis
+
+At T=1, MMA wastes 7/8 of its N-slice, so dp4a GEMV wins.  At T=8, MMA
+fills N=8 exactly, so the Tensor Core is fully utilised.  The dp4a
+warp-reduce approach issues T dp4a + T warp-reduce (32 shuffle ops)
+per group per warp -- the reduce chain serialises and cannot match
+MMA's pipelined Tensor Core throughput.
+
+Key insight: **GEMV architecture's advantage is N-slice savings, which
+disappears when T >= MMA.N (=8 for s4).**  At T=8..16 the right move is
+to optimise MMA itself (ldmatrix, cp.async, bigger K tiles), not to
+abandon it.
+
+### Decision
+
+- Kernel ``fused_gemv_smallT`` kept in codebase (available via
+  ``fused_gemv_cuda_smallT``) for reference and future revisit, e.g.
+  if someone wants a mixed strategy or if we remove dp4a-reduce
+  serialisation via ldmatrix-style pair-wise loads.
+- Default dispatch reverted: T=2..N still goes to INT4 MMA (R15).
+- Current best state restored: e2e T=1 = {0.83x, 2.06x, 1.95x},
+  T=8..1024 unchanged from R15.
+
+### Remaining bottlenecks
+
+Order of attack for future rounds:
+1. **Prefill T=512..1024 (0.70-0.74x)**: close to FP16; adding
+   ldmatrix for W/X operand loads inside MMA kernel is the most
+   surgical fix.  Expected: 0.74x -> 1.0x+.
+2. **smallT T=8..128 (0.14-0.28x)**: structurally hard because FP16
+   Tensor Cores dominate here.  Only ldmatrix + cp.async + bigger K
+   staging inside MMA can narrow the gap; full parity with FP16
+   Tensor Core may be unreachable on Ada.
+
 ### Next run
 
 On `autodl`:
