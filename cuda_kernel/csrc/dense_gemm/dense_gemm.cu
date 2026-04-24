@@ -206,8 +206,12 @@ __global__ void dense_gemm_kernel(
     // Two (kBn, 64) banks; at kBn<=4 this is at most 512 bytes total,
     // negligible.  cp.async writes directly to shmem without occupying
     // registers or stalling the compute pipeline.
+    //
+    // IMPORTANT: cp.async.cg requires the shmem destination to be
+    // 16-byte aligned.  Shared memory arrays default to element-
+    // alignment only, so we force alignas(16) explicitly.
     // -----------------------------------------------------------------
-    __shared__ uint8_t sX[2][kBn][64];
+    __shared__ alignas(16) uint8_t sX[2][kBn][64];
 
     // Also stage the per-group sum_X[n] for all kBn columns.  Double-
     // buffered too so it stays in lock-step with sX.
