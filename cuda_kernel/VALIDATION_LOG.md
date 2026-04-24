@@ -354,6 +354,95 @@ path.  Tests continue to cover both entry points explicitly.
    from my earlier analysis; needs cp.async + ldmatrix to become
    competitive.
 
+## Round 14: fused_gemv_decode (T=1 fused specialisation) (2026-04-24 17:14)
+
+### Motivation
+
+Round 13 showed dense_gemm T=1 now beats FP16 (1.04-1.99x) via the
+GEMV kernel, but end-to-end was unchanged (0.33x / 1.83x / 0.72x)
+because the production path uses the *fused* kernel, not the standalone
+dense kernel.  Round 14 applies the same GEMV architecture to the fused
+dense+sparse kernel.
+
+### Implementation
+
+New file: ``csrc/fused_dense_sparse/fused_gemv_decode.cu``.
+
+Design mirrors dense_gemv_decode.cu:
+- 1 warp per output row m; kBm=8 warps per CTA (256 threads).
+- Grid: (ceil(d_out / 8),).
+- Dense branch: identical to dense_gemv_decode (dp4a, warp reduce,
+  per-group scale/zero correction).
+- Sparse branch: for each BSR block in the block-row, reload X for
+  column group bc into shmem, then dp4a + warp reduce + scale fold
+  (no zero correction, multiply by 16.0 as per the fused math contract).
+- BSR lookup: br = (blockIdx.x * kBm) / BROW.  Multiple CTAs share
+  the same block-row; each reads hp_row_offsets[br] independently
+  (small, L2-cached).
+
+Parity: verified against fused_dense_sparse_mma_int4 on 4 shapes.
+  d_out=4096  d_in=4096  hp=0.05  max_abs=1.22e-4  match=True
+  d_out=11008 d_in=4096  hp=0.05  max_abs=4.88e-4  match=True
+  d_out=4096  d_in=11008 hp=0.05  max_abs=9.77e-4  match=True
+  d_out=4096  d_in=4096  hp=0.00  max_abs=9.77e-4  match=True
+
+### Python dispatch
+
+``fused_dense_sparse_cuda`` is now a dispatch function:
+- ``X_s4.shape[0] == 1`` -> ``fused_gemv_cuda_decode``  (dp4a GEMV)
+- otherwise             -> ``fused_dense_sparse_cuda_int4`` (INT4 MMA)
+
+### Benchmark results (bench_20260424_171451.md)
+
+#### fused_dense_sparse (R12 MMA → R14 auto-dispatch)
+
+| shape | FP16 | R12 MMA | **R14 GEMV** | R12/FP16 | **R14/FP16** |
+|---|---:|---:|---:|---:|---:|
+| T=1 4k→4k  | 16.96us | 41.27us | **16.63us** | 0.41x | **1.02x** ✅ |
+| T=1 4k→11k | 93.98us | 42.52us | **36.78us** | 2.21x | **2.56x** ✅ |
+| T=1 11k→4k | 94.90us | 109.83us | **40.39us** | 0.87x | **2.35x** ✅ |
+| T=8..1024  | unchanged (MMA path) | | | | |
+
+#### end_to_end_v9_linear (R13 → R14)
+
+| shape | FP16 | R13 e2e | **R14 e2e** | R13/FP16 | **R14/FP16** |
+|---|---:|---:|---:|---:|---:|
+| **dec_T1_4k_4k**  | 16.45us | 50.21us | **26.19us** | 0.33x | **0.63x** 🟡 |
+| **dec_T1_4k_11k** | 93.98us | 51.34us | **46.65us** | 1.83x | **2.01x** ✅ |
+| **dec_T1_11k_4k** | 94.98us | 131.37us | **63.51us** | 0.72x | **1.50x** ✅ |
+| dec_T8_4k_4k      | 14.97us | 60.93us | 60.93us | 0.25x | 0.25x |
+| dec_T16_4k_4k     | 16.22us | 81.88us | 81.88us | 0.20x | 0.20x |
+| bat_T64_4k_4k     | 19.09us | 133.50us | 133.50us | 0.14x | 0.14x |
+| bat_T128_4k_4k    | 33.09us | 131.99us | 131.99us | 0.25x | 0.25x |
+| pre_T512_4k_4k    | 110.22us | 156.45us | 156.45us | 0.70x | 0.70x |
+| pre_T1024_4k_4k   | 212.01us | 289.30us | 289.30us | 0.73x | 0.73x |
+
+### Analysis
+
+T=1 e2e improvements:
+- 4k→4k:  0.33x → **0.63x** (+91%)  — still below FP16 due to activation_quant overhead
+- 4k→11k: 1.83x → **2.01x** (+10%)  — solidly above FP16
+- 11k→4k: 0.72x → **1.50x** (+108%) — crossed the FP16 line
+
+The remaining gap at T=1 4k→4k (0.63x) is now dominated by
+activation_quant (14us out of 26us total).  The fused GEMV itself
+takes ~16.6us which is already at FP16 parity.  To close the last gap
+we would need to either:
+  (a) fuse activation_quant into the GEMV kernel (single-pass), or
+  (b) accept the overhead as the cost of W4A4 quantisation.
+
+T≥8 paths are unchanged (still use INT4 MMA).
+
+### Remaining bottlenecks (Round 15 candidates)
+
+1. **T=1 4k→4k e2e 0.63x**: activation_quant is the bottleneck (14us).
+   Option A: fuse quant into GEMV (complex, high risk).
+   Option B: optimise activation_quant kernel itself.
+2. **T=8..64 dense/fused 0.14-0.43x**: smallT MMA regime.
+   Fix: cp.async double-buffer + ldmatrix.
+3. **T=512..1024 dense/fused 0.70-0.80x**: close to FP16 but not over.
+   Fix: ldmatrix for A/B operand loading.
+
 ### Next run
 
 On `autodl`:
