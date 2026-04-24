@@ -52,6 +52,7 @@ _SOURCES = [
     # shape, see VALIDATION_LOG Round 11).  The INT8 sources remain on
     # disk for future reference but are excluded from the build list.
     str(_CSRC / "dense_gemm"         / "dense_gemm_mma_int4.cu"),
+    str(_CSRC / "dense_gemm"         / "dense_gemv_decode.cu"),
     str(_CSRC / "sparse_gemm"        / "sparse_gemm_mma_int4.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int4.cu"),
 ]
@@ -214,9 +215,34 @@ def dense_gemm_cuda_int4(
     return args[-1]
 
 
-# Default alias: INT4 MMA (1.7-1.9x faster than INT8 MMA on SM89 per
-# Round 11 bench; see VALIDATION_LOG).
-dense_gemm_cuda = dense_gemm_cuda_int4
+def dense_gemv_cuda_decode(
+    W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
+) -> torch.Tensor:
+    """Dense UINT4 x SINT4 GEMV (T=1 decode, dp4a, CUDA, SM89).
+
+    Round 13 specialisation: for T=1 the INT4 MMA kernel wastes 7/8 of
+    its N-slice.  This dedicated dp4a GEMV uses 1 warp per output row
+    and achieves full arithmetic utilisation on the N dimension.
+
+    Precondition: X_s4.shape[0] == 1.
+    """
+    args = _prepare_dense_args(W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x)
+    _ext.dense_gemv_decode_launch(*args)
+    return args[-1]
+
+
+# Default alias: auto-dispatch on T.  T=1 uses the GEMV kernel; T>1
+# falls back to the INT4 MMA GEMM.
+def dense_gemm_cuda(
+    W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
+) -> torch.Tensor:
+    if X_s4.shape[0] == 1:
+        return dense_gemv_cuda_decode(
+            W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
+        )
+    return dense_gemm_cuda_int4(
+        W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,11 +378,11 @@ fused_dense_sparse_cuda = fused_dense_sparse_cuda_int4
 
 __all__ = [
     "activation_quant_cuda",
-    # GEMM default aliases (INT8 MMA)
+    # GEMM default aliases (auto-dispatch on T)
     "dense_gemm_cuda",
     "sparse_gemm_cuda",
     "fused_dense_sparse_cuda",
-    # Explicit INT8 MMA entry points
+    # Explicit INT8 MMA entry points (archived, raise at call time)
     "dense_gemm_cuda_int8",
     "sparse_gemm_cuda_int8",
     "fused_dense_sparse_cuda_int8",
@@ -364,4 +390,6 @@ __all__ = [
     "dense_gemm_cuda_int4",
     "sparse_gemm_cuda_int4",
     "fused_dense_sparse_cuda_int4",
+    # T=1 decode specialisation (Round 13)
+    "dense_gemv_cuda_decode",
 ]
