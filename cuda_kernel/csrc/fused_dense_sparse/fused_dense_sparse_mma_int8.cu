@@ -77,17 +77,19 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
         if (m < d_out) {
             const uint8_t* src = W_low + (int64_t)m * stride_w_m
                                        + (int64_t)(g * bytes_per_group) * stride_w_k;
+            const uint32_t* src32 = reinterpret_cast<const uint32_t*>(src);
+            int* dst32 = reinterpret_cast<int*>(dst);
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
-                uint32_t w0 = reinterpret_cast<const uint32_t*>(src)[4*i + 0];
-                uint32_t w1 = reinterpret_cast<const uint32_t*>(src)[4*i + 1];
                 int s0, s1;
-                unpack_s4_to_s8_x8(w0, s0, s1);
-                reinterpret_cast<int*>(dst)[4*i + 0] = s0;
-                reinterpret_cast<int*>(dst)[4*i + 1] = s1;
-                unpack_s4_to_s8_x8(w1, s0, s1);
-                reinterpret_cast<int*>(dst)[4*i + 2] = s0;
-                reinterpret_cast<int*>(dst)[4*i + 3] = s1;
+                unpack_s4_to_s8_x8(src32[4*i + 0], s0, s1);
+                dst32[8*i + 0] = s0; dst32[8*i + 1] = s1;
+                unpack_s4_to_s8_x8(src32[4*i + 1], s0, s1);
+                dst32[8*i + 2] = s0; dst32[8*i + 3] = s1;
+                unpack_s4_to_s8_x8(src32[4*i + 2], s0, s1);
+                dst32[8*i + 4] = s0; dst32[8*i + 5] = s1;
+                unpack_s4_to_s8_x8(src32[4*i + 3], s0, s1);
+                dst32[8*i + 6] = s0; dst32[8*i + 7] = s1;
             }
         } else {
             #pragma unroll
@@ -133,17 +135,19 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
                            + (int64_t)block_idx * stride_wb_blk
                            + (int64_t)tid * stride_wb_r;
         int8_t* dst = &sW[tid][0];
+        const uint32_t* src32 = reinterpret_cast<const uint32_t*>(src);
+        int* dst32 = reinterpret_cast<int*>(dst);
         #pragma unroll
         for (int i = 0; i < 4; ++i) {
-            uint32_t w0 = reinterpret_cast<const uint32_t*>(src)[4*i + 0];
-            uint32_t w1 = reinterpret_cast<const uint32_t*>(src)[4*i + 1];
             int s0, s1;
-            unpack_s4_to_s8_x8(w0, s0, s1);
-            reinterpret_cast<int*>(dst)[4*i + 0] = s0;
-            reinterpret_cast<int*>(dst)[4*i + 1] = s1;
-            unpack_s4_to_s8_x8(w1, s0, s1);
-            reinterpret_cast<int*>(dst)[4*i + 2] = s0;
-            reinterpret_cast<int*>(dst)[4*i + 3] = s1;
+            unpack_s4_to_s8_x8(src32[4*i + 0], s0, s1);
+            dst32[8*i + 0] = s0; dst32[8*i + 1] = s1;
+            unpack_s4_to_s8_x8(src32[4*i + 1], s0, s1);
+            dst32[8*i + 2] = s0; dst32[8*i + 3] = s1;
+            unpack_s4_to_s8_x8(src32[4*i + 2], s0, s1);
+            dst32[8*i + 4] = s0; dst32[8*i + 5] = s1;
+            unpack_s4_to_s8_x8(src32[4*i + 3], s0, s1);
+            dst32[8*i + 6] = s0; dst32[8*i + 7] = s1;
         }
     };
 

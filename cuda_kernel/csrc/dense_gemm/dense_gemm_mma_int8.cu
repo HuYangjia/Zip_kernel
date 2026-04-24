@@ -76,23 +76,30 @@ __global__ void dense_gemm_mma_int8_kernel(
         #pragma unroll
         for (int r = 0; r < 4; ++r) y_fp[im][in][r] = 0.0f;
 
+    // Each row holds ``bytes_per_group`` = 64 packed s4 bytes,
+    // which unpack to kBk = 128 int8 cols.  Read 16 packed uint32
+    // per row (4 uint32 per inner loop), unpack each to 2 int32 lanes
+    // (= 8 s8), store 8 int32 (= 32 s8) per inner loop for 4 loops.
     auto issue_w_load = [&](int g) {
         int m = m_tile + tid;
         int8_t* dst = &sW[tid][0];
         if (m < d_out) {
             const uint8_t* src = W + (int64_t)m * stride_w_m
                                    + (int64_t)(g * bytes_per_group) * stride_w_k;
+            const uint32_t* src32 = reinterpret_cast<const uint32_t*>(src);
+            int* dst32 = reinterpret_cast<int*>(dst);
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
-                uint32_t w0 = reinterpret_cast<const uint32_t*>(src)[4*i + 0];
-                uint32_t w1 = reinterpret_cast<const uint32_t*>(src)[4*i + 1];
+                // 4 uint32 from src == 16 packed s4 bytes == 32 s8 values.
                 int s0, s1;
-                unpack_s4_to_s8_x8(w0, s0, s1);
-                reinterpret_cast<int*>(dst)[4*i + 0] = s0;
-                reinterpret_cast<int*>(dst)[4*i + 1] = s1;
-                unpack_s4_to_s8_x8(w1, s0, s1);
-                reinterpret_cast<int*>(dst)[4*i + 2] = s0;
-                reinterpret_cast<int*>(dst)[4*i + 3] = s1;
+                unpack_s4_to_s8_x8(src32[4*i + 0], s0, s1);
+                dst32[8*i + 0] = s0; dst32[8*i + 1] = s1;
+                unpack_s4_to_s8_x8(src32[4*i + 1], s0, s1);
+                dst32[8*i + 2] = s0; dst32[8*i + 3] = s1;
+                unpack_s4_to_s8_x8(src32[4*i + 2], s0, s1);
+                dst32[8*i + 4] = s0; dst32[8*i + 5] = s1;
+                unpack_s4_to_s8_x8(src32[4*i + 3], s0, s1);
+                dst32[8*i + 6] = s0; dst32[8*i + 7] = s1;
             }
         } else {
             #pragma unroll
