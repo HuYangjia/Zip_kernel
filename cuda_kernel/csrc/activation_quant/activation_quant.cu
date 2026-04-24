@@ -419,10 +419,20 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
     //
     // Per-CTA dynamic shmem limit on SM89 is 48 KB without opt-in.
     // sp shmem = kBt * D * 2 bytes; with D=4096, kBt=4 needs 32 KB
-    // which fits, but kBt=8 needs 64 KB.  We cap sp at kBt<=4.
-    //   The crossover point is roughly when (kBt*D*2) > 48*1024.
-    const bool sp_ok = (T <= 4) && (D <= kMaxShmemDPerToken)
-                    && ((size_t)T * D * 2u <= 48u * 1024u);
+    // which fits, but kBt=8 needs 64 KB.
+    //
+    // Round 20: extend sp to T > 4 by routing to kBt=4 sp kernel with
+    //   a larger grid.  Each CTA still only holds kBt*D bytes of shmem
+    //   (<=48 KB), while multiple CTAs handle T/kBt tokens in parallel.
+    //   The SP path halves HBM gather traffic vs 2-pass, which is the
+    //   dominant cost at T=8..64 (wall time ~19 us is mostly gather).
+    const size_t sp_budget_bytes = 48u * 1024u;
+    // Pick largest kBt (1, 2, 4) such that kBt * D * 2 fits in shmem.
+    int sp_kBt = 0;
+    if ((size_t)4 * D * 2u <= sp_budget_bytes)      sp_kBt = 4;
+    else if ((size_t)2 * D * 2u <= sp_budget_bytes) sp_kBt = 2;
+    else if ((size_t)1 * D * 2u <= sp_budget_bytes) sp_kBt = 1;
+    const bool sp_ok = (sp_kBt > 0);
 
     auto dispatch_2p = [&](auto kBtConst) {
         constexpr int kBt = decltype(kBtConst)::value;
@@ -466,10 +476,12 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
     };
 
     if (sp_ok) {
-        if      (T <= 1) dispatch_sp(std::integral_constant<int, 1>{});
-        else if (T <= 2) dispatch_sp(std::integral_constant<int, 2>{});
-        else             dispatch_sp(std::integral_constant<int, 4>{});
+        // Round 20: use sp for all T.  sp_kBt already chosen to fit shmem.
+        if      (sp_kBt == 1) dispatch_sp(std::integral_constant<int, 1>{});
+        else if (sp_kBt == 2) dispatch_sp(std::integral_constant<int, 2>{});
+        else                  dispatch_sp(std::integral_constant<int, 4>{});
     } else {
+        // Shmem too small for any sp kBt (unusual: D > ~12 K fp16).
         if      (T <= 1) dispatch_2p(std::integral_constant<int, 1>{});
         else if (T <= 4) dispatch_2p(std::integral_constant<int, 4>{});
         else             dispatch_2p(std::integral_constant<int, 8>{});
