@@ -372,12 +372,22 @@ void launch(
         );
     };
 
-    // Round 12: cap kBn at 64 (eliminates 255-reg spill at kBn=128).
-    //   T<=8   -> kBn=8   (decode)
-    //   T<=32  -> kBn=32  (small prefill, reduces wasted N lanes)
+    // Round 17: finer-grained kBn dispatch based on T-profile experiments.
+    //   kBn=64 has a fixed cost of running 64 N-columns of MMA regardless
+    //   of actual T (tail is zero-padded but MMA still issues).  So for
+    //   T in (8, 96] kBn=32 is faster even when T>32 because we only pay
+    //   for 32-col MMA per CTA and tile the grid instead.
+    //
+    //   Profiling 4k->4k (R17 decide):
+    //     T=32  kBn=32: 79us   | T=48  kBn=64: 110us
+    //     T=64  kBn=32: ~86us (estimate, 2x T=32) | kBn=64: 110us
+    //     T=128 kBn=32: too many CTAs per T-tile, need kBn=64
+    //
+    //   T<=8   -> kBn=8
+    //   T<=96  -> kBn=32   (previously capped at 32; extended)
     //   else   -> kBn=64
     if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 32)   do_launch(std::integral_constant<int, 32>{});
+    else if (T <= 96)   do_launch(std::integral_constant<int, 32>{});
     else                do_launch(std::integral_constant<int, 64>{});
 
     C10_CUDA_CHECK(cudaGetLastError());

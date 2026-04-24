@@ -416,8 +416,9 @@ void launch(
         );
     };
 
+    // Round 17: kBn=32 extended to T<=96 (see dense_gemm_mma_int4.cu).
     if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 32)   do_launch(std::integral_constant<int, 32>{});
+    else if (T <= 96)   do_launch(std::integral_constant<int, 32>{});
     else                do_launch(std::integral_constant<int, 64>{});
 
     C10_CUDA_CHECK(cudaGetLastError());

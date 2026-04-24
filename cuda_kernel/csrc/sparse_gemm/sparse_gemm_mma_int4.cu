@@ -299,9 +299,12 @@ void launch(
         );
     };
 
-    // Round 12: cap kBn at 64.
+    // Round 17: finer-grained kBn dispatch (see dense_gemm_mma_int4.cu).
+    //   T<=8   -> kBn=8
+    //   T<=96  -> kBn=32
+    //   else   -> kBn=64
     if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 32)   do_launch(std::integral_constant<int, 32>{});
+    else if (T <= 96)   do_launch(std::integral_constant<int, 32>{});
     else                do_launch(std::integral_constant<int, 64>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
