@@ -239,18 +239,29 @@ __global__ void dense_gemm_kernel(
 
         if (m_active) {
             // Load W row slice for this (m, g) once, reuse across kBn N entries.
-            // 64 bytes = 16 uint32.
+            // 64 bytes = 4 uint4 = 16 uint32.  Using 128-bit (uint4) loads
+            // instead of 32-bit halves the number of memory transactions
+            // issued, reducing stalls against the L2/HBM pipeline (Round 4
+            // optimisation).  SM89 coalesces these across 32 warp lanes
+            // to 4 cache-line-sized transactions per warp per group.
             uint32_t w_words[16];
             #pragma unroll
-            for (int i = 0; i < 16; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 int64_t off_w = (int64_t)m * stride_w_m
-                              + (int64_t)(g * bytes_per_group + i * 4) * stride_w_k;
-                // __ldg 32b read (W is int8-strided; we require
-                // stride_w_k == 1 for the uint32 cast to be safe; this
-                // is checked by the host caller via .contiguous()).
-                w_words[i] = __ldg(
-                    reinterpret_cast<const uint32_t*>(W + off_w)
+                              + (int64_t)(g * bytes_per_group + i * 16) * stride_w_k;
+                // uint4 == 4 x uint32, 16-byte aligned when m * stride_w_m
+                // is 16-byte aligned.  W is packed uint8 with row stride
+                // == d_in_half, so the address is always 16-byte aligned
+                // as long as d_in_half is a multiple of 16 (== d_in is
+                // a multiple of 32, which we enforce since BCOL=128 divides
+                // d_in).
+                uint4 v = __ldg(
+                    reinterpret_cast<const uint4*>(W + off_w)
                 );
+                w_words[4*i    ] = v.x;
+                w_words[4*i + 1] = v.y;
+                w_words[4*i + 2] = v.z;
+                w_words[4*i + 3] = v.w;
             }
 
             // Pre-unpack W row into 32 int32 lanes (holding 128 SINT4 as

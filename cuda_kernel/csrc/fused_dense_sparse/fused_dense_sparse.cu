@@ -141,14 +141,19 @@ __global__ void fused_dense_sparse_kernel(
         __syncthreads();
 
         if (m_active) {
+            // 128-bit (uint4) loads; see dense_gemm.cu Round 4 note.
             uint32_t w_words[16];
             #pragma unroll
-            for (int i = 0; i < 16; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 int64_t off_w = (int64_t)m * stride_w_m
-                              + (int64_t)(g * bytes_per_group + i * 4) * stride_w_k;
-                w_words[i] = __ldg(
-                    reinterpret_cast<const uint32_t*>(W_low + off_w)
+                              + (int64_t)(g * bytes_per_group + i * 16) * stride_w_k;
+                uint4 v = __ldg(
+                    reinterpret_cast<const uint4*>(W_low + off_w)
                 );
+                w_words[4*i    ] = v.x;
+                w_words[4*i + 1] = v.y;
+                w_words[4*i + 2] = v.z;
+                w_words[4*i + 3] = v.w;
             }
             int w_dp4a[32];
             #pragma unroll
@@ -230,15 +235,20 @@ __global__ void fused_dense_sparse_kernel(
         __syncthreads();
 
         if (m_active) {
+            // 128-bit (uint4) loads; see dense_gemm.cu Round 4 note.
             uint32_t w_words[16];
             int64_t w_row_base = (int64_t)block_idx * stride_wb_blk
                                + (int64_t)tid * stride_wb_r;
             #pragma unroll
-            for (int i = 0; i < 16; ++i) {
-                int64_t off_w = w_row_base + (int64_t)(i * 4) * stride_wb_k;
-                w_words[i] = __ldg(
-                    reinterpret_cast<const uint32_t*>(W_high_blocks + off_w)
+            for (int i = 0; i < 4; ++i) {
+                int64_t off_w = w_row_base + (int64_t)(i * 16) * stride_wb_k;
+                uint4 v = __ldg(
+                    reinterpret_cast<const uint4*>(W_high_blocks + off_w)
                 );
+                w_words[4*i    ] = v.x;
+                w_words[4*i + 1] = v.y;
+                w_words[4*i + 2] = v.z;
+                w_words[4*i + 3] = v.w;
             }
             int w_dp4a[32];
             #pragma unroll
