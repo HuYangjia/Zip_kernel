@@ -241,6 +241,15 @@ def bench_end_to_end(shape: Shape, log: logging.Logger):
     t_fp = _bench_fn(lambda: torch.matmul(X_fp, W_fp.t()))
 
     def run_pipeline():
+        if shape.T == 1:
+            # Round 15c: single fused kernel (quant + GEMV, no intermediate HBM).
+            return cuda_ops.fused_quant_gemv_cuda(
+                X_fp, perm,
+                W_low_packed, W_high_blocks_packed,
+                hp_row_offsets, hp_col_indices,
+                scale_u4, zero_u4,
+                shape.d_out, shape.d_in,
+            )
         X_s4, scale_x, sum_X = cuda_ops.activation_quant_cuda(X_fp, perm)
         return cuda_ops.fused_dense_sparse_cuda(
             W_low_packed, W_high_blocks_packed,
