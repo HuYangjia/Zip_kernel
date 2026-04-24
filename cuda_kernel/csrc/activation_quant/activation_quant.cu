@@ -290,11 +290,15 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
     };
 
     // std::integral_constant trick to feed kBt as a template arg.
+    //
+    // Block size constraint: block.x * block.y = kLanesPerGroup * kBt
+    // = 128 * kBt must be <= 1024 (SM89 hardware limit), so kBt must
+    // be <= 8.  We keep kBt in {1, 4, 8} and let larger T just spawn
+    // more CTAs along grid.x.  Empirically Triton owns prefill anyway
+    // (policy.py routes T >= 256 away from CUDA).
     if      (T <= 1)   dispatch(std::integral_constant<int, 1>{});
     else if (T <= 4)   dispatch(std::integral_constant<int, 4>{});
-    else if (T <= 16)  dispatch(std::integral_constant<int, 16>{});
-    else if (T <= 64)  dispatch(std::integral_constant<int, 32>{});
-    else               dispatch(std::integral_constant<int, 32>{});
+    else               dispatch(std::integral_constant<int, 8>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
 }
