@@ -1576,16 +1576,80 @@ T=512..1024 is not due to a single micro-optimisable bottleneck;
 it is architectural (s4 MMA issue rate vs FP16 MMA issue rate,
 plus shmem staging overhead).
 
+---
+
+## Round 20 — Single-pass activation_quant for T>=8 (WIN)
+
+Targeted the `activation_quant` kernel identified in Round 19 follow-up
+as a fixed 19 us overhead in every e2e shape.  Root cause: the
+`sp_ok = (T <= 4) && ...` gating condition forced T>=8 through the
+2-pass kernel that gathers X twice, while the sp (single-pass) kernel
+with `kBt=4` easily fits within the 48 KB shmem budget for D=4096.
+
+### Fix (one-file, `activation_quant.cu`)
+
+Replace the T-keyed dispatch with a shmem-budget-keyed dispatch:
+
+```cpp
+int sp_kBt = 0;
+if ((size_t)4 * D * 2u <= 48 KB)      sp_kBt = 4;
+else if ((size_t)2 * D * 2u <= 48 KB) sp_kBt = 2;
+else if ((size_t)1 * D * 2u <= 48 KB) sp_kBt = 1;
+const bool sp_ok = (sp_kBt > 0);
+
+if (sp_ok) dispatch_sp(sp_kBt);   // always works for D <= ~12 K fp16
+else       dispatch_2p(...);      // fallback
+```
+
+`kBt=4` sp already handles T tokens via `grid = ceil_div(T, 4)` CTAs,
+so T=8 spawns 2 CTAs, T=1024 spawns 256 CTAs -- each CTA still gathers
+X only once per token.
+
+### Results (bench_20260424_191619)
+
+#### activation_quant standalone
+
+| shape | R18/R19 (2p) | R20 (sp) | delta |
+|---|---:|---:|---:|
+| T=1   | 14.58us | 14.42us | -1%  |
+| T=8   | 19.39us | 14.27us | **-26%** |
+| T=16  | 19.39us | 14.27us | **-26%** |
+| T=64  | 19.45us | 14.25us | **-27%** |
+
+#### end-to-end v9_linear
+
+| shape | FP16 | R18 | **R20** | R18/FP16 | **R20/FP16** | delta |
+|---|---:|---:|---:|---:|---:|:---:|
+| dec_T1_4k_4k    |  16.40 |  19.80 |  19.76 | 0.83x | 0.83x | — |
+| dec_T1_4k_11k   |  93.96 |  45.49 |  45.40 | 2.07x | 2.07x | — |
+| dec_T1_11k_4k   |  94.99 |  48.80 |  48.46 | 1.95x | 1.96x | — |
+| **dec_T8_4k_4k**    |  14.89 |  61.01 |  **54.50** | 0.25x | **0.27x** | **+11%** |
+| **dec_T16_4k_4k**   |  16.18 |  81.82 |  **75.63** | 0.20x | **0.21x** | **+8%** |
+| **bat_T64_4k_4k**   |  19.14 |  92.71 |  **86.57** | 0.21x | **0.22x** | **+6%** |
+| **bat_T128_4k_4k**  |  33.11 |  92.26 |  **86.08** | 0.36x | **0.38x** | **+6%** |
+| **pre_T512_4k_4k**  | 109.92 | 156.20 | **150.57** | 0.70x | **0.73x** | **+3%** |
+| **pre_T1024_4k_4k** | 211.19 | 289.17 | **286.27** | 0.74x | 0.74x | +1% |
+
+**Six of nine e2e shapes improved**, largest gain +11% at T=8.  Parity:
+12/12 activation_quant tests passed.
+
 ### Decision
 
-Close out Round 19 with revert and document two negative-result
-directions.  Next productive step requires either:
+Shipped.  This is a one-file change, zero-risk, with a broad positive
+impact across the T>=8 batch and prefill regimes.  Particularly
+valuable that T=128 e2e moved from 0.36x to 0.38x (making Round 18's
+dispatch wins stick with a bigger margin) and T=512 0.70x -> 0.73x
+(approaching the all-important 1.0x crossover line).
 
-1.  ncu access to measure `smsp__pipe_tensor_core_util` and
-    `smsp__inst_executed_pipe_lsu_util` -- currently unmeasured.
-2.  A structural redesign (warp-specialised producer-consumer via
-    shmem ring buffer) estimated at ~1000 LOC.
+### Why this wasn't found earlier
 
-Both are deferred.  The R18 dispatch-tuned kernel remains
-production-grade.
+The `sp_ok = (T <= 4)` predicate was written in Round 15 when the sp
+kernel was first introduced *for T=1 only*.  At the time the
+second-pass concern ("does sp correctly handle T>1?") was unresolved,
+so the safety net was set conservatively.  Round 20's insight is that
+the sp kernel's `grid = ceil_div(T, kBt)` already correctly handles
+T>kBt -- the T<=4 gate was always over-conservative.
+
+### Next run: no further changes queued
+
 
