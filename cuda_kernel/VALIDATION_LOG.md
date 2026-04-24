@@ -274,6 +274,86 @@ Key speedups vs cuBLAS FP16 (and Round 11 deltas):
    1 ldmatrix.x2.  The mma_utils wrappers exist; just need to rework
    the shmem stager to match the ldmatrix-expected b16 layout.
 
+## Round 13: T=1 decode specialisation (GEMV) (2026-04-24 16:57)
+
+### Motivation
+
+From Round 12 bench the INT4 MMA dense kernel had a U-shaped curve vs T:
+- T=1  wins on large d_out (1.93x) but loses on square shapes (0.41x)
+- T=8..64 consistently loses to FP16 (0.18-0.36x)
+- T=512 recovers to 0.81x
+
+The root cause for the T=1 "square shape loss" was structural: the INT4
+MMA has N=8 per instruction, so when T=1 only 1 of the 8 N-slices is
+useful (87.5% waste of the Tensor Core's N dimension).  You can't fix
+this by tuning; it needs a different kernel.
+
+Decision: split the dense path into a decode kernel (T=1) and a general
+kernel (T>1).  This round only addresses dense_gemm T=1.  Sparse /
+fused T=1 specialisation deferred to later rounds (they already win on
+sparse big-d_out paths via pure memory-bandwidth savings).
+
+### Implementation
+
+New file: ``csrc/dense_gemm/dense_gemv_decode.cu``.
+
+Design:
+- 1 warp per output row m; each CTA has kBm=8 warps.
+- Grid: (ceil(d_out / 8),) CTAs.  On a 4096-row workload that's 512
+  CTAs, more than enough to saturate SM89's 128 SMs.
+- Per group (128 s4 columns): each of the 32 lanes processes 4 s4
+  = 2 packed bytes.  Unpack to one uint32 = 4 s8 lanes and issue one
+  ``__dp4a`` per thread per group.
+- Warp-level shuffle reduce gives the per-group int32 inner product in
+  lane 0, which folds into a per-row fp32 accumulator with the standard
+  (d_val - z * sum_X) * s * sxn epilogue.
+- sum_X and scale_x prefetched once to shmem.  W is read with direct
+  GMEM reads (natural coalescing per-warp stride; L2 cache does the
+  rest).  X for the current group staged to shmem by warp 0 so all
+  kBm warps reuse it.
+
+Parity: verified bit-close against INT4 MMA kernel on three shapes.
+  d_out=4096  d_in=4096  max_abs=9.77e-4  (fp16 round-off only)
+  d_out=11008 d_in=4096  max_abs=9.77e-4
+  d_out=4096  d_in=11008 max_abs=4.88e-4
+
+### Benchmark results (bench_20260424_165749.md, dense_gemm only)
+
+| shape | FP16 | R12 MMA | **R13 GEMV** | MMA/FP16 | **GEMV/FP16** |
+|---|---:|---:|---:|---:|---:|
+| T=1 4k→4k  | 18.21us | 44.26us | **17.53us** | 0.41x | **1.04x** |
+| T=1 4k→11k | 77.58us | 39.94us | **39.06us** | 1.93x | **1.99x** |
+| T=1 11k→4k | 75.37us | 135.41us | **43.25us** | 0.55x | **1.74x** |
+
+All three T=1 dense shapes now beat cuBLAS FP16.  The biggest win is
+the T=1 d_in>d_out case (11k→4k): 3.1x improvement over the MMA
+variant, directly from removing the N=8 waste.
+
+The end-to-end v9_linear number is unchanged (1.83x at T=1 4k→11k)
+because end-to-end uses the fused kernel; fused T=1 specialisation is
+the candidate for Round 14.
+
+### Python dispatch
+
+``dense_gemm_cuda`` is no longer a static alias.  It is a dispatch
+function:
+- ``X_s4.shape[0] == 1`` -> ``dense_gemv_cuda_decode``  (dp4a GEMV)
+- otherwise             -> ``dense_gemm_cuda_int4``    (INT4 MMA)
+
+The bench script uses this auto-dispatch to reflect the production
+path.  Tests continue to cover both entry points explicitly.
+
+### Remaining bottlenecks (Round 14 candidates)
+
+1. **fused T=1 still misses the GEMV win** (0.41x at 4k→4k, 0.87x at
+   11k→4k).  Same fix: write a ``fused_gemv_decode.cu`` that runs
+   dense-GEMV + sparse-block-GEMV on the same kBm warps.
+2. **sparse T=1 4k→4k still 0.91x**, the only sub-1x sparse case.
+   Sparse GEMV specialisation probably helps.
+3. **T=8..64 dense still 0.18-0.43x**.  This is the "smallT" regime
+   from my earlier analysis; needs cp.async + ldmatrix to become
+   competitive.
+
 ### Next run
 
 On `autodl`:

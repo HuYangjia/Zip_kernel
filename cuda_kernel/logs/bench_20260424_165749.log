@@ -1,0 +1,50 @@
+16:57:49 INFO bench_kernels output dir: /root/logs/cuda_kernel
+16:57:49 INFO bench_kernels baseline: cuBLAS FP16 matmul (torch.matmul, fp16)
+16:57:49 INFO bench_kernels comparing: cuda_int4 (mma.m16n8k64.s4)
+16:57:49 INFO bench_kernels activation_quant       dec_T1_4k_4k       fp16=   6.83us  int4=  20.58us  int4/fp16=0.33x
+16:57:49 INFO bench_kernels activation_quant       dec_T1_4k_11k      fp16=   6.76us  int4=  20.62us  int4/fp16=0.33x
+16:57:49 INFO bench_kernels activation_quant       dec_T1_11k_4k      fp16=   6.80us  int4=  24.27us  int4/fp16=0.28x
+16:57:49 INFO bench_kernels activation_quant       dec_T8_4k_4k       fp16=   7.02us  int4=  20.77us  int4/fp16=0.34x
+16:57:49 INFO bench_kernels activation_quant       dec_T16_4k_4k      fp16=   6.90us  int4=  20.76us  int4/fp16=0.33x
+16:57:49 INFO bench_kernels activation_quant       bat_T64_4k_4k      fp16=   6.88us  int4=  20.62us  int4/fp16=0.33x
+16:57:49 INFO bench_kernels activation_quant       bat_T128_4k_4k     fp16=   6.85us  int4=  20.87us  int4/fp16=0.33x
+16:57:49 INFO bench_kernels activation_quant       pre_T512_4k_4k     fp16=   6.92us  int4=  20.81us  int4/fp16=0.33x
+16:57:49 INFO bench_kernels activation_quant       pre_T1024_4k_4k    fp16=   6.82us  int4=  21.15us  int4/fp16=0.32x
+16:57:50 INFO bench_kernels dense_gemm             dec_T1_4k_4k       fp16=  18.21us  int4=  17.53us  int4/fp16=1.04x
+16:57:50 INFO bench_kernels dense_gemm             dec_T1_4k_11k      fp16=  77.58us  int4=  39.06us  int4/fp16=1.99x
+16:57:50 INFO bench_kernels dense_gemm             dec_T1_11k_4k      fp16=  75.37us  int4=  43.25us  int4/fp16=1.74x
+16:57:50 INFO bench_kernels dense_gemm             dec_T8_4k_4k       fp16=  18.74us  int4=  43.87us  int4/fp16=0.43x
+16:57:50 INFO bench_kernels dense_gemm             dec_T16_4k_4k      fp16=  18.19us  int4=  61.38us  int4/fp16=0.30x
+16:57:50 INFO bench_kernels dense_gemm             bat_T64_4k_4k      fp16=  19.66us  int4= 109.28us  int4/fp16=0.18x
+16:57:50 INFO bench_kernels dense_gemm             bat_T128_4k_4k     fp16=  31.41us  int4= 109.69us  int4/fp16=0.29x
+16:57:50 INFO bench_kernels dense_gemm             pre_T512_4k_4k     fp16= 109.28us  int4= 135.83us  int4/fp16=0.80x
+16:57:52 INFO bench_kernels dense_gemm             pre_T1024_4k_4k    fp16= 210.98us  int4= 266.83us  int4/fp16=0.79x
+16:57:52 INFO bench_kernels sparse_gemm            dec_T1_4k_4k       fp16=  16.48us  int4=  18.15us  int4/fp16=0.91x
+16:57:52 INFO bench_kernels sparse_gemm            dec_T1_4k_11k      fp16=  93.97us  int4=  18.33us  int4/fp16=5.13x
+16:57:53 INFO bench_kernels sparse_gemm            dec_T1_11k_4k      fp16=  94.82us  int4=  18.25us  int4/fp16=5.19x
+16:57:53 INFO bench_kernels sparse_gemm            dec_T8_4k_4k       fp16=  14.70us  int4=  18.00us  int4/fp16=0.82x
+16:57:53 INFO bench_kernels sparse_gemm            dec_T16_4k_4k      fp16=  15.93us  int4=  17.87us  int4/fp16=0.89x
+16:57:53 INFO bench_kernels sparse_gemm            bat_T64_4k_4k      fp16=  19.21us  int4=  17.94us  int4/fp16=1.07x
+16:57:53 INFO bench_kernels sparse_gemm            bat_T128_4k_4k     fp16=  32.13us  int4=  18.01us  int4/fp16=1.78x
+16:57:53 INFO bench_kernels sparse_gemm            pre_T512_4k_4k     fp16= 109.32us  int4=  24.43us  int4/fp16=4.47x
+16:57:53 INFO bench_kernels sparse_gemm            pre_T1024_4k_4k    fp16= 212.50us  int4=  44.32us  int4/fp16=4.79x
+16:57:53 INFO bench_kernels fused_dense_sparse     dec_T1_4k_4k       fp16=  16.94us  int4=  41.48us  int4/fp16=0.41x
+16:57:53 INFO bench_kernels fused_dense_sparse     dec_T1_4k_11k      fp16=  93.98us  int4=  42.52us  int4/fp16=2.21x
+16:57:53 INFO bench_kernels fused_dense_sparse     dec_T1_11k_4k      fp16=  95.01us  int4= 109.63us  int4/fp16=0.87x
+16:57:53 INFO bench_kernels fused_dense_sparse     dec_T8_4k_4k       fp16=  19.37us  int4=  43.50us  int4/fp16=0.45x
+16:57:53 INFO bench_kernels fused_dense_sparse     dec_T16_4k_4k      fp16=  16.24us  int4=  64.21us  int4/fp16=0.25x
+16:57:53 INFO bench_kernels fused_dense_sparse     bat_T64_4k_4k      fp16=  19.21us  int4= 115.93us  int4/fp16=0.17x
+16:57:53 INFO bench_kernels fused_dense_sparse     bat_T128_4k_4k     fp16=  31.79us  int4= 114.32us  int4/fp16=0.28x
+16:57:53 INFO bench_kernels fused_dense_sparse     pre_T512_4k_4k     fp16= 109.40us  int4= 138.32us  int4/fp16=0.79x
+16:57:54 INFO bench_kernels fused_dense_sparse     pre_T1024_4k_4k    fp16= 218.73us  int4= 270.50us  int4/fp16=0.81x
+16:57:54 INFO bench_kernels end_to_end_v9_linear   dec_T1_4k_4k       fp16=  16.47us  int4=  50.21us  int4/fp16=0.33x
+16:57:54 INFO bench_kernels end_to_end_v9_linear   dec_T1_4k_11k      fp16=  94.00us  int4=  51.34us  int4/fp16=1.83x
+16:57:54 INFO bench_kernels end_to_end_v9_linear   dec_T1_11k_4k      fp16=  94.97us  int4= 131.37us  int4/fp16=0.72x
+16:57:54 INFO bench_kernels end_to_end_v9_linear   dec_T8_4k_4k       fp16=  14.93us  int4=  60.81us  int4/fp16=0.25x
+16:57:54 INFO bench_kernels end_to_end_v9_linear   dec_T16_4k_4k      fp16=  16.22us  int4=  81.90us  int4/fp16=0.20x
+16:57:54 INFO bench_kernels end_to_end_v9_linear   bat_T64_4k_4k      fp16=  19.11us  int4= 133.47us  int4/fp16=0.14x
+16:57:54 INFO bench_kernels end_to_end_v9_linear   bat_T128_4k_4k     fp16=  33.10us  int4= 131.94us  int4/fp16=0.25x
+16:57:54 INFO bench_kernels end_to_end_v9_linear   pre_T512_4k_4k     fp16= 110.03us  int4= 156.18us  int4/fp16=0.70x
+16:57:55 INFO bench_kernels end_to_end_v9_linear   pre_T1024_4k_4k    fp16= 213.40us  int4= 289.28us  int4/fp16=0.74x
+16:57:55 INFO bench_kernels wrote /root/logs/cuda_kernel/bench_20260424_165749.json
+16:57:55 INFO bench_kernels wrote /root/logs/cuda_kernel/bench_20260424_165749.md
