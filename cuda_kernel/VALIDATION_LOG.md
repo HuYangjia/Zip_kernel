@@ -583,6 +583,79 @@ Order of attack for future rounds:
    staging inside MMA can narrow the gap; full parity with FP16
    Tensor Core may be unreachable on Ada.
 
+## Round 17: finer-grained kBn dispatch (2026-04-24 17:56)
+
+### Diagnostic
+
+Swept T in {16, 24, 32, 48, 64, 96, 128, 192, 256} with dense GEMM 4k→4k:
+
+```
+kBn=32 (T=16..32):    T=16 68us   T=24 73us   T=32 79us
+kBn=64 (T=48..256):   T=48 110us  T=64 110us  T=128 109us  T=256 112us
+```
+
+Key observation: T=48 doing 50% more work than T=32 took 40% MORE
+time when routed to kBn=64.  And T=48..256 are all basically
+equi-time (~110us) on the kBn=64 path.
+
+Root cause: the kBn=64 kernel **always** issues 64 columns' worth of
+MMA even when T is smaller -- the tail is zero-padded but MMAs are
+still emitted because kNsubPerCta is a compile-time constant.  So the
+fixed cost of kBn=64 is ~110us regardless of actual T <= 64.
+
+### Fix
+
+Extend the kBn=32 dispatch range from T<=32 to T<=96.  At T=48..96,
+two kBn=32 CTAs process fewer MMAs total than one kBn=64 CTA zero-
+padded to 64 columns.
+
+Applied to all three MMA kernels for consistency:
+- ``dense_gemm_mma_int4.cu``
+- ``sparse_gemm_mma_int4.cu``
+- ``fused_dense_sparse_mma_int4.cu``
+
+### Benchmark results (bench_20260424_175640.md)
+
+#### dense_gemm (key change at T=64)
+
+| shape | FP16 | R16 | **R17** | R16/FP16 | **R17/FP16** | Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| bat_T64_4k_4k  | 19.58us | 109us  | **70.63us** | 0.18x | **0.28x** | +56% |
+| bat_T128_4k_4k | 31.33us | 109us  | 109.67us    | 0.29x | 0.29x     | — |
+
+Other T points unchanged (T=1 uses GEMV; T=8..32 already on kBn<=32;
+T=128..1024 still on kBn=64).
+
+#### fused_dense_sparse (e2e driver)
+
+| shape | FP16 | R16 | **R17** | Δ vs R16 |
+|---|---:|---:|---:|---:|
+| bat_T64_4k_4k | 19.17us | 115.96us | **75.00us** | **+55%** |
+
+#### end_to_end_v9_linear (complete 9-shape table)
+
+| shape | FP16 | R16 | **R17** | R16/FP16 | **R17/FP16** |
+|---|---:|---:|---:|---:|---:|
+| dec_T1_4k_4k    | 16.42us | 19.84us  | **19.76us**  | 0.83x | **0.83x** |
+| dec_T1_4k_11k   | 93.94us | 45.57us  | **45.45us**  | 2.06x | **2.07x** |
+| dec_T1_11k_4k   | 94.90us | 48.70us  | **48.80us**  | 1.95x | **1.94x** |
+| dec_T8_4k_4k    | 14.99us | 61.09us  | 60.81us      | 0.25x | 0.25x     |
+| dec_T16_4k_4k   | 16.24us | 81.92us  | 81.96us      | 0.20x | 0.20x     |
+| **bat_T64_4k_4k**  | 19.13us | 133.54us | **92.71us**  | 0.14x | **0.21x** 🚀 |
+| bat_T128_4k_4k  | 33.08us | 132.01us | 132.01us     | 0.25x | 0.25x     |
+| pre_T512_4k_4k  | 109.51us | 156.26us | 156.16us     | 0.70x | 0.70x     |
+| pre_T1024_4k_4k | 213.48us | 289.05us | 289.32us     | 0.74x | 0.74x     |
+
+### Analysis
+
+- Biggest win is **T=64 e2e: 0.14x -> 0.21x (+50%)**.  This is a
+  dispatch-only change, zero code risk, zero parity risk.
+- No regressions on any shape.
+- Remaining gaps: T=8..32 (0.20-0.25x), T=128 (0.25x), T=512..1024
+  (0.70-0.74x).  These still want deeper kernel-level optimisations
+  (ldmatrix, cp.async pipelines) but each has high implementation risk
+  and no profiler access on AutoDL to guide the change.
+
 ### Next run
 
 On `autodl`:
