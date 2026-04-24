@@ -435,7 +435,7 @@ void launch(
     //    T<=8 -> kBn=2 (still well within budget, doubles grid)
     //    else -> kBn=4 (caps spill; grid still covers the SM)
     if      (T <= 1)   do_launch(std::integral_constant<int, 1>{});
-    else if (T <= 8)   do_launch(std::integral_constant<int, 2>{});
+    else if (T <= 16)  do_launch(std::integral_constant<int, 2>{});
     else               do_launch(std::integral_constant<int, 4>{});
 
     C10_CUDA_CHECK(cudaGetLastError());

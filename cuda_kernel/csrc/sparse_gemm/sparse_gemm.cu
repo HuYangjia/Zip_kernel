@@ -292,7 +292,7 @@ void launch(
     // See dense_gemm.cu iter-Round 3 notes: keep kBn <= 4 to avoid
     // register spill.
     if      (T <= 1)   do_launch(std::integral_constant<int, 1>{});
-    else if (T <= 8)   do_launch(std::integral_constant<int, 2>{});
+    else if (T <= 16)  do_launch(std::integral_constant<int, 2>{});
     else               do_launch(std::integral_constant<int, 4>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
