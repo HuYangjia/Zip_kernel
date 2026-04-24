@@ -44,11 +44,17 @@ import torch
 
 # -- Path anchoring ---------------------------------------------------------
 _THIS = Path(__file__).resolve()
-_REPO_ROOT = _THIS.parents[3]  # kernel/cuda_kernel/benchmarks/xx.py
-# Server layout: /root is the import root (/root/kernel -> /root/Zip_kernel).
-# Local layout:  /.../HKUST is the import root.
-if str(_REPO_ROOT.parent) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT.parent))
+# layout: <root>/kernel/cuda_kernel/benchmarks/<this>.py
+# parents[0] = benchmarks, [1] = cuda_kernel, [2] = kernel, [3] = <root>
+# On autodl, <root> == /root (and /root/kernel is a symlink to
+#                              /root/Zip_kernel/kernel... actually the
+# symlink is /root/kernel -> /root/Zip_kernel, so after resolve() the
+# path becomes /root/Zip_kernel/cuda_kernel/... and parents[3] == /root).
+# Locally, <root> == /Users/.../HKUST.  In both cases importing
+# ``kernel.xxx`` works once <root> is on sys.path.
+_IMPORT_ROOT = _THIS.parents[3]
+if str(_IMPORT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_IMPORT_ROOT))
 
 from kernel.triton_kernel.activation_quant import quantize_activation_s4
 from kernel.triton_kernel.dense_u4s4_gemm import dense_gemm_u4_s4
@@ -292,7 +298,7 @@ def main():
     args = parser.parse_args()
 
     ts = time.strftime("%Y%m%d_%H%M%S")
-    out_dir = args.out or (_REPO_ROOT.parent / "logs" / "cuda_kernel")
+    out_dir = args.out or (_IMPORT_ROOT / "logs" / "cuda_kernel")
     out_dir.mkdir(parents=True, exist_ok=True)
     log_file = out_dir / f"bench_{ts}.log"
     json_file = out_dir / f"bench_{ts}.json"
