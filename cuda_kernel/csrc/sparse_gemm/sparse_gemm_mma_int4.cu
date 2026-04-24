@@ -299,9 +299,10 @@ void launch(
         );
     };
 
-    // Round 18: kBn=32 bucket extended to T<=128 (see dense_gemm_mma_int4.cu).
+    // Round 17/18: sparse kept at T<=96 bucket (Round 18 extension hurt
+    // sparse for unclear reasons -- maybe SASS regeneration; conservative).
     if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 128)  do_launch(std::integral_constant<int, 32>{});
+    else if (T <= 96)   do_launch(std::integral_constant<int, 32>{});
     else                do_launch(std::integral_constant<int, 64>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
