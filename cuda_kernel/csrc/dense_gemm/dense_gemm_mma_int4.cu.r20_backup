@@ -8,14 +8,6 @@
 //   - Double-buffered W/X kept (total shmem for kBn=64: 16+8+8+8+~=40KB
 //     which fits SM89's 48 KB static-shmem budget).
 //
-// Round 21 (C): cp.async pipeline.
-//   - Replace synchronous uint4 loads with cp.async.ca.shared.global
-//     so HBM -> shmem copies overlap with MMA compute (marlin/QServe
-//     pattern).  Wait on the previous group's copy right before it is
-//     consumed, rather than blocking the whole CTA after issue.
-//   - Keeps the per-group fp32 epilogue for contract compatibility
-//     (not touching that yet -- next round if this works).
-//
 // Semantic contract: bit-exact match with dense_gemm Triton reference.
 // Uses mma.m16n8k64.s4.s4.s32 (Tensor Core, accelerated on Ada SM89).
 
@@ -32,38 +24,6 @@
 
 namespace hkust_v9 {
 namespace dense_gemm_mma_int4 {
-
-// ---------------------------------------------------------------------------
-// cp.async helpers (Round 21 -- async HBM -> shmem copy for pipelining)
-// ---------------------------------------------------------------------------
-
-// Issue an asynchronous 16-byte copy from global to shared memory.
-// SM80+ (SM89 supported).  cp_size=16 means ca variant (writes through
-// L1 cache), matching marlin's default for 128-bit loads.
-__device__ __forceinline__ void cp_async_16B(void* smem_dst,
-                                             const void* gmem_src) {
-    unsigned smem_addr = __cvta_generic_to_shared(smem_dst);
-    asm volatile(
-        "cp.async.ca.shared.global [%0], [%1], 16;\n"
-        :: "r"(smem_addr), "l"(gmem_src)
-    );
-}
-
-// Commit all prior un-committed cp.async ops into a single group.
-__device__ __forceinline__ void cp_async_commit() {
-    asm volatile("cp.async.commit_group;\n" ::);
-}
-
-// Wait until all but the last N groups have completed.
-template <int N>
-__device__ __forceinline__ void cp_async_wait() {
-    asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
-}
-
-// Fence: wait for ALL cp.async ops to finish.
-__device__ __forceinline__ void cp_async_wait_all() {
-    asm volatile("cp.async.wait_all;\n" ::);
-}
 
 // Hard upper bound on n_groups we will ever see here: d_in <= 16384
 // covers all current shapes (Qwen3 / Llama 7B/13B).  n_groups = d_in/128
@@ -165,7 +125,6 @@ __global__ void dense_gemm_mma_int4_kernel(
 
     // ------------------------------------------------------------
     // Loaders (packed bytes, no unpack needed for INT4 MMA).
-    // Round 21: use cp.async for overlap with MMA.
     // ------------------------------------------------------------
     auto issue_w_load = [&](int g, int buf) {
         int m = m_tile + tid;
@@ -173,13 +132,13 @@ __global__ void dense_gemm_mma_int4_kernel(
         if (m < d_out) {
             const uint8_t* src = W + (int64_t)m * stride_w_m
                                    + (int64_t)(g * bytes_per_group) * stride_w_k;
-            // 64 bytes = 4 x 16-byte cp.async transfers.
+            // 64 bytes = 4 uint4
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
-                cp_async_16B(dst + i * 16, src + i * 16);
+                uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
+                *reinterpret_cast<uint4*>(dst + i * 16) = v;
             }
         } else {
-            // OOB rows: zero-fill directly (cp.async has no zero-pad).
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
                 *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
@@ -193,16 +152,16 @@ __global__ void dense_gemm_mma_int4_kernel(
             int row = q >> 2;
             int quad = q & 3;
             int n = n_tile + row;
+            uint4 v;
             if (n < T) {
                 int64_t off = (int64_t)n * stride_x_n
                             + (int64_t)(g * bytes_per_group + quad * 16) * stride_x_k;
-                cp_async_16B(&sX[buf][row][quad * 16], X + off);
+                v = *reinterpret_cast<const uint4*>(X + off);
             } else {
-                *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) =
-                    make_uint4(0, 0, 0, 0);
+                v = make_uint4(0, 0, 0, 0);
             }
+            *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = v;
         }
-        // sum_X is int32 * kBn, small enough to keep sync.
         for (int nk = tid; nk < kBn; nk += kBm) {
             int n = n_tile + nk;
             s_sum_X[buf][nk] = (n < T) ?
@@ -210,23 +169,16 @@ __global__ void dense_gemm_mma_int4_kernel(
         }
     };
 
-    // --------------------------------------------------------------
-    // Pipeline prelude: issue g=0 copy and wait for it.
-    // --------------------------------------------------------------
     __syncthreads();
     issue_w_load(0, 0);
     issue_x_load(0, 0);
-    cp_async_commit();
-    cp_async_wait<0>();
     __syncthreads();
 
     for (int g = 0; g < n_groups; ++g) {
         const int buf = g & 1;
-        // Issue next group's copy (overlap with MMA on current group).
         if (g + 1 < n_groups) {
             issue_w_load(g + 1, buf ^ 1);
             issue_x_load(g + 1, buf ^ 1);
-            cp_async_commit();
         }
 
         int d_acc[kMsubPerWarp][kNsubPerCta][4];
@@ -338,10 +290,6 @@ __global__ void dense_gemm_mma_int4_kernel(
             }
         }
 
-        // Wait for next group's copy to complete before it is consumed.
-        if (g + 1 < n_groups) {
-            cp_async_wait<0>();
-        }
         __syncthreads();
     }
 
