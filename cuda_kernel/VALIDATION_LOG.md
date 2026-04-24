@@ -1652,4 +1652,84 @@ T>kBt -- the T<=4 gate was always over-conservative.
 
 ### Next run: no further changes queued
 
+---
+
+## Round 21 — cp.async pipeline MVP (NEGATIVE, reverted)
+
+Attempted Option C from the post-R20 discussion: move toward marlin-
+style HBM/compute overlap by replacing synchronous `*uint4*` loads
+with `cp.async.ca.shared.global` in `dense_gemm_mma_int4.cu`.
+
+### Changes (reverted)
+
+1. Added `cp_async_16B / cp_async_commit / cp_async_wait<N>` PTX
+   helpers.
+2. Replaced both `issue_w_load` and `issue_x_load` loaders with
+   cp.async issues (one `commit_group` per group).
+3. Inserted `cp_async_wait<0>` right before each group's consumer
+   __syncthreads (instead of blocking synchronously after issue).
+
+~100 lines changed, purely mechanical.
+
+### Parity
+
+10/10 `test_dense_gemm_parity` + `test_fused_dense_sparse_parity`
+cases pass.  cp.async preserves bit-exactness as expected.
+
+### Bench (bench_20260424_192500 vs R20 bench_20260424_191619)
+
+| shape | R20 dense_gemm | **R21 dense_gemm** | R20 e2e | **R21 e2e** |
+|---|---:|---:|---:|---:|
+| dec_T1_4k_4k   |  17.52 |  16.69 |  19.76 |  19.82 |
+| dec_T8_4k_4k   |  32.16 |  32.41 |  54.50 |  55.21 |
+| bat_T128       |  65.26 |  65.41 |  86.08 |  86.06 |
+| pre_T512       | 128.89 | 128.44 | 150.57 | 150.69 |
+| pre_T1024      | 257.52 | 256.24 | 286.27 | 286.39 |
+
+All shapes within ±1% run-to-run noise.  **No usable speedup.**
+
+### Why no win
+
+Per-group arithmetic intensity is dominated by the *in-loop fp32
+epilogue* (scale/zero fold), not by HBM load latency:
+
+```
+for g in 0..n_groups:
+   [ cp.async issue      ~= 32 threads * 64B = 2 KB ]   <- tiny
+   [ 2 MMA K-steps       ~= 2 * mma.m16n8k64       ]
+   [ fp32 epilogue fold  ~= kBm*kBn * (mul+add+mul+mul) ] <- dominant
+```
+
+cp.async successfully overlaps HBM with MMA, but the epilogue is
+already hiding the HBM latency via the compiler's aggressive ILP
+within the fp32 fold.  The critical path is the fp32 epilogue chain,
+not the load.  Measured with `cuda::pipeline`-style issue, the
+speedup upper bound is bounded by `HBM_bytes / MMA_throughput` ≈
+64 KB / (few us) = sub-microsecond per CTA, which falls into noise.
+
+### To actually break through, marlin-style would need
+
+1. **Kill the per-group fp32 epilogue**: accumulate int32 into
+   warp-level fp32 registers and do a *single* epilogue after all
+   K-groups.  Requires rethinking the `(scale * (acc - z*sumX))`
+   semantic so the scale/zero folding can be applied post-loop.
+   This changes the data flow and needs a re-derived numeric
+   contract.  ~300-500 LOC kernel rewrite + parity re-validation.
+2. **Warp-specialized producer-consumer**: split 4 warps into 2
+   producer (cp.async issuers) + 2 consumer (MMA executors).
+   ~1000 LOC kernel rewrite.
+
+Neither fits the "one-evening MVP" envelope Round 21 was aiming at.
+
+### Decision
+
+Reverted to R20 head.  This confirms the theoretical ceiling
+analysis: our bottleneck is the fp32 per-group fold, not HBM load.
+Cost-benefit for structural redesign is now *explicit*: to get
++15-30% at T>=128, we need ~500 LOC of kernel surgery and days of
+bring-up, not one round.
+
+Status after revert: kernel file reverted byte-for-byte to R20
+baseline.  Parity passes on full suite.  No changes shipped.
+
 
