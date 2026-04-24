@@ -443,6 +443,81 @@ T≥8 paths are unchanged (still use INT4 MMA).
 3. **T=512..1024 dense/fused 0.70-0.80x**: close to FP16 but not over.
    Fix: ldmatrix for A/B operand loading.
 
+## Round 15: activation_quant single-pass + fused_quant_gemv (2026-04-24 17:36)
+
+### Motivation
+
+Round 14 e2e T=1 4k→4k was 0.63x FP16.  Profiling showed:
+  - fused GEMV kernel: ~16.6us (1.02x FP16) -- already at parity
+  - activation_quant kernel: ~14us -- dominated by kernel launch overhead
+  Total: ~26us = 0.63x FP16
+
+The activation_quant kernel uses only 1 CTA (128 threads) for T=1,
+leaving 127/128 SMs idle.  Kernel launch overhead alone is ~5us.
+
+### Round 15a: activation_quant single-pass (shmem cache)
+
+Added ``activation_quant_kernel_sp``: gathers X[perm] once into shmem
+and reuses it in Pass 2, halving HBM gather traffic.
+
+Result: T=1 D=4096 still ~14us.  The bottleneck was NOT HBM gather
+count but kernel launch overhead + low SM occupancy.
+
+### Round 15b: fused_quant_gemv (single kernel, warp 0 serial)
+
+New kernel ``fused_quant_gemv_kernel``: fuses act_quant + GEMV into one
+kernel launch.  Initial design: warp 0 does all act_quant, other warps
+wait.
+
+Result: fused 37us vs 2-kernel 36us -- no improvement.  Warp 0 serial
+bottleneck serialised the work.
+
+### Round 15c: fused_quant_gemv (all warps cooperate on act_quant)
+
+Redesigned Phase A:
+  A1. Max-abs: all kBm=8 warps cooperate (each handles d_in/kBm elems),
+      CTA-wide reduce via shmem.
+  A2. Quant+pack+sum: warp w handles groups [w, w+kBm, ...].
+      Each warp does 4 passes of 32 lanes over its 128-element group.
+
+Phase B (GEMV) unchanged: each warp computes its own output row using
+shmem X_s4.
+
+Parity: bit-exact vs fused_gemv_decode on 4 shapes (max_abs=0).
+
+### Benchmark results (bench_20260424_173556.md)
+
+#### end_to_end_v9_linear (T=1 decode path)
+
+| shape | FP16 | R14 e2e | **R15c e2e** | R14/FP16 | **R15c/FP16** | Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| **dec_T1_4k_4k**  | 16.46us | 26.19us | **19.80us** | 0.63x | **0.83x** 🟡 | +24% |
+| **dec_T1_4k_11k** | 94.00us | 46.65us | **45.45us** | 2.01x | **2.07x** ✅ | +3% |
+| **dec_T1_11k_4k** | 95.01us | 63.51us | **48.70us** | 1.50x | **1.95x** ✅ | +30% |
+| dec_T8..1024      | unchanged (2-kernel path) | | | | | |
+
+#### fused_dense_sparse kernel (unchanged, R14 GEMV)
+
+| shape | FP16 | int4 | ratio |
+|---|---:|---:|---:|
+| T=1 4k→4k  | 16.93us | 16.57us | 1.02x |
+| T=1 4k→11k | 94.00us | 36.84us | 2.55x |
+| T=1 11k→4k | 95.03us | 40.47us | 2.35x |
+
+### Analysis
+
+T=1 e2e improvements vs R14:
+- 4k→4k:  0.63x → **0.83x** (+24%)  -- fused kernel eliminates act_quant launch
+- 4k→11k: 2.01x → **2.07x** (+3%)   -- marginal (GEMV dominates)
+- 11k→4k: 1.50x → **1.95x** (+30%)  -- significant, approaching 2x
+
+Remaining gap at T=1 4k→4k (0.83x):
+  fused kernel = 19.8us vs FP16 = 16.5us.
+  The fused kernel does MORE work than FP16 (quant + GEMV vs just GEMV),
+  so 0.83x is near the theoretical limit for W4A4 with this architecture.
+  To beat FP16 at 4k→4k we would need to reduce W bandwidth by 4x
+  (which W4 does) but the quant overhead partially offsets this.
+
 ### Next run
 
 On `autodl`:
