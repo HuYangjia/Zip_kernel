@@ -1,10 +1,5 @@
 // Fused Dense+Sparse GEMM -- INT8 Tensor Core version (SM89).
-//
-// Y_total[m,n] = Y_low[m,n] + 16 * Y_high[m,n]
-// Uses mma.m16n8k32.s8.s8.s32 for both branches.  Dense branch sweeps
-// all n_groups; sparse branch iterates the BSR row for this block-row.
-// A single FP32 accumulator per output entry carries both branches'
-// contributions so the fused kernel avoids a full intermediate store.
+// Single-buffered shmem.
 
 #include "common/arch.cuh"
 #include "common/mma_utils.cuh"
@@ -42,10 +37,10 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
     int64_t stride_wb_blk, int64_t stride_wb_r, int64_t stride_wb_k,
     int64_t stride_y_m,   int64_t stride_y_n
 ) {
-    constexpr int kBm = BROW;                 // 128
-    constexpr int kBk = BCOL;                 // 128
+    constexpr int kBm = BROW;
+    constexpr int kBk = BCOL;
     constexpr int kMmaK = 32;
-    constexpr int kKSteps = kBk / kMmaK;      // 4
+    constexpr int kKSteps = kBk / kMmaK;
     constexpr int kMsubPerWarp = 2;
     constexpr int kNsubPerCta = (kBn + 7) / 8;
 
@@ -58,10 +53,10 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
     const int n_tile = blockIdx.y * kBn;
     const int bytes_per_group = BCOL >> 1;
 
-    __shared__ alignas(16) int8_t sW[2][kBm][kBk];
-    __shared__ alignas(16) int8_t sX[2][kBn][kBk];
+    __shared__ alignas(16) int8_t sW[kBm][kBk];
+    __shared__ alignas(16) int8_t sX[kBn][kBk];
     __shared__ __half s_scale_x[kBn];
-    __shared__ int s_sum_X[2][kBn];
+    __shared__ int s_sum_X[kBn];
 
     if (tid < kBn) {
         int n = n_tile + tid;
@@ -76,22 +71,21 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
         #pragma unroll
         for (int r = 0; r < 4; ++r) y_fp[im][in][r] = 0.0f;
 
-    // Dense loaders.
-    auto issue_w_dense_load = [&](int g, int buf) {
+    auto issue_w_dense_load = [&](int g) {
         int m = m_tile + tid;
-        int8_t* dst = &sW[buf][tid][0];
+        int8_t* dst = &sW[tid][0];
         if (m < d_out) {
             const uint8_t* src = W_low + (int64_t)m * stride_w_m
                                        + (int64_t)(g * bytes_per_group) * stride_w_k;
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
-                uint32_t w_packed0 = reinterpret_cast<const uint32_t*>(src)[4*i + 0];
-                uint32_t w_packed1 = reinterpret_cast<const uint32_t*>(src)[4*i + 1];
+                uint32_t w0 = reinterpret_cast<const uint32_t*>(src)[4*i + 0];
+                uint32_t w1 = reinterpret_cast<const uint32_t*>(src)[4*i + 1];
                 int s0, s1;
-                unpack_s4_to_s8_x8(w_packed0, s0, s1);
+                unpack_s4_to_s8_x8(w0, s0, s1);
                 reinterpret_cast<int*>(dst)[4*i + 0] = s0;
                 reinterpret_cast<int*>(dst)[4*i + 1] = s1;
-                unpack_s4_to_s8_x8(w_packed1, s0, s1);
+                unpack_s4_to_s8_x8(w1, s0, s1);
                 reinterpret_cast<int*>(dst)[4*i + 2] = s0;
                 reinterpret_cast<int*>(dst)[4*i + 3] = s1;
             }
@@ -103,7 +97,7 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
         }
     };
 
-    auto issue_x_load = [&](int g_or_bc, int buf) {
+    auto issue_x_load = [&](int g_or_bc) {
         const int chunks_per_row = 16;
         const int total_chunks = kBn * chunks_per_row;
         for (int q = tid; q < total_chunks; q += kBm) {
@@ -120,43 +114,40 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
             }
             int s0, s1;
             unpack_s4_to_s8_x8(packed4, s0, s1);
-            int8_t* dst = &sX[buf][row][ck * 8];
+            int8_t* dst = &sX[row][ck * 8];
             reinterpret_cast<int*>(dst)[0] = s0;
             reinterpret_cast<int*>(dst)[1] = s1;
         }
     };
 
-    auto issue_sum_X_load = [&](int g, int buf) {
+    auto issue_sum_X_load = [&](int g) {
         for (int nk = tid; nk < kBn; nk += kBm) {
             int n = n_tile + nk;
-            s_sum_X[buf][nk] = (n < T) ?
+            s_sum_X[nk] = (n < T) ?
                 sum_X[(int64_t)n * stride_sx_n + (int64_t)g * stride_sx_g] : 0;
         }
     };
 
-    auto issue_w_sparse_load = [&](int block_idx, int buf) {
+    auto issue_w_sparse_load = [&](int block_idx) {
         const uint8_t* src = W_high_blocks
                            + (int64_t)block_idx * stride_wb_blk
                            + (int64_t)tid * stride_wb_r;
-        int8_t* dst = &sW[buf][tid][0];
+        int8_t* dst = &sW[tid][0];
         #pragma unroll
         for (int i = 0; i < 4; ++i) {
-            uint32_t w_packed0 = reinterpret_cast<const uint32_t*>(src)[4*i + 0];
-            uint32_t w_packed1 = reinterpret_cast<const uint32_t*>(src)[4*i + 1];
+            uint32_t w0 = reinterpret_cast<const uint32_t*>(src)[4*i + 0];
+            uint32_t w1 = reinterpret_cast<const uint32_t*>(src)[4*i + 1];
             int s0, s1;
-            unpack_s4_to_s8_x8(w_packed0, s0, s1);
+            unpack_s4_to_s8_x8(w0, s0, s1);
             reinterpret_cast<int*>(dst)[4*i + 0] = s0;
             reinterpret_cast<int*>(dst)[4*i + 1] = s1;
-            unpack_s4_to_s8_x8(w_packed1, s0, s1);
+            unpack_s4_to_s8_x8(w1, s0, s1);
             reinterpret_cast<int*>(dst)[4*i + 2] = s0;
             reinterpret_cast<int*>(dst)[4*i + 3] = s1;
         }
     };
 
-    // Helper: run a single MMA pass on the currently loaded sW/sX[buf].
-    // ``fold_fn`` is a lambda (int d, int m_global, int n_local, int g_or_bc) -> void
-    // that folds the int32 MMA output into y_fp with branch-specific epilogue.
-    auto run_mma_pass = [&](int buf, auto fold_fn, int g_or_bc) {
+    auto run_mma_pass = [&](auto fold_fn, int g_or_bc) {
         int d_acc[kMsubPerWarp][kNsubPerCta][4];
         #pragma unroll
         for (int im = 0; im < kMsubPerWarp; ++im)
@@ -179,12 +170,12 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
                 int col2 = col0 + 16;
                 uint32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
                 if (row0 < kBm) {
-                    a0 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col0]);
-                    a2 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col2]);
+                    a0 = *reinterpret_cast<const uint32_t*>(&sW[row0][col0]);
+                    a2 = *reinterpret_cast<const uint32_t*>(&sW[row0][col2]);
                 }
                 if (row1 < kBm) {
-                    a1 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col0]);
-                    a3 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col2]);
+                    a1 = *reinterpret_cast<const uint32_t*>(&sW[row1][col0]);
+                    a3 = *reinterpret_cast<const uint32_t*>(&sW[row1][col2]);
                 }
                 a_regs[im][0] = a0;
                 a_regs[im][1] = a1;
@@ -197,17 +188,15 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
             for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
                 int n_base = in_sub * 8;
                 int n_row_in_sub = lane >> 2;
-                int k_row_base0 = (lane & 3) * 4;
-                int k_row_base1 = k_row_base0 + 16;
+                int k0 = k_base + (lane & 3) * 4;
+                int k1 = k0 + 16;
+                uint32_t b0 = 0, b1 = 0;
                 if (n_base + n_row_in_sub < kBn) {
-                    const int8_t* p0 = &sX[buf][n_base + n_row_in_sub][k_base + k_row_base0];
-                    const int8_t* p1 = &sX[buf][n_base + n_row_in_sub][k_base + k_row_base1];
-                    b_regs[in_sub][0] = *reinterpret_cast<const uint32_t*>(p0);
-                    b_regs[in_sub][1] = *reinterpret_cast<const uint32_t*>(p1);
-                } else {
-                    b_regs[in_sub][0] = 0;
-                    b_regs[in_sub][1] = 0;
+                    b0 = *reinterpret_cast<const uint32_t*>(&sX[n_base + n_row_in_sub][k0]);
+                    b1 = *reinterpret_cast<const uint32_t*>(&sX[n_base + n_row_in_sub][k1]);
                 }
+                b_regs[in_sub][0] = b0;
+                b_regs[in_sub][1] = b1;
             }
 
             #pragma unroll
@@ -226,7 +215,6 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
             }
         }
 
-        // Fold into y_fp via caller's epilogue lambda.
         #pragma unroll
         for (int im = 0; im < kMsubPerWarp; ++im) {
             int msub_base = warp_id * 32 + im * 16;
@@ -244,7 +232,7 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
                     if (m_global >= d_out) continue;
                     if (n_global >= T) continue;
                     fold_fn(d_acc[im][in_sub][r], m_global, n_local, g_or_bc,
-                            im, in_sub, r, buf);
+                            im, in_sub, r);
                 }
             }
         }
@@ -252,24 +240,15 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
 
     __syncthreads();
 
-    // =================================================================
     // DENSE BRANCH
-    // =================================================================
-    issue_w_dense_load(0, 0);
-    issue_x_load(0, 0);
-    issue_sum_X_load(0, 0);
-    __syncthreads();
-
     for (int g = 0; g < n_groups; ++g) {
-        const int buf = g & 1;
-        if (g + 1 < n_groups) {
-            issue_w_dense_load(g + 1, buf ^ 1);
-            issue_x_load(g + 1, buf ^ 1);
-            issue_sum_X_load(g + 1, buf ^ 1);
-        }
+        issue_w_dense_load(g);
+        issue_x_load(g);
+        issue_sum_X_load(g);
+        __syncthreads();
 
         auto fold_dense = [&](int d_val, int m_global, int n_local,
-                              int gg, int im, int in_sub, int r, int bb) {
+                              int gg, int im, int in_sub, int r) {
             float z = __half2float(
                 zero_u4[(int64_t)m_global * stride_zu_m
                       + (int64_t)gg * stride_zu_g]
@@ -279,49 +258,38 @@ __global__ void fused_dense_sparse_mma_int8_kernel(
                        + (int64_t)gg * stride_su_g]
             );
             float sxn = __half2float(s_scale_x[n_local]);
-            float sumxn = static_cast<float>(s_sum_X[bb][n_local]);
+            float sumxn = static_cast<float>(s_sum_X[n_local]);
             float corrected = static_cast<float>(d_val) - z * sumxn;
             y_fp[im][in_sub][r] += corrected * s * sxn;
         };
-        run_mma_pass(buf, fold_dense, g);
+        run_mma_pass(fold_dense, g);
 
         __syncthreads();
     }
 
-    // =================================================================
     // SPARSE BRANCH
-    // =================================================================
     const int blk_start = hp_row_offsets[br];
     const int blk_end   = hp_row_offsets[br + 1];
 
-    if (blk_start < blk_end) {
-        int bc0 = __ldg(&hp_col_indices[blk_start]);
-        issue_w_sparse_load(blk_start, 0);
-        issue_x_load(bc0, 0);
+    for (int block_idx = blk_start; block_idx < blk_end; ++block_idx) {
+        const int bc = __ldg(&hp_col_indices[block_idx]);
+
+        issue_w_sparse_load(block_idx);
+        issue_x_load(bc);
         __syncthreads();
 
-        for (int block_idx = blk_start; block_idx < blk_end; ++block_idx) {
-            const int bc = __ldg(&hp_col_indices[block_idx]);
-            const int buf = (block_idx - blk_start) & 1;
-            if (block_idx + 1 < blk_end) {
-                int bc_next = __ldg(&hp_col_indices[block_idx + 1]);
-                issue_w_sparse_load(block_idx + 1, buf ^ 1);
-                issue_x_load(bc_next, buf ^ 1);
-            }
+        auto fold_sparse = [&](int d_val, int m_global, int n_local,
+                               int bc_idx, int im, int in_sub, int r) {
+            float s = __half2float(
+                scale_u4[(int64_t)m_global * stride_su_m
+                       + (int64_t)bc_idx * stride_su_g]
+            );
+            float sxn = __half2float(s_scale_x[n_local]);
+            y_fp[im][in_sub][r] += 16.0f * static_cast<float>(d_val) * s * sxn;
+        };
+        run_mma_pass(fold_sparse, bc);
 
-            auto fold_sparse = [&](int d_val, int m_global, int n_local,
-                                   int bc_idx, int im, int in_sub, int r, int bb) {
-                float s = __half2float(
-                    scale_u4[(int64_t)m_global * stride_su_m
-                           + (int64_t)bc_idx * stride_su_g]
-                );
-                float sxn = __half2float(s_scale_x[n_local]);
-                y_fp[im][in_sub][r] += 16.0f * static_cast<float>(d_val) * s * sxn;
-            };
-            run_mma_pass(buf, fold_sparse, bc);
-
-            __syncthreads();
-        }
+        __syncthreads();
     }
 
     // Writeback.
