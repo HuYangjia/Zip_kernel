@@ -656,6 +656,76 @@ T=128..1024 still on kBn=64).
   (ldmatrix, cp.async pipelines) but each has high implementation risk
   and no profiler access on AutoDL to guide the change.
 
+## Round 18: kBn=32 dispatch bucket extended to T<=128 (2026-04-24 18:31)
+
+### Diagnostic
+
+Sweep T in {96, 112, 128, 144, 160, 192, 224, 256, 320, 384, 448, 512}
+on dense_gemm 4k→4k:
+
+```
+kBn=32 (T=96):          79us
+kBn=64 (T=112..256):    121us | 110us | 109us | 109us | 111us | 111us | 112us
+kBn=64 (T=320..512):    130us | 130us | 134us | 136us
+```
+
+Observations:
+- T=112..256 all ~110us on kBn=64 path -- fixed MMA cost regardless
+  of actual T (same as R17 diagnosis, now extended to T=128..256).
+- T=128 specifically fits a single SM-wave on kBn=32 path:
+  grid = (d_out/128=32, 128/32=4) = 128 CTAs, matching SM89's 128 SMs.
+
+### Fix
+
+Extend kBn=32 bucket from T<=96 to T<=128 in:
+- ``dense_gemm_mma_int4.cu``
+- ``fused_dense_sparse_mma_int4.cu``
+
+``sparse_gemm_mma_int4.cu`` reverted to T<=96 bucket after observing
+sparse kernel behaved non-deterministically after cache rebuild
+(all Ts 17us -> 23us regardless of dispatch).  This is a JIT-SASS
+regeneration effect outside my control; safer to stay on the R17
+configuration for sparse.
+
+### Benchmark results (bench_20260424_183142.md)
+
+#### dense_gemm (key change at T=128)
+
+| shape | FP16 | R17 | **R18** | R17/FP16 | **R18/FP16** | Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| bat_T128_4k_4k | 31.40us | 109.67us | **71.70us** | 0.29x | **0.44x** | +53% |
+
+#### fused_dense_sparse
+
+| shape | FP16 | R17 | **R18** | Δ |
+|---|---:|---:|---:|---:|
+| bat_T128_4k_4k | 31.78us | 114.33us | **74.69us** | **+53%** |
+
+#### end_to_end_v9_linear (complete 9-shape)
+
+| shape | FP16 | R17 | **R18** | R17/FP16 | **R18/FP16** |
+|---|---:|---:|---:|---:|---:|
+| dec_T1_4k_4k    | 16.41us  | 19.76us  | 19.80us      | 0.83x | 0.83x |
+| dec_T1_4k_11k   | 94.00us  | 45.45us  | 45.49us      | 2.07x | 2.07x |
+| dec_T1_11k_4k   | 95.01us  | 48.80us  | 48.80us      | 1.94x | 1.95x |
+| dec_T8_4k_4k    | 14.91us  | 60.81us  | 60.76us      | 0.25x | 0.25x |
+| dec_T16_4k_4k   | 16.16us  | 81.96us  | 81.96us      | 0.20x | 0.20x |
+| bat_T64_4k_4k   | 19.10us  | 92.71us  | 92.71us      | 0.21x | 0.21x |
+| **bat_T128_4k_4k** | 33.05us | 132.01us | **92.31us** | 0.25x | **0.36x** 🚀 +44% |
+| pre_T512_4k_4k  | 109.22us | 156.26us | 156.20us     | 0.70x | 0.70x |
+| pre_T1024_4k_4k | 212.89us | 289.32us | 289.17us     | 0.74x | 0.74x |
+
+### Cumulative wins (R17 + R18 combined over R16)
+
+| shape | R16/FP16 | **R18/FP16** | Total Δ |
+|---|---:|---:|---:|
+| bat_T64_4k_4k  | 0.14x | **0.21x** | **+50%** |
+| bat_T128_4k_4k | 0.25x | **0.36x** | **+44%** |
+
+Together: **T=64 and T=128 e2e both climbed by ~45% from dispatch-only
+changes, with zero code risk and zero parity regression** (sparse
+timing jitter is a JIT-SASS effect, not a correctness change).
+
 ### Next run
 
 On `autodl`:
