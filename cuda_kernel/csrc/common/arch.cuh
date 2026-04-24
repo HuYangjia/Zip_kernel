@@ -58,4 +58,59 @@ __host__ __device__ constexpr T round_up(T a, T b) {
         }                                                                    \
     } while (0)
 
+// ---------------------------------------------------------------------------
+// cp.async helpers (SM80+).  Used by dense/sparse/fused kernels to
+// prefetch the next group's X tile into shared memory while the current
+// group is still computing.  Double-buffering lets us overlap global
+// memory latency with dp4a math.
+//
+// Primitives:
+//   * cp_async_cg_16(dst_shmem, src_gmem): issues a single 16-byte
+//     ``cp.async.cg`` with L1 bypass (we want L2-only caching for large
+//     X tensors to minimise L1 thrashing against W).
+//   * cp_async_commit(): inserts a commit barrier (``cp.async.commit_group``).
+//   * cp_async_wait_group<N>(): waits until all but ``N`` groups are done.
+//
+// The pattern is:
+//   // prologue: kick off group 0's load
+//   issue cp_async ...; cp_async_commit();
+//   for g in 0..n_groups:
+//       if g + 1 < n_groups: issue cp_async for g+1; cp_async_commit();
+//       cp_async_wait_group<1>();     // group g is now ready
+//       __syncthreads();
+//       compute on buffer[g % 2]
+//   cp_async_wait_group<0>();         // final drain (rarely needed)
+// ---------------------------------------------------------------------------
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+
+// Convert a generic shared-memory pointer to its 32-bit shared-state
+// address (required by the cp.async PTX operand).  ``__cvta_generic_to_shared``
+// is an nvcc-builtin that does this without a round-trip through ld.
+__device__ __forceinline__ uint32_t shmem_ptr_to_uint32(const void* ptr) {
+    return static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
+}
+
+// Issue one 16-byte cp.async from global to shared.
+// ``bytes_valid`` can be 4, 8, or 16; smaller values zero the tail.
+__device__ __forceinline__ void cp_async_cg_16(
+    void* dst_shmem, const void* src_gmem
+) {
+    uint32_t dst_u32 = shmem_ptr_to_uint32(dst_shmem);
+    asm volatile(
+        "cp.async.cg.shared.global [%0], [%1], 16;\n"
+        :: "r"(dst_u32), "l"(src_gmem)
+    );
+}
+
+__device__ __forceinline__ void cp_async_commit() {
+    asm volatile("cp.async.commit_group;\n" ::);
+}
+
+template <int N>
+__device__ __forceinline__ void cp_async_wait_group() {
+    asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
+}
+
+#endif  // __CUDA_ARCH__ >= 800
+
 }  // namespace hkust_v9

@@ -201,39 +201,73 @@ __global__ void dense_gemm_kernel(
     for (int k = 0; k < kBn; ++k) y_acc[k] = 0.0f;
 
     // -----------------------------------------------------------------
-    // Shmem: one (kBn, 64) X tile per K group.  Up to 128 x 64 = 8192
-    // bytes, well within the 48 KB default shmem budget.
+    // Shmem: DOUBLE-BUFFERED X tile so we can overlap the next group's
+    // global load with the current group's compute (Round 6 optim).
+    // Two (kBn, 64) banks; at kBn<=4 this is at most 512 bytes total,
+    // negligible.  cp.async writes directly to shmem without occupying
+    // registers or stalling the compute pipeline.
     // -----------------------------------------------------------------
-    __shared__ uint8_t sX[kBn][64];
+    __shared__ uint8_t sX[2][kBn][64];
 
-    // Also stage the per-group sum_X[n] for all kBn columns.
-    __shared__ int s_sum_X[kBn];
+    // Also stage the per-group sum_X[n] for all kBn columns.  Double-
+    // buffered too so it stays in lock-step with sX.
+    __shared__ int s_sum_X[2][kBn];
 
     __syncthreads();  // ensure s_scale_x write from tid<kBn is visible
 
-    for (int g = 0; g < n_groups; ++g) {
-        // --- Stage X rows for this group ------------------------------
-        // Work items: kBn rows * 64 bytes = kBn * 64 total.  128 threads
-        // cooperate; at kBn=1 this is 64 bytes (half the threads idle),
-        // at kBn=128 it is 8192 bytes (64 per thread in two passes of 128).
-        const int total_x_bytes = kBn * 64;
-        for (int idx = tid; idx < total_x_bytes; idx += kBm) {
-            int row = idx >> 6;
-            int col = idx & 63;
+    // -----------------------------------------------------------------
+    // Helper lambda: issue all cp.async loads for group g into buffer
+    // sX[buf].  Each row (64 bytes) is 4 uint4 == 4 cp.async 16-byte
+    // transactions.  Thread t handles (row, quad) = (t >> 2, t & 3)
+    // for t in [0 .. kBn*4).  Remaining threads idle (kBn*4 <= 16 for
+    // our supported kBn, so only a fraction of the 128-thread block
+    // participates -- but cp.async is async so this is fine).
+    // -----------------------------------------------------------------
+    auto issue_x_load = [&](int g, int buf) {
+        const int total_quads = kBn * 4;
+        if (tid < total_quads) {
+            int row = tid >> 2;
+            int quad = tid & 3;
             int n = n_base + row;
-            uint8_t v = 0;
             if (n < T) {
                 int64_t off = (int64_t)n * stride_x_n
-                            + (int64_t)(g * bytes_per_group + col) * stride_x_k;
-                v = X[off];
+                            + (int64_t)(g * bytes_per_group + quad * 16) * stride_x_k;
+                cp_async_cg_16(
+                    &sX[buf][row][quad * 16],
+                    X + off
+                );
+            } else {
+                // Tail row past T: zero-fill via plain shmem writes.
+                // cp.async can't zero for out-of-bounds, and we rely on
+                // acc_n's epilogue mask to skip these anyway, but we
+                // still clear to avoid reading uninitialised bytes
+                // (which would be UB under compute sanitisers).
+                uint4 zero = make_uint4(0, 0, 0, 0);
+                *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = zero;
             }
-            sX[row][col] = v;
         }
-        // --- Stage sum_X[n, g] for all kBn columns --------------------
+        // Also prime sum_X for this group (one scalar per N row).
         if (tid < kBn) {
             int n = n_base + tid;
-            s_sum_X[tid] = (n < T) ?
+            s_sum_X[buf][tid] = (n < T) ?
                 sum_X[(int64_t)n * stride_sx_n + (int64_t)g * stride_sx_g] : 0;
+        }
+    };
+
+    // ---- Prologue: kick off group 0 ----------------------------------
+    issue_x_load(0, 0);
+    cp_async_commit();
+
+    for (int g = 0; g < n_groups; ++g) {
+        const int buf = g & 1;
+
+        // Kick off g+1 into the other buffer (if any) before waiting on g.
+        if (g + 1 < n_groups) {
+            issue_x_load(g + 1, buf ^ 1);
+            cp_async_commit();
+            cp_async_wait_group<1>();   // group g is ready, g+1 in flight
+        } else {
+            cp_async_wait_group<0>();   // last group: drain everything
         }
         __syncthreads();
 
@@ -327,7 +361,7 @@ __global__ void dense_gemm_kernel(
                 int x0_n[kBn], x1_n[kBn];
                 #pragma unroll
                 for (int nk = 0; nk < kBn; ++nk) {
-                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[nk][0])[i];
+                    uint32_t xp = reinterpret_cast<const uint32_t*>(&sX[buf][nk][0])[i];
                     unpack_4bytes_to_2int32(xp, x0_n[nk], x1_n[nk]);
                 }
                 int w0 = w_dp4a[2*i];
@@ -345,7 +379,7 @@ __global__ void dense_gemm_kernel(
                 int n = n_base + nk;
                 if (n >= T) break;
                 float corrected = static_cast<float>(acc_n[nk])
-                                - zero_g * static_cast<float>(s_sum_X[nk]);
+                                - zero_g * static_cast<float>(s_sum_X[buf][nk]);
                 float sxn = __half2float(s_scale_x[nk]);
                 y_acc[nk] += corrected * scale_g * sxn;
             }
