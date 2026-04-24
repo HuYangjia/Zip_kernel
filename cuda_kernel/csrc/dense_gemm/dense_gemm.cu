@@ -413,11 +413,19 @@ void launch(
         );
     };
 
+    // kBn dispatch table (iter-Round 3, calibrated against
+    // bench_20260424_131009).  Round 2's loop swap introduced kBn
+    // registers for acc_n + 2*kBn registers for x0_n/x1_n; at kBn>=8
+    // that spills to local memory and wall time explodes.  We now
+    // keep kBn <= 4 always and move N-parallelism onto the grid (which
+    // SM89 has plenty of headroom for: 64 warps/SM * 2 blocks/SM /
+    // (d_out/128) CTAs available).  The empirical optimum is:
+    //    T=1  -> kBn=1 (fewest regs, highest occupancy)
+    //    T<=8 -> kBn=2 (still well within budget, doubles grid)
+    //    else -> kBn=4 (caps spill; grid still covers the SM)
     if      (T <= 1)   do_launch(std::integral_constant<int, 1>{});
-    else if (T <= 8)   do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 16)  do_launch(std::integral_constant<int, 16>{});
-    else if (T <= 64)  do_launch(std::integral_constant<int, 32>{});
-    else               do_launch(std::integral_constant<int, 64>{});
+    else if (T <= 8)   do_launch(std::integral_constant<int, 2>{});
+    else               do_launch(std::integral_constant<int, 4>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
 }

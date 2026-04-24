@@ -384,11 +384,12 @@ void launch(
         );
     };
 
+    // See dense_gemm.cu iter-Round 3 notes: keep kBn <= 4 to avoid
+    // register spill of the acc_n/x0_n/x1_n register arrays that were
+    // introduced by the K-outside/N-inside loop swap.
     if      (T <= 1)   do_launch(std::integral_constant<int, 1>{});
-    else if (T <= 8)   do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 16)  do_launch(std::integral_constant<int, 16>{});
-    else if (T <= 64)  do_launch(std::integral_constant<int, 32>{});
-    else               do_launch(std::integral_constant<int, 64>{});
+    else if (T <= 8)   do_launch(std::integral_constant<int, 2>{});
+    else               do_launch(std::integral_constant<int, 4>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
 }
