@@ -69,47 +69,70 @@ PolicyFn = Callable[[str, ShapeContext], str]
 
 
 def _auto_policy(kernel_name: str, ctx: ShapeContext) -> str:
-    """Default hand-rolled decision table.
+    """Default hand-rolled decision table, calibrated from measured
+    CUDA-vs-Triton benchmarks on RTX 4090 (SM89) at 2026-04-24.
 
-    The table is intentionally conservative: when in doubt, return
-    Triton (the reference path we know is fast enough).  CUDA wins
-    are only claimed where we have microbench evidence from Phase 1.
+    Measurement source: ``kernel/cuda_kernel/benchmarks/bench_cuda_vs_triton.py``
+    run ``bench_20260424_122507``.  Concrete speedups (CUDA vs Triton,
+    >1 means CUDA is faster):
 
-    For kernels whose CUDA implementation is still a stub (phase 2+)
-    the dispatcher will detect the missing impl and fall back to Triton
-    regardless of what this function returns.
+      activation_quant     : 2.62x .. 4.70x across all T in [1, 1024]
+      dense_gemm  T=1      : 1.17x    (win)
+      dense_gemm  T=1 d_out=11k : 0.75x (lose; 11k * 1 path hits a
+                                        Triton sweet spot)
+      dense_gemm  T>=8     : 0.02x .. 0.27x (CUDA SIMT path scales
+                                              badly -- see Phase 5 plan)
+      sparse_gemm T=1      : 3.60x .. 3.80x
+      sparse_gemm T>=16    : 0.12x .. 0.63x
+      fused        T=1     : ~1.25x small-d_out, ~0.95x large-d_out
+      fused        T>=8    : 0.04x .. 0.39x
+
+    End-to-end v9_linear_forward at T=1 gets 2.75-2.82x from the
+    combined activation_quant+sparse+fused CUDA path; that's the
+    primary win for LLM decoding.
+
+    Policy summary:
+      - activation_quant: ALWAYS CUDA (wins everywhere).
+      - dense_gemm: CUDA only at T=1 AND d_out <= d_in (avoid the 11k
+        loss case); Triton otherwise.
+      - sparse_gemm: CUDA only at T=1; Triton for T>=8 (the SIMT loop
+        over kBn columns does not ILP well at wider tiles -- Phase 5
+        MMA rewrite should flip this).
+      - fused_dense_sparse: CUDA only at T=1 AND d_out <= d_in; Triton
+        otherwise.
+
+    For kernels whose CUDA implementation is still a stub the dispatcher
+    will detect the missing impl and fall back to Triton regardless of
+    what this function returns.
     """
     if kernel_name == KERNEL_ACTIVATION_QUANT:
-        # CUDA wins across the whole shape range: the Triton kernel's
-        # two-pass design (max then quant) plus autotune-dispatch cost
-        # are both eliminated in the CUDA version.
+        # 2.6x-4.7x across every shape tested.  Even at T=2048 the
+        # CUDA two-pass-in-one-launch still wins on launch overhead.
         return "cuda"
 
     if kernel_name == KERNEL_DENSE_GEMM:
-        if ctx.T <= 32:
-            # Decode regime: CUDA wins on launch overhead (no autotune).
+        # Win margin is narrow (~17%) even at the sweet spot, and flips
+        # into a loss at d_out >> d_in (11k vs 4k case) because our SIMT
+        # loop runs 86 M-tiles sequentially while Triton's TC pipeline
+        # overlaps them.  Restrict CUDA to the strict decode case where
+        # the SIMT launch-overhead advantage dominates.
+        if ctx.T == 1 and ctx.d_out <= ctx.d_in:
             return "cuda"
-        if ctx.T >= 1024:
-            # Prefill: v9_linear already switches to W4A16 fallback above
-            # this threshold, so this branch only fires when hp>0 forces
-            # the int4 path.  Triton's autotuned m16n8k16 kernel is
-            # competitive here; don't risk regressing until Phase 2 CUDA
-            # GEMM lands with its own microbench.
-            return "triton"
-        return "cuda"
+        return "triton"
 
     if kernel_name == KERNEL_SPARSE_GEMM:
-        # Sparse kernel launches ``nrow`` programs even when every BSR
-        # row is empty; the CUDA version uses a persistent kernel with
-        # a work queue, so it wins hardest at low hp_ratio.  Always
-        # prefer CUDA when available.
-        return "cuda"
+        # CUDA wins by 3.6-3.8x at T=1 (tiny launch overhead + no
+        # autotune).  At T>=8 the per-BSR-block shared-mem round trip
+        # starts dominating; Triton's persistent tile cache is better.
+        if ctx.T == 1:
+            return "cuda"
+        return "triton"
 
     if kernel_name == KERNEL_FUSED_DENSE_SPARSE:
-        # Prefill + hp>0 only.  Same trade-off as dense_gemm.
-        if ctx.T >= 1024:
-            return "triton"
-        return "cuda"
+        # Same shape as dense_gemm.
+        if ctx.T == 1 and ctx.d_out <= ctx.d_in:
+            return "cuda"
+        return "triton"
 
     return "triton"
 
