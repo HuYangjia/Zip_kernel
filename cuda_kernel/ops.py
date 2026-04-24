@@ -445,14 +445,13 @@ def fused_dense_sparse_cuda(
     W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
     X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
 ) -> torch.Tensor:
+    # Round 16 finding: smallT (dp4a + 1 warp per row, T=2..16) was slower
+    # than INT4 MMA because MMA already uses N=8 perfectly at T>=8 and
+    # the dp4a warp-reduce latency dominates.  Kept the smallT kernel
+    # available via fused_gemv_cuda_smallT but NOT on the default path.
     T = X_s4.shape[0]
     if T == 1:
         return fused_gemv_cuda_decode(
-            W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-            X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
-        )
-    if T <= 16:
-        return fused_gemv_cuda_smallT(
             W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
             X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
         )
