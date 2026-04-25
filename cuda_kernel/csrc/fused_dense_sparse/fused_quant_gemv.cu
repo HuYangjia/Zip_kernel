@@ -100,6 +100,11 @@ __global__ void fused_quant_gemv_kernel(
     __shared__ int     s_is_zero;
     // Per-warp max-abs partial (kBm floats).
     __shared__ float   s_warp_max[kBm];
+    // Round 26: prefetch scale_u4 and zero_u4 per (m, g) to shmem so
+    // the dense GEMV loop does not go to HBM for each group.  Each
+    // warp owns exactly one m-row, so layout is s_scale_u4[warp][g].
+    __shared__ __half  s_scale_u4_w[kBm][kMaxGroups];
+    __shared__ __half  s_zero_u4_w [kBm][kMaxGroups];
 
     // ================================================================
     // Phase A1: Max-abs (all warps cooperate, each handles d_in/kBm elems)
@@ -111,6 +116,27 @@ __global__ void fused_quant_gemv_kernel(
         float v = __half2float(__ldg(X_fp16 + (int64_t)pidx * stride_xd));
         local_max = fmaxf(local_max, fabsf(v));
     }
+
+    // Round 26: prefetch scale_u4 / zero_u4 for ALL rows of this CTA
+    // in parallel with the max-abs reduction.  Issued as independent
+    // loads that overlap the reduction's shuffle chain.
+    //   Rows owned by this CTA: warp_id in [0, kBm).
+    //   Each thread loads (kBm * n_groups) / kCTASize entries.
+    for (int idx = flat_tid; idx < kBm * n_groups; idx += kCTASize) {
+        int w = idx / n_groups;
+        int g = idx - w * n_groups;
+        int m_g = blockIdx.x * kBm + w;
+        if (m_g < d_out) {
+            s_scale_u4_w[w][g] = __ldg(scale_u4 + (int64_t)m_g * stride_su_m
+                                                + (int64_t)g * stride_su_g);
+            s_zero_u4_w [w][g] = __ldg(zero_u4  + (int64_t)m_g * stride_zu_m
+                                                + (int64_t)g * stride_zu_g);
+        } else {
+            s_scale_u4_w[w][g] = __half(0);
+            s_zero_u4_w [w][g] = __half(0);
+        }
+    }
+
     // Warp-level reduce.
     float wmax = warp_max_abs_f(local_max);
     if (lane == 0) s_warp_max[warp_id] = wmax;
@@ -194,10 +220,9 @@ __global__ void fused_quant_gemv_kernel(
             dot += __shfl_xor_sync(0xFFFFFFFF, dot, off);
 
         if (lane == 0) {
-            float s = __half2float(scale_u4[(int64_t)m * stride_su_m
-                                          + (int64_t)g * stride_su_g]);
-            float z = __half2float(zero_u4 [(int64_t)m * stride_zu_m
-                                          + (int64_t)g * stride_zu_g]);
+            // Round 26: scale/zero from shmem (prefetched in Phase A1).
+            float s = __half2float(s_scale_u4_w[warp_id][g]);
+            float z = __half2float(s_zero_u4_w [warp_id][g]);
             float sumxn = static_cast<float>(s_sum_X[g]);
             y_acc += s * (static_cast<float>(dot) - z * sumxn);
         }
@@ -228,8 +253,8 @@ __global__ void fused_quant_gemv_kernel(
             dot += __shfl_xor_sync(0xFFFFFFFF, dot, off);
 
         if (lane == 0) {
-            float s = __half2float(scale_u4[(int64_t)m * stride_su_m
-                                          + (int64_t)bc * stride_su_g]);
+            // Round 26: scale from shmem.
+            float s = __half2float(s_scale_u4_w[warp_id][bc]);
             y_acc += 16.0f * static_cast<float>(dot) * s;
         }
     }
