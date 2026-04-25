@@ -452,18 +452,36 @@ void launch(
         );
     };
 
-    // Round 18: T=128 also benefits from kBn=32 dispatch.
-    //   Profile 4k->4k (bench_20260424_18*):
-    //     T=128 kBn=64: 110us  (fixed cost of 2 T-tiles * kBn=64 MMAs)
-    //     T=128 kBn=32: 4 T-tiles * kBn=32 MMAs, grid=(32, 4)=128 CTAs
-    //                   -> fits a single wave on SM89 (128 SMs).
-    //   Extending kBn=32 bucket to T<=128 is expected to help T in
-    //   (96, 128].
-    // Round 24 re-check: after epilogue hoisting the per-CTA work shrank,
-    //   so kBn=32 may no longer be optimal at T=128.  Re-check via bench.
-    if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 64)   do_launch(std::integral_constant<int, 32>{});
-    else                do_launch(std::integral_constant<int, 64>{});
+    // Round 25 dispatch: pick kBn by CTA-count to fill >= 1 wave.
+    //   SM89 has 128 SMs.  Per-CTA work is 2 MMAs * n_groups with
+    //   identical epilogue cost per output, so total latency is
+    //   roughly (waves * per-CTA-cost).
+    //
+    //   wave_occupancy(kBn) = ceil(d_out/128) * ceil(T/kBn) / 128
+    //   want: pick the largest kBn with wave_occupancy >= 1 (per-CTA
+    //   amortisation is best at big kBn provided we don't underfill SMs).
+    //
+    //   A/B bench bench_20260425_093655:
+    //     bat_T128_4k_4k  kBn=32 (52us)  vs kBn=64 (57us)   -> pick 32
+    //     bat_T128_4k_11k kBn=32 (127us) vs kBn=64 (75us)   -> pick 64
+    //     bat_T128_11k_4k kBn=32 (167us) vs kBn=64 (180us)  -> pick 32
+    //
+    //   The pattern aligns with CTA count:
+    //     4k_4k    T=128 kBn=64 -> grid=32*2=64  CTAs (0.5 wave, bad)
+    //     4k_4k    T=128 kBn=32 -> grid=32*4=128 CTAs (1.0 wave, ok)
+    //     4k_11k   T=128 kBn=64 -> grid=86*2=172 CTAs (1.3 waves, good)
+    //     4k_11k   T=128 kBn=32 -> grid=86*4=344 CTAs (2.7 waves, worse amortisation)
+    //     11k_4k   T=128 kBn=64 -> grid=32*2=64  CTAs (0.5 wave, bad)
+    //     11k_4k   T=128 kBn=32 -> grid=32*4=128 CTAs (1.0 wave, ok)
+    //
+    //   Decision rule: pick kBn=64 iff grid at kBn=64 >= 128 (one wave).
+    const int n_cta_m = ceil_div(d_out, kBm);
+    auto waves_at = [&](int kBn_c) {
+        return (int64_t)n_cta_m * ceil_div(T, kBn_c);
+    };
+    if      (T <= 8)                 do_launch(std::integral_constant<int, 8>{});
+    else if (waves_at(64) >= 128)    do_launch(std::integral_constant<int, 64>{});
+    else                             do_launch(std::integral_constant<int, 32>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
 }
