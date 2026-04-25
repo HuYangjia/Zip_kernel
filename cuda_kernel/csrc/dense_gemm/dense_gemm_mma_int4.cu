@@ -31,7 +31,8 @@ namespace dense_gemm_mma_int4 {
 constexpr int kMaxGroups = 128;
 
 template <int kBn>
-__global__ void dense_gemm_mma_int4_kernel(
+__global__ __launch_bounds__(128, 3)
+void dense_gemm_mma_int4_kernel(
     const uint8_t* __restrict__ W,         // (d_out, d_in/2)
     const uint8_t* __restrict__ X,         // (T, d_in/2)
     const __half* __restrict__ scale_u4,   // (d_out, n_groups)
