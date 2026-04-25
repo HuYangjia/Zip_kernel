@@ -492,14 +492,13 @@ void launch(
             constexpr int kGrpBuf = 128;
             const int dyn_smem_bytes = 2 * kBm * kGrpBuf * (int)sizeof(__half);  // 64KB
             auto kptr = &dense_gemm_mma_int4_kernel<kBn, kGrpBuf>;
-            static bool attr_set = false;
-            if (!attr_set) {
-                cudaFuncSetAttribute(
-                    (const void*)kptr,
-                    cudaFuncAttributeMaxDynamicSharedMemorySize,
-                    96 * 1024);
-                attr_set = true;
-            }
+            // Call every launch: CUDA deduplicates and the cost is negligible
+            //   (<1us).  Using `static bool` would silently hide a failed
+            //   first call and starve later launches.
+            C10_CUDA_CHECK(cudaFuncSetAttribute(
+                (const void*)kptr,
+                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                96 * 1024));
             kptr<<<grid, block, dyn_smem_bytes, stream>>>(
                 reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
                 reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
