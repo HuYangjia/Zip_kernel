@@ -163,7 +163,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             : __half(0);
     };
 
-    auto run_mma_pass = [&](int buf, auto fold_fn, int g_or_bc) {
+    auto run_mma_pass = [&](int buf, auto fold_fn, auto prefetch_fn, int g_or_bc) {
         int d_acc[kMsubPerWarp][kNsubPerCta][4];
         #pragma unroll
         for (int im = 0; im < kMsubPerWarp; ++im)
@@ -231,9 +231,16 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             }
         }
 
+        // Round 22b: per-m-row prefetch of any (z, s, scale_block, ...) that
+        // the fold function will consume.  This eliminates redundant
+        // __half2float calls that NVCC cannot hoist out of a lambda boundary.
         #pragma unroll
         for (int im = 0; im < kMsubPerWarp; ++im) {
             int msub_base = warp_id * 32 + im * 16;
+            int mrow0 = msub_base + (lane >> 2);
+            int mrow1 = mrow0 + 8;
+            // Prefetch closure returns per-row scalars; ABI is fold-specific.
+            auto pr = prefetch_fn(mrow0, mrow1, g_or_bc);
             #pragma unroll
             for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
                 int nsub_base = in_sub * 8;
@@ -249,7 +256,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                     if (m_global >= d_out) continue;
                     if (n_global >= T) continue;
                     fold_fn(d_acc[im][in_sub][r], m_global, m_local, n_local,
-                            g_or_bc, im, in_sub, r, buf);
+                            g_or_bc, im, in_sub, r, buf, pr);
                 }
             }
         }
@@ -271,24 +278,43 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             issue_sum_X_load(g + 1, buf ^ 1);
         }
 
-        auto fold_dense = [&](int d_val, int m_global, int m_local, int n_local,
-                              int gg, int im, int in_sub, int r, int bb) {
-            float z, s;
+        // Dense prefetch: (z0, s0, z1, s1) for the two m-rows this thread owns.
+        auto prefetch_dense = [&](int mrow0, int mrow1, int gg) {
+            struct { float z0, s0, z1, s1; } v{0.0f, 0.0f, 0.0f, 0.0f};
             if (cache_sz) {
-                z = __half2float(s_zero_u4 [m_local][gg]);
-                s = __half2float(s_scale_u4[m_local][gg]);
+                if (mrow0 < kBm) {
+                    v.z0 = __half2float(s_zero_u4 [mrow0][gg]);
+                    v.s0 = __half2float(s_scale_u4[mrow0][gg]);
+                }
+                if (mrow1 < kBm) {
+                    v.z1 = __half2float(s_zero_u4 [mrow1][gg]);
+                    v.s1 = __half2float(s_scale_u4[mrow1][gg]);
+                }
             } else {
-                z = __half2float(zero_u4 [(int64_t)m_global * stride_zu_m
-                                        + (int64_t)gg * stride_zu_g]);
-                s = __half2float(scale_u4[(int64_t)m_global * stride_su_m
-                                        + (int64_t)gg * stride_su_g]);
+                int m_g0 = m_tile + mrow0;
+                int m_g1 = m_tile + mrow1;
+                if (m_g0 < d_out) {
+                    v.z0 = __half2float(zero_u4 [(int64_t)m_g0 * stride_zu_m + (int64_t)gg * stride_zu_g]);
+                    v.s0 = __half2float(scale_u4[(int64_t)m_g0 * stride_su_m + (int64_t)gg * stride_su_g]);
+                }
+                if (m_g1 < d_out) {
+                    v.z1 = __half2float(zero_u4 [(int64_t)m_g1 * stride_zu_m + (int64_t)gg * stride_zu_g]);
+                    v.s1 = __half2float(scale_u4[(int64_t)m_g1 * stride_su_m + (int64_t)gg * stride_su_g]);
+                }
             }
+            return v;
+        };
+
+        auto fold_dense = [&](int d_val, int m_global, int m_local, int n_local,
+                              int gg, int im, int in_sub, int r, int bb, auto pr) {
+            float z = (r >> 1) ? pr.z1 : pr.z0;
+            float s = (r >> 1) ? pr.s1 : pr.s0;
             float sxn = __half2float(s_scale_x[n_local]);
             float sumxn = static_cast<float>(s_sum_X[bb][n_local]);
             float corrected = static_cast<float>(d_val) - z * sumxn;
             y_fp[im][in_sub][r] += corrected * s * sxn;
         };
-        run_mma_pass(buf, fold_dense, g);
+        run_mma_pass(buf, fold_dense, prefetch_dense, g);
 
         __syncthreads();
     }
@@ -313,13 +339,19 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             }
             issue_scale_block_load(bc);
 
+            auto prefetch_sparse = [&](int mrow0, int mrow1, int bc_idx) {
+                struct { float s0, s1; } v{0.0f, 0.0f};
+                if (mrow0 < kBm) v.s0 = __half2float(s_scale_block[mrow0]);
+                if (mrow1 < kBm) v.s1 = __half2float(s_scale_block[mrow1]);
+                return v;
+            };
             auto fold_sparse = [&](int d_val, int m_global, int m_local, int n_local,
-                                   int bc_idx, int im, int in_sub, int r, int bb) {
-                float s = __half2float(s_scale_block[m_local]);
+                                   int bc_idx, int im, int in_sub, int r, int bb, auto pr) {
+                float s = (r >> 1) ? pr.s1 : pr.s0;
                 float sxn = __half2float(s_scale_x[n_local]);
                 y_fp[im][in_sub][r] += 16.0f * static_cast<float>(d_val) * s * sxn;
             };
-            run_mma_pass(buf, fold_sparse, bc);
+            run_mma_pass(buf, fold_sparse, prefetch_sparse, bc);
 
             __syncthreads();
         }
