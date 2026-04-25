@@ -270,6 +270,25 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
     issue_sum_X_load(0, 0);
     __syncthreads();
 
+    // Round 23: pre-convert s_scale_x[n_local] (fp16 -> fp32) once per CTA.
+    //   Invariant across both DENSE and SPARSE passes, so compute once
+    //   and reuse.  Indexed by (in_sub, r&1).
+    float sxn_cache[kNsubPerCta][2];
+    #pragma unroll
+    for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+        int nsub_base = in_sub * 8;
+        #pragma unroll
+        for (int cc = 0; cc < 2; ++cc) {
+            int col_local = (lane & 3) * 2 + cc;
+            int n_local = nsub_base + col_local;
+            if (n_local < kBn) {
+                sxn_cache[in_sub][cc] = __half2float(s_scale_x[n_local]);
+            } else {
+                sxn_cache[in_sub][cc] = 0.0f;
+            }
+        }
+    }
+
     for (int g = 0; g < n_groups; ++g) {
         const int buf = g & 1;
         if (g + 1 < n_groups) {
@@ -309,7 +328,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                               int gg, int im, int in_sub, int r, int bb, auto pr) {
             float z = (r >> 1) ? pr.z1 : pr.z0;
             float s = (r >> 1) ? pr.s1 : pr.s0;
-            float sxn = __half2float(s_scale_x[n_local]);
+            float sxn = sxn_cache[in_sub][r & 1];  // R23: register cache
             float sumxn = static_cast<float>(s_sum_X[bb][n_local]);
             float corrected = static_cast<float>(d_val) - z * sumxn;
             y_fp[im][in_sub][r] += corrected * s * sxn;
@@ -348,7 +367,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             auto fold_sparse = [&](int d_val, int m_global, int m_local, int n_local,
                                    int bc_idx, int im, int in_sub, int r, int bb, auto pr) {
                 float s = (r >> 1) ? pr.s1 : pr.s0;
-                float sxn = __half2float(s_scale_x[n_local]);
+                float sxn = sxn_cache[in_sub][r & 1];  // R23: register cache
                 y_fp[im][in_sub][r] += 16.0f * static_cast<float>(d_val) * s * sxn;
             };
             run_mma_pass(buf, fold_sparse, prefetch_sparse, bc);

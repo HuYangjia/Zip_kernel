@@ -123,6 +123,20 @@ __global__ void dense_gemm_mma_int4_kernel(
         #pragma unroll
         for (int r = 0; r < 4; ++r) y_fp[im][in][r] = 0.0f;
 
+    // Round 23: pre-convert scale_x (fp16) to fp32 once per CTA.
+    //   scale_x depends only on n_local, which is invariant across the
+    //   g-loop.  Previously we paid 1 __half2float per (g, im, in_sub, r)
+    //   iteration = n_groups * kMsubPerWarp * kNsubPerCta * 4 calls per
+    //   thread.  Now we pay 2 * kNsubPerCta per thread, lifted outside
+    //   the g loop.  Each thread owns (r & 1) ∈ {0, 1} columns, i.e.
+    //   indices n_local = in_sub*8 + (r&1) for in_sub in [0, kNsubPerCta).
+    //
+    //   Register budget: kNsubPerCta * 2 floats per thread. For kBn=64
+    //   this is 8*2=16 floats = 64B (trivial).
+    //
+    //   Also cache sum_X base pointer here, but sum_X itself still needs
+    //   per-g access; leave it as shmem load in the loop.
+
     // ------------------------------------------------------------
     // Loaders (packed bytes, no unpack needed for INT4 MMA).
     // ------------------------------------------------------------
@@ -173,6 +187,27 @@ __global__ void dense_gemm_mma_int4_kernel(
     issue_w_load(0, 0);
     issue_x_load(0, 0);
     __syncthreads();
+
+    // Round 23: pre-convert s_scale_x[n_local] (fp16 -> fp32) once per CTA.
+    //   Each thread owns 2 * kNsubPerCta slots indexed by:
+    //     col_local = r & 1 (in {0, 1})
+    //     n_local   = in_sub * 8 + col_local
+    //   OOB handled as 0.0f (s_scale_x was zero-filled for n >= T above).
+    float sxn_cache[kNsubPerCta][2];
+    #pragma unroll
+    for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+        int nsub_base = in_sub * 8;
+        #pragma unroll
+        for (int cc = 0; cc < 2; ++cc) {
+            int col_local = (lane & 3) * 2 + cc;
+            int n_local = nsub_base + col_local;
+            if (n_local < kBn) {
+                sxn_cache[in_sub][cc] = __half2float(s_scale_x[n_local]);
+            } else {
+                sxn_cache[in_sub][cc] = 0.0f;
+            }
+        }
+    }
 
     for (int g = 0; g < n_groups; ++g) {
         const int buf = g & 1;
@@ -306,7 +341,8 @@ __global__ void dense_gemm_mma_int4_kernel(
                     // Select the pre-loaded (z, s) for this m-row.
                     float z = (r >> 1) ? z1 : z0;
                     float s = (r >> 1) ? s1 : s0;
-                    float sxn = __half2float(s_scale_x[n_local]);
+                    // Round 23: sxn from per-thread register cache.
+                    float sxn = sxn_cache[in_sub][r & 1];
                     float sumxn = static_cast<float>(s_sum_X[buf][n_local]);
                     float corrected = static_cast<float>(d_acc[im][in_sub][r])
                                     - z * sumxn;
