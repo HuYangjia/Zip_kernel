@@ -316,8 +316,11 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
         }
 
         // Dense prefetch: (z0, s0, z1, s1) for the two m-rows this thread owns.
+        //   R30: additionally precompute zs_prod_k = z_k * s_k so the
+        //   per-(r, in_sub) fold can use two independent FMAs instead
+        //   of the old (d - z*sumxn)*s dependency chain.
         auto prefetch_dense = [&](int mrow0, int mrow1, int gg) {
-            struct { float z0, s0, z1, s1; } v{0.0f, 0.0f, 0.0f, 0.0f};
+            struct { float z0, s0, z1, s1, zs0, zs1; } v{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
             if (cache_sz) {
                 if (mrow0 < kBm) {
                     v.z0 = __half2float(s_zero_u4 [mrow0][gg]);
@@ -339,18 +342,23 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                     v.s1 = __half2float(scale_u4[(int64_t)m_g1 * stride_su_m + (int64_t)gg * stride_su_g]);
                 }
             }
+            v.zs0 = v.z0 * v.s0;
+            v.zs1 = v.z1 * v.s1;
             return v;
         };
 
         auto fold_dense = [&](int d_val, int m_global, int m_local, int n_local,
                               int gg, int im, int in_sub, int r, int bb, auto pr) {
-            float z = (r >> 1) ? pr.z1 : pr.z0;
-            float s = (r >> 1) ? pr.s1 : pr.s0;
-            // R23 sxn cache + R27: sxn factored out of g-loop, applied
-            //   once after both dense and sparse branches complete.
-            float sumxn = sumxn_cache[in_sub][r & 1];  // R24: register cache
-            float corrected = static_cast<float>(d_val) - z * sumxn;
-            y_fp[im][in_sub][r] += corrected * s;  // R27: no sxn here
+            float s       = (r >> 1) ? pr.s1  : pr.s0;
+            float zs_prod = (r >> 1) ? pr.zs1 : pr.zs0;
+            // R23 sxn cache + R27 sxn factored out of g-loop.
+            // R30: split (d - z*sumxn)*s = d*s - (z*s)*sumxn into two
+            //   independent FMAs sharing only the y_fp destination,
+            //   letting ptxas double-issue without a 2-op latency chain.
+            float sumxn = sumxn_cache[in_sub][r & 1];
+            float d = static_cast<float>(d_val);
+            y_fp[im][in_sub][r] += d * s;
+            y_fp[im][in_sub][r] -= zs_prod * sumxn;
         };
         run_mma_pass(buf, fold_dense, prefetch_dense, g);
 

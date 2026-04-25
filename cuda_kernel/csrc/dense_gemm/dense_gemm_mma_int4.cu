@@ -342,6 +342,12 @@ __global__ void dense_gemm_mma_int4_kernel(
                 }
             }
 
+            // R30: hoist z*s products to im-level (outside r/in_sub loops).
+            //   zs_prod_k = z_k * s_k, k in {0, 1}.  Re-used for all
+            //   (in_sub, r) where r_hi == k.
+            float zs_prod_0 = z0 * s0;
+            float zs_prod_1 = z1 * s1;
+
             #pragma unroll
             for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
                 int nsub_base = in_sub * 8;
@@ -357,21 +363,24 @@ __global__ void dense_gemm_mma_int4_kernel(
                     if (m_global >= d_out) continue;
                     if (n_global >= T) continue;
                     // Select the pre-loaded (z, s) for this m-row.
-                    float z = (r >> 1) ? z1 : z0;
-                    float s = (r >> 1) ? s1 : s0;
+                    float s       = (r >> 1) ? s1        : s0;
+                    float zs_prod = (r >> 1) ? zs_prod_1 : zs_prod_0;
                     // Round 24: sumxn from per-thread register cache.
                     float sumxn = sumxn_cache[in_sub][r & 1];
-                    // Round 27: distribute sxn out of the g-loop.
-                    //   y = sum_g (d_val_g - z_g * sumxn_g) * s_g * sxn_n
-                    //     = sxn_n * sum_g [ (d_val_g - z_g * sumxn_g) * s_g ]
-                    //   sxn_n is invariant over g, so fold only
-                    //   corrected * s here and multiply by sxn once
-                    //   after the g-loop completes.  Saves 1 fp32 mul
-                    //   per (im, in_sub, r) per group = n_groups *
-                    //   kMsubPerWarp * kNsubPerCta * 4 FMAs per thread.
-                    float corrected = static_cast<float>(d_acc[im][in_sub][r])
-                                    - z * sumxn;
-                    y_fp[im][in_sub][r] += corrected * s;
+                    // Round 27: sxn factored out of the g-loop.
+                    // Round 30: split (d - z*sumxn)*s into two
+                    // independent FMAs using pre-computed z*s:
+                    //   y += d*s - (z*s)*sumxn
+                    // Old form had a 2-op dependency chain
+                    //   (d - z*sumxn) -> (result)*s -> y += ...
+                    // New form exposes ILP: the two FMAs below feed
+                    // the same y_fp register but have no mutual
+                    // dependency beyond ordering, letting ptxas
+                    // issue the d*s FMA while the zs*sumxn one is
+                    // still in flight.
+                    float d = static_cast<float>(d_acc[im][in_sub][r]);
+                    y_fp[im][in_sub][r] += d * s;
+                    y_fp[im][in_sub][r] -= zs_prod * sumxn;
                 }
             }
         }
