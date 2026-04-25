@@ -459,8 +459,10 @@ void launch(
     //                   -> fits a single wave on SM89 (128 SMs).
     //   Extending kBn=32 bucket to T<=128 is expected to help T in
     //   (96, 128].
+    // Round 24 re-check: after epilogue hoisting the per-CTA work shrank,
+    //   so kBn=32 may no longer be optimal at T=128.  Re-check via bench.
     if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 128)  do_launch(std::integral_constant<int, 32>{});
+    else if (T <= 64)   do_launch(std::integral_constant<int, 32>{});
     else                do_launch(std::integral_constant<int, 64>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
