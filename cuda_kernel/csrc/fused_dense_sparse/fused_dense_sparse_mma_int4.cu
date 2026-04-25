@@ -486,9 +486,16 @@ void launch(
     };
 
     // Round 18: kBn=32 bucket extended to T<=128.
-    if      (T <= 8)    do_launch(std::integral_constant<int, 8>{});
-    else if (T <= 128)  do_launch(std::integral_constant<int, 32>{});
-    else                do_launch(std::integral_constant<int, 64>{});
+    // Round 25b: wave-aware kBn dispatch (mirror dense_gemm).
+    //   Pick kBn=64 iff grid at kBn=64 fills at least 1 wave (128 CTAs on
+    //   SM89).  Otherwise fall back to kBn=32 for better wave occupancy.
+    const int n_cta_m = ceil_div(d_out, kBm);
+    auto waves_at = [&](int kBn_c) {
+        return (int64_t)n_cta_m * ceil_div(T, kBn_c);
+    };
+    if      (T <= 8)                 do_launch(std::integral_constant<int, 8>{});
+    else if (waves_at(64) >= 128)    do_launch(std::integral_constant<int, 64>{});
+    else                             do_launch(std::integral_constant<int, 32>{});
 
     C10_CUDA_CHECK(cudaGetLastError());
 }
