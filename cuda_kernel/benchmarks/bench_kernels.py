@@ -109,15 +109,24 @@ class Shape:
 
 
 SHAPES: list[Shape] = [
+    # ---- decode (T=1) ----
     Shape("dec_T1_4k_4k",    T=1,    d_in=4096,  d_out=4096),
     Shape("dec_T1_4k_11k",   T=1,    d_in=4096,  d_out=11008),
     Shape("dec_T1_11k_4k",   T=1,    d_in=11008, d_out=4096),
+    # ---- small-batch decode (speculative / tree / T<=16) ----
     Shape("dec_T8_4k_4k",    T=8,    d_in=4096,  d_out=4096),
     Shape("dec_T16_4k_4k",   T=16,   d_in=4096,  d_out=4096),
+    # ---- mid-batch (continuous batching, T in [64, 128]) ----
     Shape("bat_T64_4k_4k",   T=64,   d_in=4096,  d_out=4096),
     Shape("bat_T128_4k_4k",  T=128,  d_in=4096,  d_out=4096),
+    Shape("bat_T128_4k_11k", T=128,  d_in=4096,  d_out=11008),
+    Shape("bat_T128_11k_4k", T=128,  d_in=11008, d_out=4096),
+    # ---- prefill (T >= 512) ----
     Shape("pre_T512_4k_4k",  T=512,  d_in=4096,  d_out=4096),
     Shape("pre_T1024_4k_4k", T=1024, d_in=4096,  d_out=4096),
+    Shape("pre_T2048_4k_4k", T=2048, d_in=4096,  d_out=4096),
+    Shape("pre_T1024_4k_11k",T=1024, d_in=4096,  d_out=11008),
+    Shape("pre_T1024_11k_4k",T=1024, d_in=11008, d_out=4096),
 ]
 
 
@@ -186,9 +195,9 @@ def bench_activation_quant(shape: Shape, log: logging.Logger):
 
 
 def bench_dense_gemm(shape: Shape, log: logging.Logger):
-    (_, _, W, X_s4, scale_u4, zero_u4,
+    (X_fp, _, W, X_s4, scale_u4, zero_u4,
      sum_X, scale_x, W_fp) = _make_dense_inputs(shape.T, shape.d_out, shape.d_in)
-    X_fp = torch.randn(shape.T, shape.d_in, dtype=torch.float16, device="cuda") * 0.4
+    # Baseline: W_fp (d_out, d_in) @ X_fp.t() -> (d_out, T), matches int4 output layout.
     t_fp = _bench_fn(lambda: torch.matmul(W_fp, X_fp.t()))
     # Auto-dispatch: T=1 -> dp4a GEMV kernel (Round 13); T>1 -> INT4 MMA (Round 12).
     t_i4 = _bench_fn(lambda: cuda_ops.dense_gemm_cuda(
@@ -202,8 +211,9 @@ def bench_sparse_gemm(shape: Shape, log: logging.Logger):
     args = (data["W_high_blocks_packed"], data["hp_row_offsets"],
             data["hp_col_indices"], data["X_s4"], data["scale_u4"],
             data["scale_x"], shape.d_out, shape.d_in)
-    X_fp = torch.randn(shape.T, shape.d_in, dtype=torch.float16, device="cuda") * 0.4
+    X_fp = data["X"]
     W_fp = data["W_fp"]
+    # Baseline: W_fp @ X_fp.t() -> (d_out, T), matches int4 output layout.
     t_fp = _bench_fn(lambda: torch.matmul(W_fp, X_fp.t()))
     t_i4 = _bench_fn(lambda: cuda_ops.sparse_gemm_cuda_int4(*args))
     return {"fp16_us": t_fp, "int4_us": t_i4}
@@ -215,8 +225,9 @@ def bench_fused(shape: Shape, log: logging.Logger):
             data["hp_row_offsets"], data["hp_col_indices"],
             data["X_s4"], data["scale_u4"], data["zero_u4"],
             data["sum_X"], data["scale_x"], shape.d_out, shape.d_in)
-    X_fp = torch.randn(shape.T, shape.d_in, dtype=torch.float16, device="cuda") * 0.4
+    X_fp = data["X"]
     W_fp = data["W_fp"]
+    # Baseline: W_fp @ X_fp.t() -> (d_out, T), matches int4 output layout.
     t_fp = _bench_fn(lambda: torch.matmul(W_fp, X_fp.t()))
     # Auto-dispatch: T=1 -> dp4a GEMV (Round 14); T>1 -> INT4 MMA (Round 12).
     t_i4 = _bench_fn(lambda: cuda_ops.fused_dense_sparse_cuda(*args))
@@ -238,7 +249,9 @@ def bench_end_to_end(shape: Shape, log: logging.Logger):
     scale_u4 = data["scale_u4"]
     zero_u4 = data["zero_u4"]
 
-    t_fp = _bench_fn(lambda: torch.matmul(X_fp, W_fp.t()))
+    # Baseline: W_fp @ X_fp.t() -> (d_out, T), matches int4 output layout.
+    # (Was X_fp @ W_fp.t() -> (T, d_out); aligned with other benches now.)
+    t_fp = _bench_fn(lambda: torch.matmul(W_fp, X_fp.t()))
 
     def run_pipeline():
         if shape.T == 1:
