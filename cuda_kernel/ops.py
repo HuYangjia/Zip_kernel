@@ -234,14 +234,12 @@ def dense_gemv_cuda_decode(
     return args[-1]
 
 
-# Default alias: auto-dispatch on T.
-#   T <= 16: batched GEMV (dp4a, 1 warp per m-row, kBT in {1,4,8,16}).
-#     MMA kBn=8 is wave-underfilled at these T's.  Round 28.
-#   T >  16: INT4 MMA GEMM.
+# Default alias: auto-dispatch on T.  T=1 uses the GEMV kernel; T>1
+# falls back to the INT4 MMA GEMM.
 def dense_gemm_cuda(
     W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
 ) -> torch.Tensor:
-    if X_s4.shape[0] <= 16:
+    if X_s4.shape[0] == 1:
         return dense_gemv_cuda_decode(
             W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
         )
