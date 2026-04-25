@@ -30,17 +30,8 @@ namespace dense_gemm_mma_int4 {
 // so kMaxGroups = 128.  Scale/zero shmem uses ceil_div path-wise max.
 constexpr int kMaxGroups = 128;
 
-// R29: launch_bounds tuned per kBn.
-//   kBn=64 is register-heavy (195 regs w/o hint -> only 2 CTA/SM on SM89).
-//   We force 3 CTA/SM minimum to improve latency hiding during MMA waits.
-//   Other kBn's already have good occupancy, so leave them untouched.
 template <int kBn>
-struct kLbHint { static constexpr int min_blocks = 2; };
-template <> struct kLbHint<64> { static constexpr int min_blocks = 3; };
-
-template <int kBn>
-__global__ __launch_bounds__(128, kLbHint<kBn>::min_blocks)
-void dense_gemm_mma_int4_kernel(
+__global__ void dense_gemm_mma_int4_kernel(
     const uint8_t* __restrict__ W,         // (d_out, d_in/2)
     const uint8_t* __restrict__ X,         // (T, d_in/2)
     const __half* __restrict__ scale_u4,   // (d_out, n_groups)
