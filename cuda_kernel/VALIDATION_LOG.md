@@ -1733,3 +1733,129 @@ Status after revert: kernel file reverted byte-for-byte to R20
 baseline.  Parity passes on full suite.  No changes shipped.
 
 
+---
+
+## Round 22-26 — Epilogue redesign: kill the per-group fp32 fold.
+
+R21 concluded the bottleneck was the *per-group fp32 epilogue fold*.
+R22-26 attack exactly that, but via a different axis than marlin:
+rather than restructuring the data flow (which breaks parity), we
+**keep the contract unchanged and eliminate redundant fp32 work
+inside the fold** by hoisting scalars whose value is invariant over
+one or more loop dimensions.
+
+### Round 22 — hoist (z, s) from (m, n, r) to per-m-row
+
+In the dense_gemm INT4 kernel, the epilogue read `__half2float(scale_u4[m][g])`
+and `__half2float(zero_u4[m][g])` inside the triple-nested loop
+`(im, in_sub, r)`.  But `(z, s)` depend only on `(m_local, g)`.  Each
+thread owns 2 m-rows per `im` (via `r >> 1`), so we pay exactly 4
+conversions per (im, g) instead of `2*kNsubPerCta*4 = 16-64`.
+
+Result on pre_T1024_4k_4k: 274 -> 182 us (-34%).  Six shapes become
+faster than cuBLAS FP16 for the first time (1.19-1.25x).
+
+### Round 22b — same hoist in the fused_dense_sparse kernel
+
+The fused kernel uses a templated lambda callback (`fold_fn`) and
+NVCC cannot hoist the `__half2float` across the lambda boundary.
+Added a `prefetch_fn` companion that returns a per-row struct
+`{z0, s0, z1, s1}` computed once per `im`; the fold then selects
+`(pr.z1 if r>>1 else pr.z0)`.
+
+Result: pre_T1024_11k_4k went from 1613 to 607 us (-62%) on e2e.
+
+### Round 23 — `scale_x` register cache
+
+`__half2float(s_scale_x[n_local])` was still inside the g-loop.
+Since `s_scale_x` is invariant across the entire g-loop, hoist it
+once at CTA entry into a per-thread fp32 array `sxn_cache[in_sub][r&1]`.
+Register cost: `kNsubPerCta * 2 = 4-16 floats per thread`.
+
+Result: dense_gemm prefill -3-6% across all shapes; fused_dense_sparse
+gets similar.
+
+### Round 24 — `sum_X` register cache (per-g)
+
+`sumxn = (float)s_sum_X[buf][n_local]` depends only on `(n_local, g)`.
+For a given g, n_local only has 2 * kNsubPerCta distinct values per
+thread -> lift into a per-g register array.
+
+Result: dense_gemm prefill -9%, fused -17%.  e2e prefill -15-17%.
+
+### Round 25 — wave-aware kBn dispatch
+
+After R22-24 shrank per-CTA cost, the R18 decision "T<=128 -> kBn=32"
+was no longer correct for all shapes.  A/B at T=128 found:
+- `4k_4k`  kBn=32 (52us) vs kBn=64 (57us)  -> pick 32
+- `4k_11k` kBn=32 (127us) vs kBn=64 (75us) -> pick 64 (!)
+- `11k_4k` kBn=32 (167us) vs kBn=64 (180us) -> pick 32
+
+Reason: grid at kBn=64 is `ceil(d_out/128) * ceil(T/64)`.  When
+this fills >= 1 wave (128 CTAs on SM89), kBn=64 amortises per-CTA
+overhead better.  When it half-fills a wave, CTAs sit idle.
+
+New rule: `if waves_at(64) >= 128: use kBn=64 else kBn=32`.
+Applied to both dense_gemm (25b) and fused_dense_sparse (25c).
+
+Result: `bat_T128_4k_11k` dense_gemm 128us -> 74us (-42%, 1.62x FP16);
+fused 127 -> 85us (1.43x FP16); e2e 138 -> 97us (1.24x FP16).
+
+### Round 26 — scale/zero prefetch in fused_quant_gemv (T=1 decode)
+
+Inspected the T=1 decode kernel (`fused_quant_gemv.cu`) -- its GEMV
+loop was reading `scale_u4[m][g]` and `zero_u4[m][g]` from HBM inside
+the per-group fold on `lane == 0`.  With n_groups=32 this is 32 HBM
+round-trips per output row where lane 0 serialises the fold.
+
+Added shmem staging: `s_scale_u4_w[kBm][kMaxGroups]` and
+`s_zero_u4_w[kBm][kMaxGroups]` (4 KB total at kBm=8, kMaxGroups=128).
+Prefetch runs in parallel with the max-abs reduction in Phase A1.
+
+Result on e2e `dec_T1_4k_4k`: 20.42 -> 18.96us (-7%, 0.90x FP16,
+up from 0.83x).  `dec_T1_4k_11k` 46.80 -> 43.46us (2.16x FP16).
+
+### Cumulative scoreboard (R20 baseline -> R26)
+
+e2e_v9_linear (what the user actually sees):
+
+| shape               | R20   | R26   | delta | R26 vs FP16 |
+|---------------------|-------|-------|-------|-------------|
+| dec_T1_4k_4k        |  20us |  19us |  -7%  | **0.90x**   |
+| dec_T1_4k_11k       |  45us |  43us |  -5%  | **2.16x**   |
+| dec_T1_11k_4k       |  48us |  49us |  ~    | **1.92x**   |
+| dec_T8_4k_4k        |  55us |  55us |  ~    | 0.29x       |
+| bat_T128_4k_4k      |  86us |  66us | -23%  | 0.51x       |
+| bat_T128_4k_11k     |  new  |  97us | ~     | **1.25x**   |
+| pre_T512            | 151us | 108us | -28%  | **1.04x**   |
+| pre_T1024           | 286us | 191us | -33%  | **1.16x**   |
+| pre_T2048           |  new  | 372us | ~     | **1.17x**   |
+| pre_T1024_4k_11k    |  new  | 498us | ~     | **1.23x**   |
+| pre_T1024_11k_4k    |  new  | 533us | ~     | **1.17x**   |
+
+Parity: **27/27 pass** on every round (R22, R22b, R23, R24, R25b,
+R25c, R26).  Bit-exact against Triton reference, same tolerance as
+before.
+
+### Remaining shapes below 1.0x
+
+| shape              | gap     | root cause                          |
+|--------------------|---------|-------------------------------------|
+| dec_T1_4k_4k       | 0.90x   | act_quant launch overhead dominates |
+| dec_T8-16          | 0.26-0.29x | dp4a smallT kernel (not yet touched) |
+| bat_T64            | 0.30x   | half-wave occupancy                 |
+| bat_T128_4k_4k     | 0.51x   | one wave but insufficient FLOPs     |
+| bat_T128_11k_4k    | 0.59x   | n_groups=86 epilogue still dominates|
+
+These require *structural* changes (change kBm, cross-CTA reduction,
+different tile shape), not single-round hoisting.
+
+### What made R22-26 work where R19/R21 failed
+
+R19 (ldmatrix) and R21 (cp.async) tried to optimise around the
+epilogue without addressing it.  R22-26 attack the epilogue directly
+by spotting that the fp32 fold is dominated by redundant loads and
+conversions, not by arithmetic.  Hoist 1 variable at a time, verify
+parity, bench.  Seven micro-rounds in one session, 5/5 wins.
+
+
