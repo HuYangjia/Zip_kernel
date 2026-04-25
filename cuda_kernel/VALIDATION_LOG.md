@@ -1937,4 +1937,72 @@ work has serial data dependencies.  Parallelism needs more warps
 
 Reverted in commit fb68066.  R27 remains current HEAD.
 
+---
+
+## Round 31 — kGrpBuf=128 for d_in up to 16384 — PASSED, kept (2026-04-25)
+
+### Hypothesis
+
+R27 kernel caches `(scale_u4, zero_u4)` in shared memory only when
+`n_groups <= 32` (`cache_sz = n_groups <= 32`).  d_in=11008 has
+n_groups=86, so Qwen3-style down_proj-like shapes fall through to
+the HBM-epilogue path and pay 2 HBM loads per (output, group) in
+the per-group fold.  Extending the cache to n_groups<=128 would
+let those shapes hit shmem instead.
+
+Blocker: static shmem per CTA on SM89 hard-caps at 48KB, so a
+`__shared__ __half s_scale_u4[kBm][128]` (32KB) plus `s_zero_u4`
+(32KB) would not fit.  Solution: move the prefetch buffers to
+*dynamic* shared memory, opt in via
+`cudaFuncSetAttribute(MaxDynamicSharedMemorySize, dyn_smem_bytes)`.
+
+### Implementation
+
+- Kernel now templated as `<int kBn, int kGrpBuf>`; `kGrpBuf`
+  controls the cache size (32 or 128).
+- `s_scale_u4 / s_zero_u4` allocated from `extern __shared__` and
+  accessed via flat 1D index `[m*kGrpBuf + g]`.
+- Launcher picks the right template:
+  - `n_groups <= 32` -> `kGrpBuf=32` (compact shmem)
+  - `n_groups <= 128` -> `kGrpBuf=128` with opt-in 64KB dynamic
+    shmem (20.8KB static + 64KB dynamic = 84.8KB total per CTA).
+- `MaxDynamicSharedMemorySize` must equal exactly `dyn_smem_bytes`,
+  not a larger cap.  SM89 rejects values that push (static + dynamic)
+  beyond `sharedMemPerBlockOptin` (101376).  Requesting 96KB fails
+  with `cudaErrorInvalidValue` on the kBn=32 instance.
+- ptxas cost: 194 registers (vs 195 for kBn=64), 0 spill.
+
+### Parity
+
+All 27 / 27 test_parity.py cases passed.
+
+### Benchmark — dense_gemm kernel (key shapes)
+
+| shape            | R27 us  | R31 us  | R27 ratio | R31 ratio | Delta |
+|------------------|--------:|--------:|----------:|----------:|------:|
+| bat_T128_4k_11k  | 76.92   | 72.95   | 1.57x     | 1.65x     | +8pp  |
+| **bat_T128_11k_4k** | **167.85** | **125.11** | **0.71x** | **0.94x** | **+23pp** |
+| bat_T128_4k_4k   | 52.84   | 48.64   | 0.63x     | 0.67x     | +4pp  |
+| dec_T16_4k_4k    | 51.40   | 47.08   | 0.33x     | 0.42x     | +9pp  |
+| pre_T512_4k_4k   | 84.15   | 81.88   | 1.35x     | 1.40x     | +5pp  |
+| pre_T1024_4k_4k  | 157.84  | 154.66  | 1.41x     | 1.45x     | +4pp  |
+| pre_T1024_4k_11k | 449.11  | 437.49  | 1.35x     | 1.38x     | +3pp  |
+
+### Benchmark — end_to_end v9_linear
+
+| shape            | R27 us  | R31 us  | R27 ratio | R31 ratio | Delta |
+|------------------|--------:|--------:|----------:|----------:|------:|
+| **bat_T128_11k_4k** | **202.12** | **183.60** | **0.59x** | **0.64x** | **+5pp** |
+| pre_T512_4k_4k   | 108.28  | 98.24   | 1.04x     | 1.16x     | +12pp |
+| pre_T1024_4k_4k  | 190.89  | 183.44  | 1.16x     | 1.22x     | +6pp  |
+| pre_T2048_4k_4k  | 371.63  | 356.74  | 1.17x     | 1.21x     | +4pp  |
+| pre_T1024_4k_11k | 497.91  | 476.49  | 1.23x     | 1.29x     | +6pp  |
+
+### Verdict
+
+KEPT.  Best individual gain: `bat_T128_11k_4k dense` -25%
+(absolute -43us).  Every shape unchanged or improved at the ratio
+level.  Current HEAD = R31.
+
+
 
