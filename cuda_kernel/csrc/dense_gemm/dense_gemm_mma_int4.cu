@@ -489,17 +489,17 @@ void launch(
         } else {
             // kGrpBuf=128 path: opt-in dynamic shmem (per-CTA shmem budget on
             //   SM89 defaults to 48KB; we need up to ~88KB).
+            //   IMPORTANT: MaxDynamicSharedMemorySize must be <=
+            //   (sharedMemPerBlockOptin - static_shmem_of_kernel), not just
+            //   <= sharedMemPerBlockOptin.  We therefore request exactly
+            //   dyn_smem_bytes, which is the smallest value that works.
             constexpr int kGrpBuf = 128;
             const int dyn_smem_bytes = 2 * kBm * kGrpBuf * (int)sizeof(__half);  // 64KB
             auto kptr = &dense_gemm_mma_int4_kernel<kBn, kGrpBuf>;
-            cudaError_t err_attr = cudaFuncSetAttribute(
+            C10_CUDA_CHECK(cudaFuncSetAttribute(
                 (const void*)kptr,
                 cudaFuncAttributeMaxDynamicSharedMemorySize,
-                96 * 1024);
-            if (err_attr != cudaSuccess) {
-                printf("[R31] cudaFuncSetAttribute failed: %s (kBn=%d kGrpBuf=%d dyn_smem=%d)\n",
-                       cudaGetErrorString(err_attr), kBn, kGrpBuf, dyn_smem_bytes);
-            }
+                dyn_smem_bytes));
             kptr<<<grid, block, dyn_smem_bytes, stream>>>(
                 reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
                 reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
