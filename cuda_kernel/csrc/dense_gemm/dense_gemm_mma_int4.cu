@@ -284,15 +284,33 @@ __global__ void dense_gemm_mma_int4_kernel(
         }
 
         // Per-group fold to y_fp.
-        //   Round 22: hoist (z, s) to per-row load.  (z, s) depends only
-        //   on (m_local, g); the inner `in_sub`/`r` loops then reuse the
-        //   same value across 8-64 (m, n) combinations.  Previously we
-        //   paid 2*kNsubPerCta*4 = up to 64 __half2float calls per CTA
-        //   per group.  Now we pay only 2*2 = 4 per CTA per group.
+        //   Round 22: hoist (z, s) to per-row load.
+        //   Round 24: also hoist sumxn to per-thread register array
+        //   (depends on (in_sub, r&1) only, invariant over im loop).
         //
-        //   Each thread handles kMsubPerWarp m-rows (im loop), and per
-        //   im there are 2 row groups (r>>1 ∈ {0, 1}) giving
-        //   4 distinct m_local rows per thread per group.
+        //   sumxn_cache[in_sub][r&1] = (float)s_sum_X[buf][n_local]
+        //
+        //   Was: fetched once per (im, in_sub, r) = 2 * kNsubPerCta * 4
+        //        = 16-64 fetches per group.
+        //   Now: fetched once per (in_sub, r&1)    = 2 * kNsubPerCta
+        //        = 4-16 fetches per group.  Halved.
+        float sumxn_cache[kNsubPerCta][2];
+        #pragma unroll
+        for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+            int nsub_base = in_sub * 8;
+            #pragma unroll
+            for (int cc = 0; cc < 2; ++cc) {
+                int col_local = (lane & 3) * 2 + cc;
+                int n_local = nsub_base + col_local;
+                if (n_local < kBn) {
+                    sumxn_cache[in_sub][cc] = static_cast<float>(
+                        s_sum_X[buf][n_local]);
+                } else {
+                    sumxn_cache[in_sub][cc] = 0.0f;
+                }
+            }
+        }
+
         #pragma unroll
         for (int im = 0; im < kMsubPerWarp; ++im) {
             int msub_base = warp_id * 32 + im * 16;
@@ -343,7 +361,8 @@ __global__ void dense_gemm_mma_int4_kernel(
                     float s = (r >> 1) ? s1 : s0;
                     // Round 23: sxn from per-thread register cache.
                     float sxn = sxn_cache[in_sub][r & 1];
-                    float sumxn = static_cast<float>(s_sum_X[buf][n_local]);
+                    // Round 24: sumxn from per-thread register cache.
+                    float sumxn = sumxn_cache[in_sub][r & 1];
                     float corrected = static_cast<float>(d_acc[im][in_sub][r])
                                     - z * sumxn;
                     y_fp[im][in_sub][r] += corrected * s * sxn;

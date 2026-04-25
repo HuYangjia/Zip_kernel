@@ -297,6 +297,24 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             issue_sum_X_load(g + 1, buf ^ 1);
         }
 
+        // Round 24: per-g sumxn_cache for dense branch.
+        //   sum_X depends on (n_local, g).  Same thread sees only 2 * kNsubPerCta
+        //   distinct n_local values.  Lift the int->float conversion out of the
+        //   fold loop.
+        float sumxn_cache[kNsubPerCta][2];
+        #pragma unroll
+        for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+            int nsub_base = in_sub * 8;
+            #pragma unroll
+            for (int cc = 0; cc < 2; ++cc) {
+                int col_local = (lane & 3) * 2 + cc;
+                int n_local = nsub_base + col_local;
+                sumxn_cache[in_sub][cc] = (n_local < kBn)
+                    ? static_cast<float>(s_sum_X[buf][n_local])
+                    : 0.0f;
+            }
+        }
+
         // Dense prefetch: (z0, s0, z1, s1) for the two m-rows this thread owns.
         auto prefetch_dense = [&](int mrow0, int mrow1, int gg) {
             struct { float z0, s0, z1, s1; } v{0.0f, 0.0f, 0.0f, 0.0f};
@@ -329,7 +347,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             float z = (r >> 1) ? pr.z1 : pr.z0;
             float s = (r >> 1) ? pr.s1 : pr.s0;
             float sxn = sxn_cache[in_sub][r & 1];  // R23: register cache
-            float sumxn = static_cast<float>(s_sum_X[bb][n_local]);
+            float sumxn = sumxn_cache[in_sub][r & 1];  // R24: register cache
             float corrected = static_cast<float>(d_val) - z * sumxn;
             y_fp[im][in_sub][r] += corrected * s * sxn;
         };
