@@ -249,10 +249,46 @@ __global__ void dense_gemm_mma_int4_kernel(
         }
 
         // Per-group fold to y_fp.
-        //   scale/zero reads: shmem when cache_sz, HBM otherwise.
+        //   Round 22: hoist (z, s) to per-row load.  (z, s) depends only
+        //   on (m_local, g); the inner `in_sub`/`r` loops then reuse the
+        //   same value across 8-64 (m, n) combinations.  Previously we
+        //   paid 2*kNsubPerCta*4 = up to 64 __half2float calls per CTA
+        //   per group.  Now we pay only 2*2 = 4 per CTA per group.
+        //
+        //   Each thread handles kMsubPerWarp m-rows (im loop), and per
+        //   im there are 2 row groups (r>>1 ∈ {0, 1}) giving
+        //   4 distinct m_local rows per thread per group.
         #pragma unroll
         for (int im = 0; im < kMsubPerWarp; ++im) {
             int msub_base = warp_id * 32 + im * 16;
+            // Pre-load (z, s) for the two m-rows this thread will touch.
+            //   Row0: msub_base + (lane>>2)
+            //   Row1: msub_base + (lane>>2) + 8
+            int mrow0 = msub_base + (lane >> 2);
+            int mrow1 = mrow0 + 8;
+            float z0 = 0.0f, s0 = 0.0f, z1 = 0.0f, s1 = 0.0f;
+            if (cache_sz) {
+                if (mrow0 < kBm) {
+                    z0 = __half2float(s_zero_u4 [mrow0][g]);
+                    s0 = __half2float(s_scale_u4[mrow0][g]);
+                }
+                if (mrow1 < kBm) {
+                    z1 = __half2float(s_zero_u4 [mrow1][g]);
+                    s1 = __half2float(s_scale_u4[mrow1][g]);
+                }
+            } else {
+                int m_g0 = m_tile + mrow0;
+                int m_g1 = m_tile + mrow1;
+                if (m_g0 < d_out) {
+                    z0 = __half2float(zero_u4 [(int64_t)m_g0 * stride_zu_m + (int64_t)g * stride_zu_g]);
+                    s0 = __half2float(scale_u4[(int64_t)m_g0 * stride_su_m + (int64_t)g * stride_su_g]);
+                }
+                if (m_g1 < d_out) {
+                    z1 = __half2float(zero_u4 [(int64_t)m_g1 * stride_zu_m + (int64_t)g * stride_zu_g]);
+                    s1 = __half2float(scale_u4[(int64_t)m_g1 * stride_su_m + (int64_t)g * stride_su_g]);
+                }
+            }
+
             #pragma unroll
             for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
                 int nsub_base = in_sub * 8;
@@ -267,20 +303,9 @@ __global__ void dense_gemm_mma_int4_kernel(
                     int n_global = n_tile + n_local;
                     if (m_global >= d_out) continue;
                     if (n_global >= T) continue;
-                    float z, s;
-                    if (cache_sz) {
-                        z = __half2float(s_zero_u4 [m_local][g]);
-                        s = __half2float(s_scale_u4[m_local][g]);
-                    } else {
-                        z = __half2float(
-                            zero_u4[(int64_t)m_global * stride_zu_m
-                                  + (int64_t)g * stride_zu_g]
-                        );
-                        s = __half2float(
-                            scale_u4[(int64_t)m_global * stride_su_m
-                                   + (int64_t)g * stride_su_g]
-                        );
-                    }
+                    // Select the pre-loaded (z, s) for this m-row.
+                    float z = (r >> 1) ? z1 : z0;
+                    float s = (r >> 1) ? s1 : s0;
                     float sxn = __half2float(s_scale_x[n_local]);
                     float sumxn = static_cast<float>(s_sum_X[buf][n_local]);
                     float corrected = static_cast<float>(d_acc[im][in_sub][r])
