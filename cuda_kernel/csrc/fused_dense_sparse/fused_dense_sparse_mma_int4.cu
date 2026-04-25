@@ -346,10 +346,11 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                               int gg, int im, int in_sub, int r, int bb, auto pr) {
             float z = (r >> 1) ? pr.z1 : pr.z0;
             float s = (r >> 1) ? pr.s1 : pr.s0;
-            float sxn = sxn_cache[in_sub][r & 1];  // R23: register cache
+            // R23 sxn cache + R27: sxn factored out of g-loop, applied
+            //   once after both dense and sparse branches complete.
             float sumxn = sumxn_cache[in_sub][r & 1];  // R24: register cache
             float corrected = static_cast<float>(d_val) - z * sumxn;
-            y_fp[im][in_sub][r] += corrected * s * sxn;
+            y_fp[im][in_sub][r] += corrected * s;  // R27: no sxn here
         };
         run_mma_pass(buf, fold_dense, prefetch_dense, g);
 
@@ -385,12 +386,26 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             auto fold_sparse = [&](int d_val, int m_global, int m_local, int n_local,
                                    int bc_idx, int im, int in_sub, int r, int bb, auto pr) {
                 float s = (r >> 1) ? pr.s1 : pr.s0;
-                float sxn = sxn_cache[in_sub][r & 1];  // R23: register cache
-                y_fp[im][in_sub][r] += 16.0f * static_cast<float>(d_val) * s * sxn;
+                // R27: no sxn here (applied after both branches).
+                y_fp[im][in_sub][r] += 16.0f * static_cast<float>(d_val) * s;
             };
             run_mma_pass(buf, fold_sparse, prefetch_sparse, bc);
 
             __syncthreads();
+        }
+    }
+
+    // R27: apply sxn once after both dense and sparse branches.
+    //   y = sxn_n * (dense_sum + sparse_sum).  Valid because neither
+    //   fold touched sxn and distribution is associative over the +.
+    #pragma unroll
+    for (int im = 0; im < kMsubPerWarp; ++im) {
+        #pragma unroll
+        for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+            #pragma unroll
+            for (int r = 0; r < 4; ++r) {
+                y_fp[im][in_sub][r] *= sxn_cache[in_sub][r & 1];
+            }
         }
     }
 

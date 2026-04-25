@@ -359,18 +359,39 @@ __global__ void dense_gemm_mma_int4_kernel(
                     // Select the pre-loaded (z, s) for this m-row.
                     float z = (r >> 1) ? z1 : z0;
                     float s = (r >> 1) ? s1 : s0;
-                    // Round 23: sxn from per-thread register cache.
-                    float sxn = sxn_cache[in_sub][r & 1];
                     // Round 24: sumxn from per-thread register cache.
                     float sumxn = sumxn_cache[in_sub][r & 1];
+                    // Round 27: distribute sxn out of the g-loop.
+                    //   y = sum_g (d_val_g - z_g * sumxn_g) * s_g * sxn_n
+                    //     = sxn_n * sum_g [ (d_val_g - z_g * sumxn_g) * s_g ]
+                    //   sxn_n is invariant over g, so fold only
+                    //   corrected * s here and multiply by sxn once
+                    //   after the g-loop completes.  Saves 1 fp32 mul
+                    //   per (im, in_sub, r) per group = n_groups *
+                    //   kMsubPerWarp * kNsubPerCta * 4 FMAs per thread.
                     float corrected = static_cast<float>(d_acc[im][in_sub][r])
                                     - z * sumxn;
-                    y_fp[im][in_sub][r] += corrected * s * sxn;
+                    y_fp[im][in_sub][r] += corrected * s;
                 }
             }
         }
 
         __syncthreads();
+    }
+
+    // Round 27: single fp32 mul by sxn_cache after the g-loop.
+    //   This was previously folded into every per-group epilogue
+    //   iteration; hoisting it out saves n_groups multiplies per
+    //   (im, in_sub, r) at the cost of a post-loop pass.
+    #pragma unroll
+    for (int im = 0; im < kMsubPerWarp; ++im) {
+        #pragma unroll
+        for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+            #pragma unroll
+            for (int r = 0; r < 4; ++r) {
+                y_fp[im][in_sub][r] *= sxn_cache[in_sub][r & 1];
+            }
+        }
     }
 
     // Writeback.
