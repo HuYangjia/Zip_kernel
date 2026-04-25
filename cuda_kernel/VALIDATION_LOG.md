@@ -1859,3 +1859,82 @@ conversions, not by arithmetic.  Hoist 1 variable at a time, verify
 parity, bench.  Seven micro-rounds in one session, 5/5 wins.
 
 
+---
+
+## Round 27 — distribute sxn out of the per-group fold (2026-04-25)
+
+### Observation
+
+After R26 each thread's per-group fold is:
+  y_fp[im][in_sub][r] += (d_acc - z * sumxn) * s * sxn
+
+`sxn` depends only on `(n_local, r&1)`, **invariant across the g-loop**.
+Multiplying by `sxn` inside every iteration wastes `n_groups` fp32 muls
+per (im, in_sub, r) per thread.
+
+### Algebraic rewrite
+
+y[m,n] = sum_g [(d_acc_g - z_g * sumxn_g) * s_g * sxn_n]
+       = sxn_n * sum_g [(d_acc_g - z_g * sumxn_g) * s_g]
+
+Factor `sxn_n` out of the g-loop: multiply once post-loop.  In the
+fused kernel `sxn` distributes over both `fold_dense` and
+`fold_sparse` (both write to the same `y_fp`), so a single post-pass
+covers both branches.
+
+### Bench results (27/27 parity pass)
+
+| shape            | R26 int4 | R27 int4 | Delta  | vs FP16 |
+|------------------|---------:|---------:|-------:|--------:|
+| dec_T1_11k_4k    | 40.82us  | 40.06us  | -0.8us | 1.85x   |
+| dec_T1_4k_11k    | 36.90us  | 36.21us  | -0.7us | 2.15x   |
+| bat_T128_4k_11k  | 74.87us  | 72.03us  | -2.8us | 1.67x   |
+| pre_T1024_4k_4k  | 157us    | 152us    | -5us   | 1.46x   |
+| pre_T2048_4k_4k  | 307us    | 300us    | -7us   | 1.41x   |
+| pre_T1024_4k_11k | 447us    | 436us    | -11us  | 1.39x   |
+| pre_T1024_11k_4k | 451us    | 442us    | -9us   | 1.38x   |
+
+Gain concentrated on d_in=11k (n_groups=86) shapes where savings
+compound 86x per (im, in_sub, r).
+
+---
+
+## Round 28 — batched GEMV (T <= 16) — FAILED, reverted (2026-04-25)
+
+### Hypothesis
+
+MMA kBn=8 at d_out=4096, T=8..16 launches only 32..64 CTAs total
+(< 0.5 wave on SM89's 128 SMs).  Extend the T=1 dp4a GEMV to T<=16:
+one W byte-pair fed into T dp4a's against T different X byte-pairs
+per group.  Target grid = d_out/8 = 512 CTAs = 4 waves, matching
+the T=1 path fill.
+
+### Result — catastrophic regression
+
+| shape         | R27 int4 | R28 int4 | Delta |
+|---------------|---------:|---------:|------:|
+| dec_T1_4k_4k  | 16.28us  | 20.65us  | +27%  |
+| dec_T8_4k_4k  | 37.97us  | 67.99us  | +79%  |
+| dec_T16_4k_4k | 46.77us  | 129us    | +176% |
+
+### Post-mortem
+
+1. Serialised dp4a dependency chain.  Each warp now executes T*32
+   dp4a's per group, accumulating into T separate registers but still
+   one ALU issue port per lane.  The dp4a latency chain scales with T.
+   At T=16 the kernel is fully latency-bound, not throughput-bound.
+2. __syncthreads still per-group.  X payload per sync grew T-fold,
+   but sync count unchanged.  X bandwidth + sync overhead dominate.
+3. Shared-memory bloat.  s_X[kBT=16][64] + s_sum_X[kBT=16][128] =
+   1 KB + 8 KB vs 64 B + 512 B in R13.  Occupancy drop regresses
+   the T=1 baseline (+27%).
+
+### Lesson
+
+"Same warp + more work per group" is NOT a free lunch when the
+work has serial data dependencies.  Parallelism needs more warps
+(or more CTAs), not more instructions crammed into the same warp.
+
+Reverted in commit fb68066.  R27 remains current HEAD.
+
+
