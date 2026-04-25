@@ -30,7 +30,7 @@ namespace dense_gemm_mma_int4 {
 // so kMaxGroups = 128.  Scale/zero shmem uses ceil_div path-wise max.
 constexpr int kMaxGroups = 128;
 
-template <int kBn>
+template <int kBn, int kGrpBuf = 32>
 __global__ void dense_gemm_mma_int4_kernel(
     const uint8_t* __restrict__ W,         // (d_out, d_in/2)
     const uint8_t* __restrict__ X,         // (T, d_in/2)
@@ -82,12 +82,15 @@ __global__ void dense_gemm_mma_int4_kernel(
     // use a separate launch path that omits the prefetch.
     __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
     __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
-    __shared__ alignas(16) __half s_scale_u4[kBm][32];
-    __shared__ alignas(16) __half s_zero_u4 [kBm][32];
+    // R31: kGrpBuf is a compile-time upper bound of n_groups that will be
+    //   cached in shared memory.  Default 32 covers d_in <= 4096 (group=128).
+    //   We instantiate kGrpBuf=128 for d_in <= 16384 (covers 11008).
+    __shared__ alignas(16) __half s_scale_u4[kBm][kGrpBuf];
+    __shared__ alignas(16) __half s_zero_u4 [kBm][kGrpBuf];
     __shared__ __half s_scale_x[kBn];
     __shared__ int s_sum_X[2][kBn];
 
-    const bool cache_sz = (n_groups <= 32);
+    const bool cache_sz = (n_groups <= kGrpBuf);
 
     if (tid < kBn) {
         int n = n_tile + tid;
@@ -455,22 +458,59 @@ void launch(
         constexpr int kBn = decltype(kBn_c)::value;
         dim3 block(kBm, 1, 1);
         dim3 grid(ceil_div(d_out, kBm), ceil_div(T, kBn), 1);
-        dense_gemm_mma_int4_kernel<kBn><<<grid, block, 0, stream>>>(
-            reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
-            reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
-            reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
-            reinterpret_cast<const __half*>(zero_u4.data_ptr<at::Half>()),
-            sum_X.data_ptr<int>(),
-            reinterpret_cast<const __half*>(scale_x.data_ptr<at::Half>()),
-            reinterpret_cast<__half*>(Y_low.data_ptr<at::Half>()),
-            d_out, d_in, T, n_groups,
-            W_low.stride(0), W_low.stride(1),
-            X_s4.stride(0), X_s4.stride(1),
-            scale_u4.stride(0), scale_u4.stride(1),
-            zero_u4.stride(0), zero_u4.stride(1),
-            sum_X.stride(0), sum_X.stride(1),
-            Y_low.stride(0), Y_low.stride(1)
-        );
+
+        // R31: pick kGrpBuf based on n_groups.
+        //   d_in <= 4096 -> n_groups <= 32 -> kGrpBuf=32 (compact shmem)
+        //   d_in <= 16384 -> n_groups <= 128 -> kGrpBuf=128 (opt-in shmem)
+        //   Above that -> fall through to kGrpBuf=128 with cache_sz=false.
+        if (n_groups <= 32) {
+            dense_gemm_mma_int4_kernel<kBn, 32><<<grid, block, 0, stream>>>(
+                reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
+                reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
+                reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
+                reinterpret_cast<const __half*>(zero_u4.data_ptr<at::Half>()),
+                sum_X.data_ptr<int>(),
+                reinterpret_cast<const __half*>(scale_x.data_ptr<at::Half>()),
+                reinterpret_cast<__half*>(Y_low.data_ptr<at::Half>()),
+                d_out, d_in, T, n_groups,
+                W_low.stride(0), W_low.stride(1),
+                X_s4.stride(0), X_s4.stride(1),
+                scale_u4.stride(0), scale_u4.stride(1),
+                zero_u4.stride(0), zero_u4.stride(1),
+                sum_X.stride(0), sum_X.stride(1),
+                Y_low.stride(0), Y_low.stride(1)
+            );
+        } else {
+            // kGrpBuf=128 path: need opt-in dynamic shmem (per-CTA shmem
+            //   budget on SM89 defaults to 48KB; we need up to ~88KB).
+            //   Static shmem for this kernel: sW=16KB + sX=(kBn*64)B +
+            //   s_scale+s_zero = 2*kBm*128*2B = 64KB, so ~80-88KB total.
+            auto kptr = &dense_gemm_mma_int4_kernel<kBn, 128>;
+            static bool attr_set = false;
+            if (!attr_set) {
+                cudaFuncSetAttribute(
+                    (const void*)kptr,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    96 * 1024);
+                attr_set = true;
+            }
+            kptr<<<grid, block, 0, stream>>>(
+                reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
+                reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
+                reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
+                reinterpret_cast<const __half*>(zero_u4.data_ptr<at::Half>()),
+                sum_X.data_ptr<int>(),
+                reinterpret_cast<const __half*>(scale_x.data_ptr<at::Half>()),
+                reinterpret_cast<__half*>(Y_low.data_ptr<at::Half>()),
+                d_out, d_in, T, n_groups,
+                W_low.stride(0), W_low.stride(1),
+                X_s4.stride(0), X_s4.stride(1),
+                scale_u4.stride(0), scale_u4.stride(1),
+                zero_u4.stride(0), zero_u4.stride(1),
+                sum_X.stride(0), sum_X.stride(1),
+                Y_low.stride(0), Y_low.stride(1)
+            );
+        }
     };
 
     // Round 25 dispatch: pick kBn by CTA-count to fill >= 1 wave.
