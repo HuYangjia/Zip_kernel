@@ -53,6 +53,42 @@ BISECT_DIR = P2_DIR  # each <tag>/bisection.json
 
 
 # ---------------------------------------------------------------------------
+# Post-audit cluster overrides
+# ---------------------------------------------------------------------------
+# Each entry explicitly reclassifies a single shape whose
+# nearest-neighbour assignment was later invalidated by a targeted
+# audit (under the tightened (warmup=200, outer=10) x K>=5 schedule).
+# Keeping these as a data table — rather than post-hoc CSV edits —
+# lets the pipeline stay idempotent: re-running this script always
+# reproduces the exact same clusters/targets on disk.
+#
+# Keys are ``(model, proj, T, d_in, d_out)``.
+#
+# ``nearest_rep_tag`` is the rep whose label the overridden shape
+# should now inherit.  ``cluster_id`` is resolved automatically from
+# the new bottleneck label and the cluster_id assignment order.
+#
+# ``audit_ref`` is a short human-readable pointer to the report that
+# justifies the override, written out as a new CSV column for
+# traceability.
+POST_AUDIT_OVERRIDES: Dict[Tuple[str, str, int, int, int], Dict[str, str]] = {
+    # Qwen3-4B gate_up_proj T=1 2560->19456
+    # Phase-2 NN classifier put this under ``launch_sparse`` (nearest
+    # rep decode_T1_q_2048_2048), but the launch_sparse cluster audit
+    # (cuda_kernel/logs/phase2_microscope/audit_launch_tax/
+    # launch_tax_audit.md) measured median launch_tax_pct = 1.8%
+    # [1.6, 2.1] under (warmup=200, outer=10, inner=100) x K=5 trials.
+    # The kernel body (~47.6us) dominates entirely -- this is a
+    # tc_underutil shape, not a launch-bound one.
+    ("Qwen3-4B", "gate_up_proj", 1, 2560, 19456): {
+        "bottleneck": "tc_underutil",
+        "nearest_rep_tag": "large_T1024_gu_4096_24576",
+        "audit_ref": "audit_launch_tax/launch_tax_audit.md",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 @dataclass
@@ -291,7 +327,62 @@ def _cluster_shapes(
             "cluster_id": seen[rep_bn],
             "nearest_rep_tag": rep_tag,
             "distance": best_d,
+            "audit_ref": "",
         })
+
+    # ------------------------------------------------------------------
+    # Apply POST_AUDIT_OVERRIDES
+    # ------------------------------------------------------------------
+    # Build a tag->rep_row lookup so we can redirect both the label
+    # AND the nearest_rep_tag at once.
+    tag_to_rep: Dict[str, ShapeRow] = {}
+    for tag in sorted(BISECT_DIR.iterdir()):
+        p = tag / "bisection.json"
+        if not p.is_file():
+            continue
+        meta = json.loads(p.read_text()).get("shape", {})
+        for rep_row, _bn in candidates:
+            if (meta.get("T"), meta.get("d_in"), meta.get("d_out"),
+                meta.get("model"), meta.get("proj")) == \
+               (rep_row.T, rep_row.d_in, rep_row.d_out, rep_row.model, rep_row.proj):
+                tag_to_rep[tag.name] = rep_row
+                break
+
+    n_overrides_applied = 0
+    for rec in out:
+        row = rec["row"]  # type: ignore[assignment]
+        key = (row.model, row.proj, row.T, row.d_in, row.d_out)
+        ovr = POST_AUDIT_OVERRIDES.get(key)
+        if not ovr:
+            continue
+        new_bn = ovr["bottleneck"]
+        new_tag = ovr["nearest_rep_tag"]
+        if new_bn not in seen:
+            raise RuntimeError(
+                f"POST_AUDIT_OVERRIDES for {key} targets unknown cluster {new_bn!r}; "
+                f"known clusters: {sorted(seen.keys())}"
+            )
+        if new_tag not in tag_to_rep:
+            raise RuntimeError(
+                f"POST_AUDIT_OVERRIDES for {key} targets unknown rep tag {new_tag!r}; "
+                f"known rep tags: {sorted(tag_to_rep.keys())}"
+            )
+        # Recompute feature distance against the named rep so the
+        # ``feature_distance`` column stays meaningful.
+        v = _apply_zscore(_feature_vec(row), means, stds)
+        target_rv = _apply_zscore(_feature_vec(tag_to_rep[new_tag]), means, stds)
+        rec["primary_bottleneck"] = new_bn
+        rec["cluster_id"] = seen[new_bn]
+        rec["nearest_rep_tag"] = new_tag
+        rec["distance"] = _euclid(v, target_rv)
+        rec["audit_ref"] = ovr.get("audit_ref", "override")
+        n_overrides_applied += 1
+
+    if n_overrides_applied:
+        print(
+            f"[cluster] applied {n_overrides_applied} post-audit "
+            f"override(s) from POST_AUDIT_OVERRIDES"
+        )
     return out
 
 
@@ -326,6 +417,7 @@ def _write_clusters_csv(
             "cuda_eff", "fp16_eff", "roof_ratio",
             "primary_bottleneck", "cluster_id",
             "nearest_rep_tag", "feature_distance",
+            "audit_ref",
         ])
         for rec in records:
             row: ShapeRow = rec["row"]  # type: ignore[assignment]
@@ -335,6 +427,7 @@ def _write_clusters_csv(
                 rec["primary_bottleneck"], rec["cluster_id"],
                 rec.get("nearest_rep_tag") or "-",
                 f"{rec['distance']:.4f}",
+                rec.get("audit_ref") or "",
             ])
 
 
@@ -358,6 +451,7 @@ def _write_targets_csv(
         "model", "proj", "T", "d_in", "d_out",
         "cuda_eff", "fp16_eff", "target_eff", "gap_pp",
         "status", "primary_bottleneck", "nearest_rep_tag",
+        "audit_ref",
     ]
     lines.append(",".join(header))
     for rec in records:
@@ -371,6 +465,7 @@ def _write_targets_csv(
                 f"{target:.4f}", f"{gap_pp:+.2f}",
                 status, str(rec["primary_bottleneck"]),
                 str(rec.get("nearest_rep_tag") or "-"),
+                str(rec.get("audit_ref") or ""),
             ])
         )
     path.write_text("\n".join(lines) + "\n")
