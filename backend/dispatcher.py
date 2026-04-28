@@ -159,22 +159,62 @@ def _forward_decode(
     quant_fn = select_impl(KERNEL_ACTIVATION_QUANT, (X_2d, W.perm), {"bcol": BCOL})
     X_s4, scale_x, sum_X = quant_fn(X_2d, W.perm, bcol=BCOL)
 
-    # (2) dense
-    dense_args = (W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x)
-    dense_fn = select_impl(KERNEL_DENSE_GEMM, dense_args, {})
-    Y_low = dense_fn(*dense_args)
+    # (2+3) dense [+ sparse].
+    # Round 46: prefer the fused_dense_sparse single-kernel path when
+    # hp_blocks>0, mirroring _forward_prefill.  Measured on RTX 4090
+    # (bench_r46_fused_vs_split_20260427_222239.json, hp=0.05):
+    #
+    #   shape (T, d_out, d_in)   split   fused   fused save
+    #   (1,   4096,  4096)       49.05   37.01   +24.5% ✓
+    #   (1,   4096, 11008)      107.61   99.29    +7.7% ✓
+    #   (1,  11008,  4096)       47.21   38.33   +18.8% ✓
+    #   (8,   4096,  4096)       46.85   34.71   +25.9% ✓
+    #   (16,  4096,  4096)       47.43   39.23   +17.3% ✓
+    #   (32,  4096,  4096)       48.34   39.48   +18.3% ✓
+    #   (64,  4096,  4096)       57.49   48.69   +15.3% ✓
+    #   (128, 4096,  4096)       63.29   50.81   +19.7% ✓
+    #   (16,  1024,  5120)       52.09   42.76   +17.9% ✓
+    #   (64,  1024,  5120)       52.55   43.43   +17.4% ✓
+    #   (16,  4096, 11008)      117.02  115.28    +1.5% ·  neutral
+    #   (64,  4096, 11008)      137.81  150.73    -9.4% ×  loss (down_proj)
+    #
+    # Rule of thumb: fused wins whenever d_in <= d_out OR T <= 16
+    # (i.e. the dense branch is NOT MMA-bound at the level where fused
+    # prologue/epilogue overhead dominates).  It LOSES on down_proj-
+    # like shapes with large d_in and mid-T.  Conservative gate:
+    # enable fused when hp_blocks>0 AND (d_in <= d_out OR T <= 16).
+    use_fused_decode = (
+        W.n_hp_blocks > 0
+        and (d_in <= d_out or T <= 16)
+    )
 
-    # (3) sparse (only if hp>0)
-    Y_high = None
-    if W.n_hp_blocks > 0:
-        sparse_args = (
+    if use_fused_decode:
+        fused_args = (
+            W.W_low_packed,
             W.W_high_blocks_packed,
             W.hp_row_offsets, W.hp_col_indices,
-            X_s4, W.scale_u4, scale_x,
+            X_s4,
+            W.scale_u4, W.zero_u4, sum_X, scale_x,
         )
-        sparse_kwargs = {"d_out": d_out, "d_in": d_in}
-        sparse_fn = select_impl(KERNEL_SPARSE_GEMM, sparse_args, sparse_kwargs)
-        Y_high = sparse_fn(*sparse_args, **sparse_kwargs)
+        fused_kwargs = {"d_out": d_out, "d_in": d_in}
+        fused_fn = select_impl(KERNEL_FUSED_DENSE_SPARSE, fused_args, fused_kwargs)
+        Y_low = fused_fn(*fused_args, **fused_kwargs)
+        Y_high = None
+    else:
+        # Legacy split path: dense (+ sparse).
+        dense_args = (W.W_low_packed, X_s4, W.scale_u4, W.zero_u4, sum_X, scale_x)
+        dense_fn = select_impl(KERNEL_DENSE_GEMM, dense_args, {})
+        Y_low = dense_fn(*dense_args)
+        Y_high = None
+        if W.n_hp_blocks > 0:
+            sparse_args = (
+                W.W_high_blocks_packed,
+                W.hp_row_offsets, W.hp_col_indices,
+                X_s4, W.scale_u4, scale_x,
+            )
+            sparse_kwargs = {"d_out": d_out, "d_in": d_in}
+            sparse_fn = select_impl(KERNEL_SPARSE_GEMM, sparse_args, sparse_kwargs)
+            Y_high = sparse_fn(*sparse_args, **sparse_kwargs)
 
     # (4) combine+transpose (Triton-only; falls back to torch native on small T)
     return _combine_transpose(Y_low, Y_high, d_out=d_out, T=T)

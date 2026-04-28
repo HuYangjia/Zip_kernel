@@ -17,3 +17,6 @@ triton_kernel/benchmarks/results/
 # Editor
 .vscode/
 .idea/
+
+# macOS
+.DS_Store

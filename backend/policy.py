@@ -69,73 +69,82 @@ PolicyFn = Callable[[str, ShapeContext], str]
 
 
 def _auto_policy(kernel_name: str, ctx: ShapeContext) -> str:
-    """Default hand-rolled decision table, calibrated against cuBLAS FP16
-    baseline on RTX 4090 (SM89).
+    """Default hand-rolled decision table, recalibrated to Round-46
+    (bench_20260427_224405) on RTX 4090 (SM89).
 
-    Round 8 (bench_20260424_141934) switched the reference from Triton to
-    cuBLAS FP16 matmul.  Round 9 loosened the dense/fused rule for T=1
-    after discovering that the old ``d_out <= d_in`` guard was calibrated
-    against Triton and is no longer needed when FP16 is the comparator.
+    History:
+      - Round 8/9 calibrated against cuBLAS FP16, which produced a
+        conservative "prefer Triton at mid/large T" table.
+      - Rounds 38-46 rewrote the CUDA kernels (activation_quant vector
+        scatter, dense MMA kBm=64 gate, fused_dense_sparse kBm=64 BSR
+        remap, sparse kGrpBuf=128 opt-in shmem, R46 unified decode
+        pipeline) and the CUDA path now dominates Triton across every
+        tracked shape / T regime on the canonical bench.
 
-    Concrete speedups vs cuBLAS FP16 (>1 = CUDA wins):
+    Round-46 authoritative measurements (bench_20260427_224405,
+    CUDA speedup vs Triton, > 1.0 means CUDA wins):
 
-      activation_quant  : 0.21x .. 0.35x  -- always slower than FP16 memcpy
-                          (unavoidable: FP16 path doesn't need quantization)
-      dense_gemm  T=1, d_out=11k, d_in=4k : 1.60x  (win -- large d_out)
-      dense_gemm  T=1, d_out=4k,  d_in=4k : 0.34x  (lose -- FP16 GEMV fast)
-      dense_gemm  T=1, d_out=4k,  d_in=11k: 0.56x  (lose)
-      dense_gemm  T>=8                     : 0.02x .. 0.22x (lose)
-      sparse_gemm T=1, d_out=11k           : 5.21x  (big win -- sparsity)
-      sparse_gemm T=1, d_out=4k            : 0.92x  (near-parity)
-      sparse_gemm T<=16                    : 0.84x .. 5.29x
-      sparse_gemm T>=64                    : 0.24x .. 0.29x (lose)
-      fused       T=1, d_out=11k           : 1.80x  (win)
-      fused       T=1, d_out=4k            : 0.31x  (lose)
-      fused       T>=8                     : 0.05x .. 0.19x (lose)
+      activation_quant    T=1 .. T=1024  : 3.07x .. 4.77x
+      dense_gemm          T=1 (4k/4k)    : 4.39x
+      dense_gemm          T=1 (4k/11k)   : 1.93x
+      dense_gemm          T=1 (11k/4k)   : 3.47x
+      dense_gemm          T=8/16/64/128  : 1.85x / 1.85x / 1.47x / 1.45x
+      dense_gemm          T=512/1024     : 1.81x / 1.89x
+      sparse_gemm         T=1 .. T=128   : 3.72x .. 3.80x
+      sparse_gemm         T=512 / 1024   : 2.78x / 1.61x
+      fused_dense_sparse  T=1 (4k/4k)    : 4.91x
+      fused_dense_sparse  T=1 (4k/11k)   : 2.20x
+      fused_dense_sparse  T=1 (11k/4k)   : 3.98x
+      fused_dense_sparse  T=8/16/64/128  : 2.27x / 2.03x / 1.63x / 1.59x
+      fused_dense_sparse  T=512 / 1024   : 1.81x / 1.82x
 
-    End-to-end v9_linear (auto policy):
-      T=1, 4k/11k : 1.34x (win -- after Round-9 policy fix)
-      T=1, 4k/4k  : 0.30x (lose -- FP16 GEMV dominates)
-      T=1, 11k/4k : 0.56x (lose)
-      T>=8        : 0.09x .. 0.56x (lose)
+    End-to-end v9_linear (Round-46):
+      T=1   (4k/4k)   : 3.96x    (Triton 155.40us -> CUDA 39.28us)
+      T=1   (4k/11k)  : 3.21x
+      T=1   (11k/4k)  : 4.15x
+      T=8   (4k/4k)   : 3.28x
+      T=16  (4k/4k)   : 3.02x
+      T=64  (4k/4k)   : 2.48x
+      T=128 (4k/4k)   : 2.32x
+      T=512 (4k/4k)   : 1.91x
+      T=1024(4k/4k)   : 1.76x
 
-    Policy summary (Round 9):
-      - activation_quant: CUDA always (3-4.7x over Triton, even if slower
-        than FP16 memcpy -- it's a mandatory step for W4A8 accuracy).
-      - dense_gemm:
-          T=1              -> CUDA always (wins on large d_out; near-parity
-                              on square; acceptable loss on d_in>d_out).
-          T=2..8, d_out<=d_in -> CUDA (1.07x win).
-          else             -> Triton.
-      - sparse_gemm: CUDA iff T <= 16 (robust 0.84-5.29x range).
-      - fused_dense_sparse:
-          T=1              -> CUDA always (same reasoning as dense_gemm T=1).
-          T=2..8, d_out<=d_in -> CUDA.
-          else             -> Triton.
+    Policy summary (Round 46): every kernel prefers CUDA on every
+    shape we have data for.  No shape in the canonical bench regresses
+    under "force cuda" vs "force triton".  We keep a structured per-
+    kernel table (instead of a bare ``return 'cuda'``) so future shape-
+    specific blacklists / fallbacks can be grafted in without rewiring.
+
+    Known gaps (not regressions, just unmeasured regions):
+      - T > 1024 prefill never benched here; _forward_prefill applies
+        its own W4A16 fallback for very large dense-only shapes, so the
+        policy choice only matters when hp_blocks > 0.
+      - hp_ratio other than 0.05 is not in the canonical bench set.
+        R42/R43/R45 sweeps on hp=0 and hp=0.05 show CUDA winning in
+        both cases; the policy therefore does not branch on hp.
     """
     if kernel_name == KERNEL_ACTIVATION_QUANT:
+        # 3.07x-4.77x across every T; always CUDA.
         return "cuda"
 
     if kernel_name == KERNEL_DENSE_GEMM:
-        if ctx.T == 1:
-            return "cuda"   # Round-9: always CUDA at T=1 (wins on large d_out)
-        if ctx.T <= 8 and ctx.d_out <= ctx.d_in:
-            return "cuda"
-        return "triton"
+        # R46: CUDA wins 1.45x-4.39x across every benched T (1, 8, 16,
+        # 64, 128, 512, 1024).  Old Round-9 "T>=8 => triton" rule was
+        # calibrated against a cuBLAS-FP16 comparator and is obsolete
+        # for the quant pipeline, where Triton is the true baseline.
+        return "cuda"
 
     if kernel_name == KERNEL_SPARSE_GEMM:
-        # Round 7 cp.async helped T<=16 (3.8x->3.95x) but pushed T>=64
-        # into a loss zone due to kBn=4 spill + prefetch pressure.
-        if ctx.T <= 16:
-            return "cuda"
-        return "triton"
+        # R46: CUDA wins 1.61x-3.80x across T=1..1024.  Old Round-7
+        # "T>16 => triton" rule predates the kGrpBuf=128 opt-in shmem
+        # fix and the kBn tuning; remove it.
+        return "cuda"
 
     if kernel_name == KERNEL_FUSED_DENSE_SPARSE:
-        if ctx.T == 1:
-            return "cuda"   # Round-9: always CUDA at T=1
-        if ctx.T <= 8 and ctx.d_out <= ctx.d_in:
-            return "cuda"
-        return "triton"
+        # R46: CUDA wins 1.59x-4.91x across T=1..1024.  The dispatcher
+        # decides fused-vs-split on top of this; the policy here only
+        # controls whether the fused kernel itself is CUDA or Triton.
+        return "cuda"
 
     return "triton"
 

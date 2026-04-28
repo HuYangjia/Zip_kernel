@@ -36,6 +36,18 @@ from kernel.triton_kernel.pack_utils import BCOL
 
 logger = logging.getLogger(__name__)
 
+_DECODE_MAX_GROUPS = 160
+
+
+def _decode_group_count(d_in: int) -> int:
+    if d_in % BCOL != 0:
+        raise ValueError(f"d_in ({d_in}) must be divisible by BCOL ({BCOL})")
+    return d_in // BCOL
+
+
+def _can_use_decode_gemv_for_din(d_in: int) -> bool:
+    return _decode_group_count(d_in) <= _DECODE_MAX_GROUPS
+
 
 # ---------------------------------------------------------------------------
 # Build the extension once on import
@@ -239,7 +251,8 @@ def dense_gemv_cuda_decode(
 def dense_gemm_cuda(
     W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
 ) -> torch.Tensor:
-    if X_s4.shape[0] == 1:
+    d_in = W_low_packed.shape[1] * 2
+    if X_s4.shape[0] == 1 and _can_use_decode_gemv_for_din(d_in):
         return dense_gemv_cuda_decode(
             W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
         )
@@ -387,9 +400,19 @@ def fused_quant_gemv_cuda(
     fusing quantization into the GEMV kernel.  X is read from HBM once.
 
     Precondition: X_fp16.shape[0] == 1.
+    For larger group counts beyond the current decode buffer limit,
+    callers should fall back to activation_quant_cuda +
+    fused_dense_sparse_cuda_int4.
     """
-    TORCH_CHECK = lambda cond, msg: None  # noqa: checked in C++
     T = X_fp16.shape[0]
+    if T != 1:
+        raise ValueError(f"fused_quant_gemv_cuda requires T == 1, got {T}")
+    if not _can_use_decode_gemv_for_din(d_in):
+        X_s4, scale_x, sum_X = activation_quant_cuda(X_fp16, perm)
+        return fused_dense_sparse_cuda_int4(
+            W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+            X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+        )
     device = X_fp16.device
     Y_total = torch.empty((d_out, T), dtype=torch.float16, device=device)
     _ext.fused_quant_gemv_launch(
@@ -450,7 +473,7 @@ def fused_dense_sparse_cuda(
     # the dp4a warp-reduce latency dominates.  Kept the smallT kernel
     # available via fused_gemv_cuda_smallT but NOT on the default path.
     T = X_s4.shape[0]
-    if T == 1:
+    if T == 1 and _can_use_decode_gemv_for_din(d_in):
         return fused_gemv_cuda_decode(
             W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
             X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
