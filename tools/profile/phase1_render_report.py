@@ -440,16 +440,16 @@ def main() -> int:
         if "error" in rec:
             print(f"  ! {s.tag}: {rec['error']}")
         else:
-        gemm_info = (
-            f"fused={r.get('fused_dense_sparse_us', 0):.3f}us"
-            if r.get("gemm_path") == "fused"
-            else f"dense={r.get('dense_gemm_us', 0):.3f}us sparse={r.get('sparse_gemm_us', 0):.3f}us"
-        )
-        print(
-            f"  * {r['tag']}: fwd={r['forward_us']:.3f}us "
-            f"quant={r['activation_quant_us']:.3f}us {gemm_info} "
-            f"body={r['kernel_body_us']:.3f}us"
-        )
+            gemm_info = (
+                f"fused={rec.get('fused_dense_sparse_us', 0):.3f}us"
+                if rec.get("gemm_path") == "fused"
+                else f"dense={rec.get('dense_gemm_us', 0):.3f}us sparse={rec.get('sparse_gemm_us', 0):.3f}us"
+            )
+            print(
+                f"  * {rec['tag']}: fwd={rec['forward_us']:.3f}us "
+                f"quant={rec['activation_quant_us']:.3f}us {gemm_info} "
+                f"body={rec['kernel_body_us']:.3f}us"
+            )
     launch_tax_path = args.dir / "launch_tax.json"
     launch_tax: Dict[str, Dict[str, Any]] = {}
     if launch_tax_path.exists():
