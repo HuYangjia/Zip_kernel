@@ -11,8 +11,8 @@
     "prefill_T1024_down_3072_1024": "tc_underutil"
   },
   "bottleneck_counts": {
-    "launch_sparse": 17,
-    "tc_underutil": 83
+    "launch_sparse": 16,
+    "tc_underutil": 84
   },
   "status_counts": {
     "gap_large": 95,

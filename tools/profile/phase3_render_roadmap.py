@@ -353,6 +353,26 @@ def render(recs: List[ShapeRec]) -> str:
         "audit."
     )
     out.append("")
+    out.append(
+        "3. **`launch_sparse` re-audit under tightened timer (informational).**  "
+        "Before committing R49 to CUDA-Graph work we re-measured all 17 "
+        "members of the cluster (not just reps) under "
+        "(warmup=200, outer=10, inner=100) x K=5 alternating plain/graph "
+        "trials, reporting median launch_tax_pct.  Outcome: 14 CONFIRMED "
+        "(median >=50%, stable; most shapes landed in the 70-90% band), "
+        "2 DEGRADED (Qwen3-1.7B gate_up T=1/T=8, d_out=12288: kernel body "
+        "grows so tax drops to 38-46%), and 1 REJECTED (Qwen3-4B gate_up "
+        "T=1 2560->19456: median tax_pct=1.8% [1.6, 2.1]; kernel body "
+        "~47.6us dominates entirely).  The rejected shape is reclassified "
+        "to `tc_underutil` via `POST_AUDIT_OVERRIDES` in "
+        "`kernel/tools/profile/cluster_all_shapes.py`, which is why this "
+        "roadmap shows 84 `tc_underutil` + 16 `launch_sparse` rather than "
+        "the pre-audit 83+17.  Rows touched by overrides carry a non-empty "
+        "`audit_ref` column in `shape_clusters.csv` / `shape_targets.csv`.  "
+        "Report: `cuda_kernel/logs/phase2_microscope/audit_launch_tax/"
+        "launch_tax_audit.md`."
+    )
+    out.append("")
     out.append("## 0. Current state")
     out.append("")
     out.append(
