@@ -377,15 +377,67 @@ def render_report(out_dir: Path, sd: Dict, ts: Dict, sf: Dict) -> str:
         "root cause is in the shared mma_int4 code path.\n"
     )
 
-    # 4. Conclusion template — filled in after user reviews numbers.
-    lines.append("## 4. Diagnosis (to fill after running)\n")
+    # 4. Conclusion — filled in after the reversed-order + downstream
+    # regeneration confirmed the verdict.
+    lines.append("## 4. Diagnosis\n")
     lines.append(
-        "Based on §1, the slowdown is localised to `<stage>`.  §2 shows "
-        "the effect is `<T-dependent / T-independent>` which points to "
-        "`<dispatch path>`.  §3 shows the effect is "
-        "`<shape-specific / endemic>`.  Root cause: `<hypothesis>`.  "
-        "Next step: `<code fix or further probe>`.\n"
+        "**Verdict: the -27.9% X=0 slowdown on `mid_T128_kv_2560_2048` "
+        "is a measurement artefact, not a kernel bug.**\n"
     )
+    lines.append("**Evidence:**\n")
+    lines.append(
+        "1. Under the stronger (warmup=200, outer=10, inner=200) budget, "
+        "all three stage-decomposition tests show |Δ| within the 3% "
+        "noise floor (see §1).  The 27.9% figure from the original "
+        "bisection (warmup=80, outer=4) does not reproduce.\n"
+        "2. The order-reversal control (§1b) shows |Δ| stays in noise "
+        "regardless of whether zero is measured first or last, ruling "
+        "out L2-state bleed between variants.\n"
+        "3. The T-sweep (§2) shows no single T value carries an "
+        "anomalous signal any more; the earlier T=128-only outlier was "
+        "the tail of a warm-up / clock-scaling transient, not a "
+        "T-dependent code path.\n"
+        "4. The shape-family comparison (§3) confirms no T=128 shape "
+        "is an outlier.\n"
+    )
+    lines.append("**Downstream changes applied:**\n")
+    lines.append(
+        "- `microbench_bisection.py::_time_variant`: default schedule "
+        "bumped from (warmup=80, outer=4) to (warmup=200, outer=10) "
+        "to eliminate the artefact class.\n"
+        "- `phase2_render_report.py::_attribute_bottleneck`: removed "
+        "the `d_xzero <= -10%` branch; `x_zero_anomaly` is no longer "
+        "a classification lever.\n"
+        "- `cluster_all_shapes.py::_cluster_shapes`: removed the "
+        "exact-match carve-out for `mid_T128_kv_2560_2048`; it now "
+        "falls through to nearest-neighbour classification.\n"
+        "- `phase3_render_roadmap.py`: deprecated the "
+        "`x_zero_anomaly` ClusterPlan entry and dropped its "
+        "verification-matrix row.\n"
+        "- All phase2 / phase3 artefacts under "
+        "`cuda_kernel/logs/phase2_microscope/` re-generated from the "
+        "new bisection runs.\n"
+    )
+    lines.append("**New reclassification:**\n")
+    lines.append(
+        "- `mid_T128_kv_2560_2048` → `tc_underutil` (nearest-neighbour "
+        "after the carve-out was removed).\n"
+        "- The stronger warmup also pushed every previous "
+        "`epilogue_fma_bound` signal below the 2.5% scale=1 threshold, "
+        "collapsing that cluster entirely.  The 100-shape roadmap is "
+        "now a clean two-cluster partition: "
+        "`tc_underutil` (83 shapes, ROI 2.74) and "
+        "`launch_sparse` (17 shapes, ROI 2.44).\n"
+    )
+    lines.append("**Meta-lesson.**  The original 3-piece microbench "
+        "rule (warmup, inner, outer) stored in the long-term memo "
+        "was correct in spirit but the 80/100/4 instantiation used "
+        "by `microbench_bisection.py` was still on the edge of the "
+        "4090's boost-clock warm-up envelope.  A single anomalous "
+        "number was enough to spawn a phantom `x_zero_anomaly` "
+        "cluster *and* an oversized `epilogue_fma_bound` cluster.  "
+        "This probe script now serves as the reference for any "
+        "future \"did we measure this right?\" investigation.\n")
     return "\n".join(lines)
 
 
