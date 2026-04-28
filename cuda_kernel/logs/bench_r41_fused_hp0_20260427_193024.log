@@ -1,0 +1,58 @@
+19:30:24 INFO Device: NVIDIA GeForce RTX 4090
+19:30:24 INFO Shapes: 9
+19:30:24 INFO === 1.7B_q_proj T=16 d_out=2048 d_in=2048 (gate_expected=True) ===
+19:30:24 INFO   [kBm=128] 1.7B_q_proj T=16 d_out=2048 d_in=2048: 21.23 us
+19:30:24 INFO   [kBm=64] 1.7B_q_proj T=16 d_out=2048 d_in=2048: 18.78 us
+19:30:24 INFO   [kBm=gate] 1.7B_q_proj T=16 d_out=2048 d_in=2048: 18.76 us
+19:30:24 INFO   -> speedup(kBm=64 / kBm=128) = 1.130x
+
+19:30:24 INFO === 1.7B_q_proj T=32 d_out=2048 d_in=2048 (gate_expected=True) ===
+19:30:24 INFO   [kBm=128] 1.7B_q_proj T=32 d_out=2048 d_in=2048: 21.17 us
+19:30:24 INFO   [kBm=64] 1.7B_q_proj T=32 d_out=2048 d_in=2048: 18.87 us
+19:30:24 INFO   [kBm=gate] 1.7B_q_proj T=32 d_out=2048 d_in=2048: 18.86 us
+19:30:24 INFO   -> speedup(kBm=64 / kBm=128) = 1.122x
+
+19:30:24 INFO === 1.7B_q_proj T=64 d_out=2048 d_in=2048 (gate_expected=True) ===
+19:30:24 INFO   [kBm=128] 1.7B_q_proj T=64 d_out=2048 d_in=2048: 21.52 us
+19:30:24 INFO   [kBm=64] 1.7B_q_proj T=64 d_out=2048 d_in=2048: 26.56 us
+19:30:24 INFO   [kBm=gate] 1.7B_q_proj T=64 d_out=2048 d_in=2048: 26.57 us
+19:30:24 INFO   -> speedup(kBm=64 / kBm=128) = 0.810x
+
+19:30:24 INFO === 1.7B_q_proj T=128 d_out=2048 d_in=2048 (gate_expected=False) ===
+19:30:24 INFO   [kBm=128] 1.7B_q_proj T=128 d_out=2048 d_in=2048: 27.37 us
+19:30:24 INFO   [kBm=64] 1.7B_q_proj T=128 d_out=2048 d_in=2048: 26.41 us
+19:30:24 INFO   [kBm=gate] 1.7B_q_proj T=128 d_out=2048 d_in=2048: 27.38 us
+19:30:24 INFO   -> speedup(kBm=64 / kBm=128) = 1.036x
+
+19:30:24 INFO === 1.7B_o_proj T=16 d_out=2048 d_in=2048 (gate_expected=True) ===
+19:30:24 INFO   [kBm=128] 1.7B_o_proj T=16 d_out=2048 d_in=2048: 19.48 us
+19:30:24 INFO   [kBm=64] 1.7B_o_proj T=16 d_out=2048 d_in=2048: 17.24 us
+19:30:24 INFO   [kBm=gate] 1.7B_o_proj T=16 d_out=2048 d_in=2048: 17.23 us
+19:30:24 INFO   -> speedup(kBm=64 / kBm=128) = 1.129x
+
+19:30:24 INFO === 1.7B_down_proj T=16 d_out=2048 d_in=6144 (gate_expected=True) ===
+19:30:24 INFO   [kBm=128] 1.7B_down_proj T=16 d_out=2048 d_in=6144: 57.78 us
+19:30:24 INFO   [kBm=64] 1.7B_down_proj T=16 d_out=2048 d_in=6144: 49.75 us
+19:30:24 INFO   [kBm=gate] 1.7B_down_proj T=16 d_out=2048 d_in=6144: 49.74 us
+19:30:24 INFO   -> speedup(kBm=64 / kBm=128) = 1.162x
+
+19:30:24 INFO === 8B_q_proj T=16 d_out=4096 d_in=4096 (gate_expected=False) ===
+19:30:25 INFO   [kBm=128] 8B_q_proj T=16 d_out=4096 d_in=4096: 37.20 us
+19:30:25 INFO   [kBm=64] 8B_q_proj T=16 d_out=4096 d_in=4096: 41.84 us
+19:30:25 INFO   [kBm=gate] 8B_q_proj T=16 d_out=4096 d_in=4096: 37.17 us
+19:30:25 INFO   -> speedup(kBm=64 / kBm=128) = 0.889x
+
+19:30:25 INFO === 8B_q_proj T=32 d_out=4096 d_in=4096 (gate_expected=False) ===
+19:30:25 INFO   [kBm=128] 8B_q_proj T=32 d_out=4096 d_in=4096: 37.39 us
+19:30:25 INFO   [kBm=64] 8B_q_proj T=32 d_out=4096 d_in=4096: 46.47 us
+19:30:25 INFO   [kBm=gate] 8B_q_proj T=32 d_out=4096 d_in=4096: 37.42 us
+19:30:25 INFO   -> speedup(kBm=64 / kBm=128) = 0.805x
+
+19:30:25 INFO === 14B_kv_proj T=16 d_out=1024 d_in=5120 (gate_expected=True) ===
+19:30:25 INFO   [kBm=128] 14B_kv_proj T=16 d_out=1024 d_in=5120: 51.77 us
+19:30:25 INFO   [kBm=64] 14B_kv_proj T=16 d_out=1024 d_in=5120: 41.94 us
+19:30:25 INFO   [kBm=gate] 14B_kv_proj T=16 d_out=1024 d_in=5120: 41.95 us
+19:30:25 INFO   -> speedup(kBm=64 / kBm=128) = 1.234x
+
+19:30:25 INFO Wrote /root/Zip_kernel/cuda_kernel/logs/bench_r41_fused_hp0_20260427_193024.json
+19:30:25 INFO Wrote /root/Zip_kernel/cuda_kernel/logs/bench_r41_fused_hp0_20260427_193024.md

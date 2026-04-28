@@ -1,0 +1,15 @@
+22:22:39 INFO Device: NVIDIA GeForce RTX 4090
+22:22:40 INFO T=   1 d_out= 4096 d_in= 4096 hp=0.05  dense= 39.65us sparse= 24.31us split= 49.05us fused= 37.01us  save=+12.04us (+24.5%) ✓
+22:22:40 INFO T=   1 d_out= 4096 d_in=11008 hp=0.05  dense=105.98us sparse= 24.80us split=107.61us fused= 99.29us  save= +8.33us (+7.7%) ✓
+22:22:40 INFO T=   1 d_out=11008 d_in= 4096 hp=0.05  dense= 36.08us sparse= 24.24us split= 47.21us fused= 38.33us  save= +8.88us (+18.8%) ✓
+22:22:40 INFO T=   8 d_out= 4096 d_in= 4096 hp=0.05  dense= 37.22us sparse= 24.11us split= 46.85us fused= 34.71us  save=+12.14us (+25.9%) ✓
+22:22:40 INFO T=  16 d_out= 4096 d_in= 4096 hp=0.05  dense= 37.26us sparse= 24.08us split= 47.43us fused= 39.23us  save= +8.20us (+17.3%) ✓
+22:22:40 INFO T=  32 d_out= 4096 d_in= 4096 hp=0.05  dense= 37.59us sparse= 24.18us split= 48.34us fused= 39.48us  save= +8.87us (+18.3%) ✓
+22:22:40 INFO T=  64 d_out= 4096 d_in= 4096 hp=0.05  dense= 46.24us sparse= 24.29us split= 57.49us fused= 48.69us  save= +8.80us (+15.3%) ✓
+22:22:40 INFO T= 128 d_out= 4096 d_in= 4096 hp=0.05  dense= 47.42us sparse= 24.30us split= 63.29us fused= 50.81us  save=+12.48us (+19.7%) ✓
+22:22:40 INFO T=  16 d_out= 1024 d_in= 5120 hp=0.05  dense= 40.94us sparse= 24.34us split= 52.09us fused= 42.76us  save= +9.33us (+17.9%) ✓
+22:22:40 INFO T=  32 d_out= 1024 d_in= 5120 hp=0.05  dense= 40.96us sparse= 24.21us split= 52.73us fused= 43.49us  save= +9.24us (+17.5%) ✓
+22:22:40 INFO T=  64 d_out= 1024 d_in= 5120 hp=0.05  dense= 40.98us sparse= 24.26us split= 52.55us fused= 43.43us  save= +9.12us (+17.4%) ✓
+22:22:41 INFO T=  16 d_out= 4096 d_in=11008 hp=0.05  dense=102.68us sparse= 24.27us split=117.02us fused=115.28us  save= +1.74us (+1.5%) ·
+22:22:41 INFO T=  64 d_out= 4096 d_in=11008 hp=0.05  dense=122.01us sparse= 24.38us split=137.81us fused=150.73us  save=-12.92us (-9.4%) ×
+22:22:41 INFO Wrote /root/Zip_kernel/cuda_kernel/logs/bench_r46_fused_vs_split_20260427_222239.json

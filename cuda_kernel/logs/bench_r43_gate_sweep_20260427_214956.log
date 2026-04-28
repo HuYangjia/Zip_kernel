@@ -1,0 +1,116 @@
+21:49:56 INFO Device: NVIDIA GeForce RTX 4090, d_in=4096
+21:49:56 INFO Grid: T=[8, 16, 32, 48, 64, 96, 128]  d_out=[1024, 2048, 3072, 4096]  hp=[0.0, 0.05]
+21:49:56 INFO --- hp=0.0 d_out=1024 T=8 ---
+21:49:56 INFO   kBm=128  40.51us  kBm=64  35.54us  auto  35.53us (picks=64)  64/128=1.140x ✓
+21:49:56 INFO --- hp=0.0 d_out=1024 T=16 ---
+21:49:56 INFO   kBm=128  40.43us  kBm=64  35.10us  auto  35.09us (picks=64)  64/128=1.152x ✓
+21:49:56 INFO --- hp=0.0 d_out=1024 T=32 ---
+21:49:56 INFO   kBm=128  40.35us  kBm=64  35.20us  auto  35.24us (picks=64)  64/128=1.146x ✓
+21:49:56 INFO --- hp=0.0 d_out=1024 T=48 ---
+21:49:56 INFO   kBm=128  40.70us  kBm=64  35.26us  auto  35.26us (picks=64)  64/128=1.154x ✓
+21:49:56 INFO --- hp=0.0 d_out=1024 T=64 ---
+21:49:57 INFO   kBm=128  40.51us  kBm=64  35.28us  auto  35.27us (picks=64)  64/128=1.148x ✓
+21:49:57 INFO --- hp=0.0 d_out=1024 T=96 ---
+21:49:57 INFO   kBm=128  40.62us  kBm=64  38.91us  auto  37.05us (picks=64)  64/128=1.044x ·
+21:49:57 INFO --- hp=0.0 d_out=1024 T=128 ---
+21:49:57 INFO   kBm=128  37.19us  kBm=64  46.87us  auto  37.21us (picks=64)  64/128=0.794x ×
+21:49:57 INFO --- hp=0.0 d_out=2048 T=8 ---
+21:49:57 INFO   kBm=128  36.97us  kBm=64  32.26us  auto  32.24us (picks=64)  64/128=1.146x ✓
+21:49:57 INFO --- hp=0.0 d_out=2048 T=16 ---
+21:49:57 INFO   kBm=128  36.86us  kBm=64  32.32us  auto  32.33us (picks=64)  64/128=1.141x ✓
+21:49:57 INFO --- hp=0.0 d_out=2048 T=32 ---
+21:49:57 INFO   kBm=128  36.88us  kBm=64  32.35us  auto  32.36us (picks=64)  64/128=1.140x ✓
+21:49:57 INFO --- hp=0.0 d_out=2048 T=48 ---
+21:49:57 INFO   kBm=128  37.11us  kBm=64  35.88us  auto  37.11us (picks=128)  64/128=1.034x ·
+21:49:57 INFO --- hp=0.0 d_out=2048 T=64 ---
+21:49:57 INFO   kBm=128  37.22us  kBm=64  35.85us  auto  37.22us (picks=128)  64/128=1.038x ·
+21:49:57 INFO --- hp=0.0 d_out=2048 T=96 ---
+21:49:57 INFO   kBm=128  47.48us  kBm=64  40.75us  auto  47.45us (picks=128)  64/128=1.165x ✓
+21:49:57 INFO --- hp=0.0 d_out=2048 T=128 ---
+21:49:57 INFO   kBm=128  47.47us  kBm=64  47.01us  auto  47.49us (picks=128)  64/128=1.010x ·
+21:49:57 INFO --- hp=0.0 d_out=3072 T=8 ---
+21:49:57 INFO   kBm=128  36.86us  kBm=64  32.24us  auto  32.25us (picks=64)  64/128=1.144x ✓
+21:49:57 INFO --- hp=0.0 d_out=3072 T=16 ---
+21:49:57 INFO   kBm=128  36.90us  kBm=64  32.22us  auto  32.22us (picks=64)  64/128=1.146x ✓
+21:49:57 INFO --- hp=0.0 d_out=3072 T=32 ---
+21:49:57 INFO   kBm=128  36.94us  kBm=64  35.41us  auto  35.41us (picks=64)  64/128=1.043x ·
+21:49:57 INFO --- hp=0.0 d_out=3072 T=48 ---
+21:49:57 INFO   kBm=128  49.41us  kBm=64  40.64us  auto  49.44us (picks=128)  64/128=1.216x ✓
+21:49:57 INFO --- hp=0.0 d_out=3072 T=64 ---
+21:49:57 INFO   kBm=128  49.93us  kBm=64  41.29us  auto  49.87us (picks=128)  64/128=1.209x ✓
+21:49:57 INFO --- hp=0.0 d_out=3072 T=96 ---
+21:49:57 INFO   kBm=128  47.45us  kBm=64  53.71us  auto  47.45us (picks=64)  64/128=0.884x ×
+21:49:57 INFO --- hp=0.0 d_out=3072 T=128 ---
+21:49:57 INFO   kBm=128  47.65us  kBm=64  49.74us  auto  47.57us (picks=64)  64/128=0.958x ·
+21:49:57 INFO --- hp=0.0 d_out=4096 T=8 ---
+21:49:57 INFO   kBm=128  36.75us  kBm=64  32.32us  auto  32.32us (picks=64)  64/128=1.137x ✓
+21:49:57 INFO --- hp=0.0 d_out=4096 T=16 ---
+21:49:57 INFO   kBm=128  36.80us  kBm=64  42.15us  auto  36.80us (picks=64)  64/128=0.873x ×
+21:49:57 INFO --- hp=0.0 d_out=4096 T=32 ---
+21:49:57 INFO   kBm=128  37.13us  kBm=64  35.59us  auto  37.15us (picks=128)  64/128=1.043x ·
+21:49:57 INFO --- hp=0.0 d_out=4096 T=48 ---
+21:49:57 INFO   kBm=128  47.28us  kBm=64  41.18us  auto  47.27us (picks=128)  64/128=1.148x ✓
+21:49:57 INFO --- hp=0.0 d_out=4096 T=64 ---
+21:49:57 INFO   kBm=128  47.27us  kBm=64  46.39us  auto  47.26us (picks=128)  64/128=1.019x ·
+21:49:57 INFO --- hp=0.0 d_out=4096 T=96 ---
+21:49:58 INFO   kBm=128  47.59us  kBm=64  90.86us  auto  47.62us (picks=64)  64/128=0.524x ×
+21:49:58 INFO --- hp=0.0 d_out=4096 T=128 ---
+21:49:58 INFO   kBm=128  47.99us  kBm=64  52.33us  auto  47.99us (picks=64)  64/128=0.917x ×
+21:49:58 INFO --- hp=0.05 d_out=1024 T=8 ---
+21:49:58 INFO   kBm=128  38.52us  kBm=64  33.27us  auto  33.28us (picks=64)  64/128=1.158x ✓
+21:49:58 INFO --- hp=0.05 d_out=1024 T=16 ---
+21:49:58 INFO   kBm=128  38.64us  kBm=64  33.74us  auto  33.74us (picks=64)  64/128=1.145x ✓
+21:49:58 INFO --- hp=0.05 d_out=1024 T=32 ---
+21:49:58 INFO   kBm=128  38.71us  kBm=64  33.63us  auto  33.63us (picks=64)  64/128=1.151x ✓
+21:49:58 INFO --- hp=0.05 d_out=1024 T=48 ---
+21:49:58 INFO   kBm=128  39.10us  kBm=64  33.89us  auto  33.90us (picks=64)  64/128=1.154x ✓
+21:49:58 INFO --- hp=0.05 d_out=1024 T=64 ---
+21:49:58 INFO   kBm=128  39.13us  kBm=64  33.38us  auto  33.39us (picks=64)  64/128=1.172x ✓
+21:49:58 INFO --- hp=0.05 d_out=1024 T=96 ---
+21:49:58 INFO   kBm=128  39.18us  kBm=64  37.32us  auto  37.26us (picks=64)  64/128=1.050x ·
+21:49:58 INFO --- hp=0.05 d_out=1024 T=128 ---
+21:49:58 INFO   kBm=128  39.48us  kBm=64  48.92us  auto  39.45us (picks=64)  64/128=0.807x ×
+21:49:58 INFO --- hp=0.05 d_out=2048 T=8 ---
+21:49:58 INFO   kBm=128  39.19us  kBm=64  33.46us  auto  33.44us (picks=64)  64/128=1.171x ✓
+21:49:58 INFO --- hp=0.05 d_out=2048 T=16 ---
+21:49:58 INFO   kBm=128  39.26us  kBm=64  33.70us  auto  33.72us (picks=64)  64/128=1.165x ✓
+21:49:58 INFO --- hp=0.05 d_out=2048 T=32 ---
+21:49:58 INFO   kBm=128  39.64us  kBm=64  33.68us  auto  33.69us (picks=64)  64/128=1.177x ✓
+21:49:58 INFO --- hp=0.05 d_out=2048 T=48 ---
+21:49:58 INFO   kBm=128  39.99us  kBm=64  37.41us  auto  40.01us (picks=128)  64/128=1.069x ✓
+21:49:58 INFO --- hp=0.05 d_out=2048 T=64 ---
+21:49:58 INFO   kBm=128  39.95us  kBm=64  37.51us  auto  39.95us (picks=128)  64/128=1.065x ✓
+21:49:58 INFO --- hp=0.05 d_out=2048 T=96 ---
+21:49:58 INFO   kBm=128  50.47us  kBm=64  42.65us  auto  50.46us (picks=128)  64/128=1.183x ✓
+21:49:58 INFO --- hp=0.05 d_out=2048 T=128 ---
+21:49:58 INFO   kBm=128  50.73us  kBm=64  48.95us  auto  50.73us (picks=128)  64/128=1.036x ·
+21:49:58 INFO --- hp=0.05 d_out=3072 T=8 ---
+21:49:58 INFO   kBm=128  40.15us  kBm=64  35.00us  auto  34.99us (picks=64)  64/128=1.147x ✓
+21:49:58 INFO --- hp=0.05 d_out=3072 T=16 ---
+21:49:58 INFO   kBm=128  40.24us  kBm=64  35.08us  auto  35.07us (picks=64)  64/128=1.147x ✓
+21:49:58 INFO --- hp=0.05 d_out=3072 T=32 ---
+21:49:58 INFO   kBm=128  40.30us  kBm=64  38.44us  auto  38.43us (picks=64)  64/128=1.048x ·
+21:49:58 INFO --- hp=0.05 d_out=3072 T=48 ---
+21:49:58 INFO   kBm=128  51.78us  kBm=64  43.30us  auto  51.80us (picks=128)  64/128=1.196x ✓
+21:49:58 INFO --- hp=0.05 d_out=3072 T=64 ---
+21:49:59 INFO   kBm=128  52.61us  kBm=64  44.05us  auto  52.58us (picks=128)  64/128=1.194x ✓
+21:49:59 INFO --- hp=0.05 d_out=3072 T=96 ---
+21:49:59 INFO   kBm=128  51.43us  kBm=64  56.31us  auto  51.42us (picks=64)  64/128=0.913x ×
+21:49:59 INFO --- hp=0.05 d_out=3072 T=128 ---
+21:49:59 INFO   kBm=128  51.57us  kBm=64  53.41us  auto  51.55us (picks=64)  64/128=0.966x ·
+21:49:59 INFO --- hp=0.05 d_out=4096 T=8 ---
+21:49:59 INFO   kBm=128  39.14us  kBm=64  34.62us  auto  34.63us (picks=64)  64/128=1.130x ✓
+21:49:59 INFO --- hp=0.05 d_out=4096 T=16 ---
+21:49:59 INFO   kBm=128  39.12us  kBm=64  45.35us  auto  39.14us (picks=64)  64/128=0.862x ×
+21:49:59 INFO --- hp=0.05 d_out=4096 T=32 ---
+21:49:59 INFO   kBm=128  39.46us  kBm=64  38.35us  auto  39.46us (picks=128)  64/128=1.029x ·
+21:49:59 INFO --- hp=0.05 d_out=4096 T=48 ---
+21:49:59 INFO   kBm=128  49.95us  kBm=64  43.64us  auto  49.92us (picks=128)  64/128=1.145x ✓
+21:49:59 INFO --- hp=0.05 d_out=4096 T=64 ---
+21:49:59 INFO   kBm=128  49.87us  kBm=64  49.00us  auto  49.91us (picks=128)  64/128=1.018x ·
+21:49:59 INFO --- hp=0.05 d_out=4096 T=96 ---
+21:49:59 INFO   kBm=128  50.70us  kBm=64  95.31us  auto  50.69us (picks=64)  64/128=0.532x ×
+21:49:59 INFO --- hp=0.05 d_out=4096 T=128 ---
+21:49:59 INFO   kBm=128  50.69us  kBm=64  56.62us  auto  50.68us (picks=64)  64/128=0.895x ×
+21:49:59 INFO Wrote /root/Zip_kernel/cuda_kernel/logs/bench_r43_gate_sweep_20260427_214956.json
+21:49:59 INFO Wrote /root/Zip_kernel/cuda_kernel/logs/bench_r43_gate_sweep_20260427_214956.md

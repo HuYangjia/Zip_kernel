@@ -1,0 +1,67 @@
+22:11:19 INFO Device: NVIDIA GeForce RTX 4090, d_in=4096
+22:11:19 INFO Probes: [(96, 3072), (96, 4096), (64, 4096), (48, 4096)]
+22:11:19 INFO --- hp=0.0  T=96  d_out=3072 ---
+22:11:20 INFO   kBm=128 kBn=8         103.68us   (auto/this = 0.501x)
+22:11:20 INFO   kBm=128 kBn=32         51.94us   (auto/this = 1.000x)
+22:11:20 INFO   kBm=128 kBn=64         67.72us   (auto/this = 0.767x)
+22:11:20 INFO   kBm=64 kBn=8           58.77us   (auto/this = 0.884x)
+22:11:20 INFO   kBm=64 kBn=32          53.95us   (auto/this = 0.963x)
+22:11:20 INFO   kBm=64 kBn=64          56.69us   (auto/this = 0.916x)
+22:11:20 INFO   ==> auto= 51.95us  best= 51.94us [kBm=128 kBn=32]  auto/best=1.000x
+22:11:20 INFO --- hp=0.0  T=96  d_out=4096 ---
+22:11:20 INFO   kBm=128 kBn=8          94.30us   (auto/this = 0.503x)
+22:11:20 INFO   kBm=128 kBn=32         47.31us   (auto/this = 1.003x)
+22:11:20 INFO   kBm=128 kBn=64         61.50us   (auto/this = 0.771x)
+22:11:20 INFO   kBm=64 kBn=8           90.58us   (auto/this = 0.524x)
+22:11:20 INFO   kBm=64 kBn=32          49.39us   (auto/this = 0.961x)
+22:11:20 INFO   kBm=64 kBn=64          51.78us   (auto/this = 0.916x)
+22:11:20 INFO   ==> auto= 47.44us  best= 47.31us [kBm=128 kBn=32]  auto/best=1.003x
+22:11:20 INFO --- hp=0.0  T=64  d_out=4096 ---
+22:11:20 INFO   kBm=128 kBn=8          47.44us   (auto/this = 0.991x)
+22:11:20 INFO   kBm=128 kBn=32         47.02us   (auto/this = 1.000x)
+22:11:20 INFO   kBm=128 kBn=64         61.47us   (auto/this = 0.765x)
+22:11:20 INFO   kBm=64 kBn=8           46.28us   (auto/this = 1.015x)
+22:11:20 INFO   kBm=64 kBn=32          46.65us   (auto/this = 1.007x)
+22:11:20 INFO   kBm=64 kBn=64          51.53us   (auto/this = 0.912x)
+22:11:20 INFO   ==> auto= 47.00us  best= 46.28us [kBm=64 kBn=8]  auto/best=1.015x
+22:11:20 INFO --- hp=0.0  T=48  d_out=4096 ---
+22:11:20 INFO   kBm=128 kBn=8          47.29us   (auto/this = 0.999x)
+22:11:20 INFO   kBm=128 kBn=32         47.22us   (auto/this = 1.001x)
+22:11:20 INFO   kBm=128 kBn=64         60.88us   (auto/this = 0.776x)
+22:11:20 INFO   kBm=64 kBn=8           40.94us   (auto/this = 1.154x)
+22:11:20 INFO   kBm=64 kBn=32          46.79us   (auto/this = 1.010x)
+22:11:20 INFO   kBm=64 kBn=64          51.18us   (auto/this = 0.923x)
+22:11:20 INFO   ==> auto= 47.25us  best= 40.94us [kBm=64 kBn=8]  auto/best=1.154x
+22:11:20 INFO --- hp=0.05  T=96  d_out=3072 ---
+22:11:20 INFO   kBm=128 kBn=8          97.12us   (auto/this = 0.528x)
+22:11:20 INFO   kBm=128 kBn=32         51.27us   (auto/this = 1.000x)
+22:11:20 INFO   kBm=128 kBn=64         68.12us   (auto/this = 0.753x)
+22:11:20 INFO   kBm=64 kBn=8           55.88us   (auto/this = 0.917x)
+22:11:20 INFO   kBm=64 kBn=32          53.27us   (auto/this = 0.962x)
+22:11:20 INFO   kBm=64 kBn=64          57.13us   (auto/this = 0.897x)
+22:11:20 INFO   ==> auto= 51.26us  best= 51.27us [kBm=128 kBn=32]  auto/best=1.000x
+22:11:20 INFO --- hp=0.05  T=96  d_out=4096 ---
+22:11:21 INFO   kBm=128 kBn=8          98.16us   (auto/this = 0.517x)
+22:11:21 INFO   kBm=128 kBn=32         50.77us   (auto/this = 1.000x)
+22:11:21 INFO   kBm=128 kBn=64         66.67us   (auto/this = 0.761x)
+22:11:21 INFO   kBm=64 kBn=8           95.22us   (auto/this = 0.533x)
+22:11:21 INFO   kBm=64 kBn=32          53.53us   (auto/this = 0.948x)
+22:11:21 INFO   kBm=64 kBn=64          56.35us   (auto/this = 0.901x)
+22:11:21 INFO   ==> auto= 50.75us  best= 50.77us [kBm=128 kBn=32]  auto/best=1.000x
+22:11:21 INFO --- hp=0.05  T=64  d_out=4096 ---
+22:11:21 INFO   kBm=128 kBn=8          50.45us   (auto/this = 0.991x)
+22:11:21 INFO   kBm=128 kBn=32         49.93us   (auto/this = 1.001x)
+22:11:21 INFO   kBm=128 kBn=64         66.54us   (auto/this = 0.751x)
+22:11:21 INFO   kBm=64 kBn=8           48.99us   (auto/this = 1.020x)
+22:11:21 INFO   kBm=64 kBn=32          50.42us   (auto/this = 0.991x)
+22:11:21 INFO   kBm=64 kBn=64          56.27us   (auto/this = 0.888x)
+22:11:21 INFO   ==> auto= 49.97us  best= 48.99us [kBm=64 kBn=8]  auto/best=1.020x
+22:11:21 INFO --- hp=0.05  T=48  d_out=4096 ---
+22:11:21 INFO   kBm=128 kBn=8          50.30us   (auto/this = 0.993x)
+22:11:21 INFO   kBm=128 kBn=32         49.95us   (auto/this = 1.000x)
+22:11:21 INFO   kBm=128 kBn=64         64.94us   (auto/this = 0.769x)
+22:11:21 INFO   kBm=64 kBn=8           43.27us   (auto/this = 1.154x)
+22:11:21 INFO   kBm=64 kBn=32          50.39us   (auto/this = 0.991x)
+22:11:21 INFO   kBm=64 kBn=64          55.73us   (auto/this = 0.896x)
+22:11:21 INFO   ==> auto= 49.93us  best= 43.27us [kBm=64 kBn=8]  auto/best=1.154x
+22:11:21 INFO Wrote /root/Zip_kernel/cuda_kernel/logs/bench_r45_t96_probe_20260427_221119.json
