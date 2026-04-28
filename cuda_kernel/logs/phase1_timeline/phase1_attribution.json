@@ -1,0 +1,73 @@
+{
+  "timestamp_utc": "2026-04-28T09:29:40.083752Z",
+  "records": [
+    {
+      "tag": "decode_T1_q_2048_2048",
+      "iters": 10,
+      "gemm_path": "fused",
+      "total_us": 118.404,
+      "forward_us": 111.129,
+      "outside_forward_us": 7.274,
+      "dispatcher_us": 12.538,
+      "activation_quant_us": 36.994,
+      "fused_dense_sparse_us": 28.138,
+      "dense_gemm_us": 0.0,
+      "sparse_gemm_us": 0.0,
+      "gemm_us": 28.138,
+      "kernel_body_us": 12.925,
+      "python_glue_us": 33.46,
+      "inter_kernel_gap_us": 64.745
+    },
+    {
+      "tag": "worst_T8_kv_1024_2048",
+      "iters": 10,
+      "gemm_path": "fused",
+      "total_us": 94.539,
+      "forward_us": 89.564,
+      "outside_forward_us": 4.975,
+      "dispatcher_us": 8.882,
+      "activation_quant_us": 24.394,
+      "fused_dense_sparse_us": 19.009,
+      "dense_gemm_us": 0.0,
+      "sparse_gemm_us": 0.0,
+      "gemm_us": 19.009,
+      "kernel_body_us": 16.758,
+      "python_glue_us": 37.279,
+      "inter_kernel_gap_us": 35.526
+    },
+    {
+      "tag": "mid_T128_kv_2560_2048",
+      "iters": 10,
+      "gemm_path": "split",
+      "total_us": 144.419,
+      "forward_us": 139.473,
+      "outside_forward_us": 4.945,
+      "dispatcher_us": 13.12,
+      "activation_quant_us": 25.587,
+      "fused_dense_sparse_us": 0.0,
+      "dense_gemm_us": 17.866,
+      "sparse_gemm_us": 30.436,
+      "gemm_us": 48.302,
+      "kernel_body_us": 64.442,
+      "python_glue_us": 52.465,
+      "inter_kernel_gap_us": 22.567
+    },
+    {
+      "tag": "large_T1024_gu_4096_24576",
+      "iters": 10,
+      "gemm_path": "fused",
+      "total_us": 399.363,
+      "forward_us": 382.676,
+      "outside_forward_us": 16.686,
+      "dispatcher_us": 25.944,
+      "activation_quant_us": 81.354,
+      "fused_dense_sparse_us": 45.29,
+      "dense_gemm_us": 0.0,
+      "sparse_gemm_us": 0.0,
+      "gemm_us": 45.29,
+      "kernel_body_us": 1056.439,
+      "python_glue_us": 230.088,
+      "inter_kernel_gap_us": 0.0
+    }
+  ]
+}
