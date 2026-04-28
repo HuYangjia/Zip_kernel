@@ -1,0 +1,22 @@
+{
+  "shape": {
+    "tag": "decode_T1_kv_2560_2048",
+    "T": 1,
+    "d_in": 2560,
+    "d_out": 2048,
+    "model": "Qwen3-4B",
+    "proj": "kv_proj",
+    "n_hp_blocks": 16
+  },
+  "timings_us": {
+    "base_us": 68.26208114624023,
+    "l2_hot_us": 67.62495994567871,
+    "x_zero_us": 66.93888187408447,
+    "scale_one_us": 67.64544010162354
+  },
+  "deltas_pct": {
+    "l2_hot_delta_pct": 0.9333457021279449,
+    "x_zero_delta_pct": 1.9384103882227468,
+    "scale_one_delta_pct": 0.9033434584211513
+  }
+}

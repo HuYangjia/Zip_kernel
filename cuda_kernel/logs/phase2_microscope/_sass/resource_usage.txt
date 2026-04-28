@@ -1,0 +1,244 @@
+
+Fatbin elf code:
+================
+arch = sm_89
+code version = [1,7]
+host = linux
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:11 CONSTANT[4]:88
+ Function _ZN8hkust_v916activation_quant23activation_quant_kernelILi8EEEvPK6__halfPKiPaPS2_Piiillllll:
+  REG:32 STACK:0 SHARED:304 LOCAL:0 CONSTANT[0]:448 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v916activation_quant23activation_quant_kernelILi4EEEvPK6__halfPKiPaPS2_Piiillllll:
+  REG:32 STACK:0 SHARED:160 LOCAL:0 CONSTANT[0]:448 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v916activation_quant23activation_quant_kernelILi1EEEvPK6__halfPKiPaPS2_Piiillllll:
+  REG:32 STACK:0 SHARED:48 LOCAL:0 CONSTANT[0]:448 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v916activation_quant26activation_quant_kernel_spILi4EEEvPK6__halfPKiPaPS2_Piiillllll:
+  REG:30 STACK:0 SHARED:0 LOCAL:0 CONSTANT[0]:448 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v916activation_quant26activation_quant_kernel_spILi2EEEvPK6__halfPKiPaPS2_Piiillllll:
+  REG:30 STACK:0 SHARED:0 LOCAL:0 CONSTANT[0]:448 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v916activation_quant26activation_quant_kernel_spILi1EEEvPK6__halfPKiPaPS2_Piiillllll:
+  REG:30 STACK:0 SHARED:0 LOCAL:0 CONSTANT[0]:448 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v916activation_quant22act_quant_phase_b_packEPK6__halfPKiS5_PaPS1_Piiillllll:
+  REG:17 STACK:0 SHARED:16 LOCAL:0 CONSTANT[0]:456 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v916activation_quant21act_quant_phase_a_maxEPK6__halfPKiPiiill:
+  REG:12 STACK:0 SHARED:16 LOCAL:0 CONSTANT[0]:400 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_89
+code version = [8,7]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions = -v  
+
+Fatbin elf code:
+================
+arch = sm_89
+code version = [1,7]
+host = linux
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:11 CONSTANT[4]:88
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi128ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:72 STACK:0 SHARED:9296 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi32ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:72 STACK:0 SHARED:9296 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi32ELi128ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:141 STACK:0 SHARED:12608 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi32ELi32ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:141 STACK:0 SHARED:12608 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi64ELi128ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:194 STACK:0 SHARED:17024 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi64ELi32ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:194 STACK:0 SHARED:17024 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi128ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:72 STACK:0 SHARED:17488 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi32ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:72 STACK:0 SHARED:17488 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi32ELi128ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:141 STACK:0 SHARED:20800 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi32ELi32ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:141 STACK:0 SHARED:20800 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi64ELi128ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:194 STACK:0 SHARED:25216 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi64ELi32ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll:
+  REG:194 STACK:0 SHARED:25216 LOCAL:0 CONSTANT[0]:520 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_89
+code version = [8,7]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions = -v  
+
+Fatbin elf code:
+================
+arch = sm_89
+code version = [1,7]
+host = linux
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:11 CONSTANT[4]:88
+ Function _ZN8hkust_v917dense_gemv_decode24dense_gemv_decode_kernelILi8EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiillllllll:
+  REG:34 STACK:0 SHARED:706 LOCAL:0 CONSTANT[0]:488 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_89
+code version = [8,7]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions = -v  
+
+Fatbin elf code:
+================
+arch = sm_89
+code version = [1,7]
+host = linux
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:11 CONSTANT[4]:88
+ Function _ZN8hkust_v920sparse_gemm_mma_int427sparse_gemm_mma_int4_kernelILi64EEEvPKhPKiS5_S3_PK6__halfS8_PS6_iiillllllllll:
+  REG:170 STACK:0 SHARED:24960 LOCAL:0 CONSTANT[0]:504 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v920sparse_gemm_mma_int427sparse_gemm_mma_int4_kernelILi32EEEvPKhPKiS5_S3_PK6__halfS8_PS6_iiillllllllll:
+  REG:130 STACK:0 SHARED:20800 LOCAL:0 CONSTANT[0]:504 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v920sparse_gemm_mma_int427sparse_gemm_mma_int4_kernelILi8EEEvPKhPKiS5_S3_PK6__halfS8_PS6_iiillllllllll:
+  REG:60 STACK:0 SHARED:17680 LOCAL:0 CONSTANT[0]:504 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_89
+code version = [8,7]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions = -v  
+
+Fatbin elf code:
+================
+arch = sm_89
+code version = [1,7]
+host = linux
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:11 CONSTANT[4]:88
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb0ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:86 STACK:0 SHARED:9424 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb1ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:87 STACK:0 SHARED:17616 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb0ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:162 STACK:0 SHARED:12736 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb1ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:146 STACK:0 SHARED:20928 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi64ELb0ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:204 STACK:0 SHARED:17152 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi64ELb1ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:202 STACK:0 SHARED:25344 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb0ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:86 STACK:0 SHARED:17744 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb1ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:87 STACK:0 SHARED:34128 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb0ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:162 STACK:0 SHARED:21056 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb1ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:144 STACK:0 SHARED:37440 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi64ELb0ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:192 STACK:0 SHARED:25472 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi64ELb1ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:202 STACK:0 SHARED:41856 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_89
+code version = [8,7]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions = -v  
+
+Fatbin elf code:
+================
+arch = sm_89
+code version = [1,7]
+host = linux
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:11 CONSTANT[4]:88
+ Function _ZN8hkust_v917fused_gemv_decode24fused_gemv_decode_kernelILi8EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiillllllllllll:
+  REG:39 STACK:0 SHARED:706 LOCAL:0 CONSTANT[0]:544 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_89
+code version = [8,7]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions = -v  
+
+Fatbin elf code:
+================
+arch = sm_89
+code version = [1,7]
+host = linux
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:11 CONSTANT[4]:88
+ Function _ZN8hkust_v917fused_gemv_smallT24fused_gemv_smallT_kernelILi8ELi16EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:56 STACK:0 SHARED:9248 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v917fused_gemv_smallT24fused_gemv_smallT_kernelILi8ELi8EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:48 STACK:0 SHARED:4624 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v917fused_gemv_smallT24fused_gemv_smallT_kernelILi8ELi4EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:44 STACK:0 SHARED:2312 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN8hkust_v917fused_gemv_smallT24fused_gemv_smallT_kernelILi8ELi2EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll:
+  REG:48 STACK:0 SHARED:1156 LOCAL:0 CONSTANT[0]:568 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_89
+code version = [8,7]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions = -v  
+
+Fatbin elf code:
+================
+arch = sm_89
+code version = [1,7]
+host = linux
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:11 CONSTANT[4]:88
+ Function _ZN8hkust_v916fused_quant_gemv23fused_quant_gemv_kernelILi8EEEvPK6__halfPKilPKhllS4_S4_llllS8_S6_S6_lllPS2_liii:
+  REG:40 STACK:0 SHARED:16042 LOCAL:0 CONSTANT[0]:524 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_89
+code version = [8,7]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions = -v  

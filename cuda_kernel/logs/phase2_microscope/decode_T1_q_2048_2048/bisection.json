@@ -1,0 +1,22 @@
+{
+  "shape": {
+    "tag": "decode_T1_q_2048_2048",
+    "T": 1,
+    "d_in": 2048,
+    "d_out": 2048,
+    "model": "Qwen3-1.7B",
+    "proj": "q_proj",
+    "n_hp_blocks": 12
+  },
+  "timings_us": {
+    "base_us": 46.542720794677734,
+    "l2_hot_us": 45.519680976867676,
+    "x_zero_us": 45.49727916717529,
+    "scale_one_us": 45.548157691955566
+  },
+  "deltas_pct": {
+    "l2_hot_delta_pct": 2.198066207438061,
+    "x_zero_delta_pct": 2.2461979223655315,
+    "scale_one_delta_pct": 2.1368821713489052
+  }
+}

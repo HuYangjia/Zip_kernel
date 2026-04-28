@@ -1,0 +1,22 @@
+{
+  "shape": {
+    "tag": "mid_T128_kv_2560_2048",
+    "T": 128,
+    "d_in": 2560,
+    "d_out": 2048,
+    "model": "Qwen3-4B",
+    "proj": "kv_proj",
+    "n_hp_blocks": 16
+  },
+  "timings_us": {
+    "base_us": 86.49439811706543,
+    "l2_hot_us": 85.84192276000977,
+    "x_zero_us": 110.58464050292969,
+    "scale_one_us": 85.92384338378906
+  },
+  "deltas_pct": {
+    "l2_hot_delta_pct": 0.7543556244793731,
+    "x_zero_delta_pct": -27.851794925793268,
+    "scale_one_delta_pct": 0.6596435673257737
+  }
+}

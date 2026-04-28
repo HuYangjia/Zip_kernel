@@ -1,0 +1,22 @@
+{
+  "shape": {
+    "tag": "large_T1024_gu_4096_24576",
+    "T": 1024,
+    "d_in": 4096,
+    "d_out": 24576,
+    "model": "Qwen3-8B",
+    "proj": "gate_up_proj",
+    "n_hp_blocks": 307
+  },
+  "timings_us": {
+    "base_us": 1126.717758178711,
+    "l2_hot_us": 1129.164810180664,
+    "x_zero_us": 1125.9391784667969,
+    "scale_one_us": 1127.8233337402344
+  },
+  "deltas_pct": {
+    "l2_hot_delta_pct": -0.21718411591459033,
+    "x_zero_delta_pct": 0.06910157457468337,
+    "scale_one_delta_pct": -0.09812355876156166
+  }
+}

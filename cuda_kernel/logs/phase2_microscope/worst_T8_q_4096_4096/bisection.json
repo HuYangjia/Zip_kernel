@@ -1,0 +1,22 @@
+{
+  "shape": {
+    "tag": "worst_T8_q_4096_4096",
+    "T": 8,
+    "d_in": 4096,
+    "d_out": 4096,
+    "model": "Qwen3-8B",
+    "proj": "q_proj",
+    "n_hp_blocks": 51
+  },
+  "timings_us": {
+    "base_us": 82.73728370666504,
+    "l2_hot_us": 81.05855941772461,
+    "x_zero_us": 80.04608154296875,
+    "scale_one_us": 80.29184341430664
+  },
+  "deltas_pct": {
+    "l2_hot_delta_pct": 2.0289816316573095,
+    "x_zero_delta_pct": 3.2527079003918216,
+    "scale_one_delta_pct": 2.955669056079251
+  }
+}

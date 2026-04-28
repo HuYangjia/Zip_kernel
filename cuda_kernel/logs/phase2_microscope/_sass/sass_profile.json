@@ -1,0 +1,1199 @@
+{
+  "so_path": "/root/.cache/hkust_v9_cuda/hkust_v9_cuda.so",
+  "kernels": [
+    {
+      "name": "_ZN8hkust_v916activation_quant21act_quant_phase_a_maxEPK6__halfPKiPiiill",
+      "regs": 12,
+      "stack": 0,
+      "shared": 16,
+      "local": 0,
+      "total_insts": 80,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 14,
+        "INT_ALU": 7,
+        "LDG": 2,
+        "STG": 0,
+        "LDS": 1,
+        "STS": 0,
+        "BAR": 1,
+        "SYNC": 0,
+        "BRANCH": 2,
+        "CVT": 0,
+        "MOV": 3
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.175,
+      "ld_fraction": 0.0375,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v916activation_quant22act_quant_phase_b_packEPK6__halfPKiS5_PaPS1_Piiillllll",
+      "regs": 17,
+      "stack": 0,
+      "shared": 16,
+      "local": 0,
+      "total_insts": 208,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 63,
+        "INT_ALU": 49,
+        "LDG": 3,
+        "STG": 2,
+        "LDS": 1,
+        "STS": 0,
+        "BAR": 1,
+        "SYNC": 2,
+        "BRANCH": 9,
+        "CVT": 0,
+        "MOV": 6
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.30288461538461536,
+      "ld_fraction": 0.019230769230769232,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v916activation_quant23activation_quant_kernelILi1EEEvPK6__halfPKiPaPS2_Piiillllll",
+      "regs": 32,
+      "stack": 0,
+      "shared": 48,
+      "local": 0,
+      "total_insts": 584,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 130,
+        "INT_ALU": 108,
+        "LDG": 8,
+        "STG": 6,
+        "LDS": 8,
+        "STS": 2,
+        "BAR": 8,
+        "SYNC": 28,
+        "BRANCH": 14,
+        "CVT": 0,
+        "MOV": 11
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.2226027397260274,
+      "ld_fraction": 0.0273972602739726,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v916activation_quant23activation_quant_kernelILi4EEEvPK6__halfPKiPaPS2_Piiillllll",
+      "regs": 32,
+      "stack": 0,
+      "shared": 160,
+      "local": 0,
+      "total_insts": 592,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 132,
+        "INT_ALU": 105,
+        "LDG": 8,
+        "STG": 6,
+        "LDS": 14,
+        "STS": 2,
+        "BAR": 8,
+        "SYNC": 28,
+        "BRANCH": 14,
+        "CVT": 0,
+        "MOV": 11
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.22297297297297297,
+      "ld_fraction": 0.037162162162162164,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v916activation_quant23activation_quant_kernelILi8EEEvPK6__halfPKiPaPS2_Piiillllll",
+      "regs": 32,
+      "stack": 0,
+      "shared": 304,
+      "local": 0,
+      "total_insts": 584,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 132,
+        "INT_ALU": 105,
+        "LDG": 8,
+        "STG": 6,
+        "LDS": 8,
+        "STS": 2,
+        "BAR": 8,
+        "SYNC": 28,
+        "BRANCH": 14,
+        "CVT": 0,
+        "MOV": 13
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.22602739726027396,
+      "ld_fraction": 0.0273972602739726,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v916activation_quant26activation_quant_kernel_spILi1EEEvPK6__halfPKiPaPS2_Piiillllll",
+      "regs": 30,
+      "stack": 0,
+      "shared": 0,
+      "local": 0,
+      "total_insts": 544,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 125,
+        "INT_ALU": 102,
+        "LDG": 5,
+        "STG": 6,
+        "LDS": 21,
+        "STS": 7,
+        "BAR": 8,
+        "SYNC": 32,
+        "BRANCH": 9,
+        "CVT": 6,
+        "MOV": 8
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.22977941176470587,
+      "ld_fraction": 0.04779411764705882,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v916activation_quant26activation_quant_kernel_spILi2EEEvPK6__halfPKiPaPS2_Piiillllll",
+      "regs": 30,
+      "stack": 0,
+      "shared": 0,
+      "local": 0,
+      "total_insts": 544,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 125,
+        "INT_ALU": 101,
+        "LDG": 5,
+        "STG": 6,
+        "LDS": 21,
+        "STS": 7,
+        "BAR": 8,
+        "SYNC": 32,
+        "BRANCH": 9,
+        "CVT": 6,
+        "MOV": 10
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.22977941176470587,
+      "ld_fraction": 0.04779411764705882,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v916activation_quant26activation_quant_kernel_spILi4EEEvPK6__halfPKiPaPS2_Piiillllll",
+      "regs": 30,
+      "stack": 0,
+      "shared": 0,
+      "local": 0,
+      "total_insts": 536,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 125,
+        "INT_ALU": 101,
+        "LDG": 5,
+        "STG": 6,
+        "LDS": 13,
+        "STS": 7,
+        "BAR": 8,
+        "SYNC": 32,
+        "BRANCH": 9,
+        "CVT": 6,
+        "MOV": 10
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.2332089552238806,
+      "ld_fraction": 0.033582089552238806,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v916fused_quant_gemv23fused_quant_gemv_kernelILi8EEEvPK6__halfPKilPKhllS4_S4_llllS8_S6_S6_lllPS2_liii",
+      "regs": 40,
+      "stack": 0,
+      "shared": 16042,
+      "local": 0,
+      "total_insts": 1760,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 577,
+        "INT_ALU": 367,
+        "LDG": 93,
+        "STG": 1,
+        "LDS": 14,
+        "STS": 12,
+        "BAR": 3,
+        "SYNC": 34,
+        "BRANCH": 30,
+        "CVT": 16,
+        "MOV": 27
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.32784090909090907,
+      "ld_fraction": 0.06079545454545455,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v917dense_gemv_decode24dense_gemv_decode_kernelILi8EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiillllllll",
+      "regs": 34,
+      "stack": 0,
+      "shared": 706,
+      "local": 0,
+      "total_insts": 176,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 49,
+        "INT_ALU": 44,
+        "LDG": 1,
+        "STG": 1,
+        "LDS": 2,
+        "STS": 0,
+        "BAR": 3,
+        "SYNC": 0,
+        "BRANCH": 2,
+        "CVT": 0,
+        "MOV": 5
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.2784090909090909,
+      "ld_fraction": 0.017045454545454544,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v917fused_gemv_decode24fused_gemv_decode_kernelILi8EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiillllllllllll",
+      "regs": 39,
+      "stack": 0,
+      "shared": 706,
+      "local": 0,
+      "total_insts": 504,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 141,
+        "INT_ALU": 141,
+        "LDG": 9,
+        "STG": 1,
+        "LDS": 5,
+        "STS": 0,
+        "BAR": 9,
+        "SYNC": 0,
+        "BRANCH": 3,
+        "CVT": 0,
+        "MOV": 10
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.27976190476190477,
+      "ld_fraction": 0.027777777777777776,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v917fused_gemv_smallT24fused_gemv_smallT_kernelILi8ELi16EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 56,
+      "stack": 0,
+      "shared": 9248,
+      "local": 0,
+      "total_insts": 2184,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 730,
+        "INT_ALU": 624,
+        "LDG": 26,
+        "STG": 16,
+        "LDS": 48,
+        "STS": 18,
+        "BAR": 5,
+        "SYNC": 14,
+        "BRANCH": 4,
+        "CVT": 6,
+        "MOV": 12
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.3342490842490842,
+      "ld_fraction": 0.03388278388278388,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v917fused_gemv_smallT24fused_gemv_smallT_kernelILi8ELi2EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 48,
+      "stack": 0,
+      "shared": 1156,
+      "local": 0,
+      "total_insts": 952,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 348,
+        "INT_ALU": 269,
+        "LDG": 26,
+        "STG": 2,
+        "LDS": 6,
+        "STS": 18,
+        "BAR": 5,
+        "SYNC": 14,
+        "BRANCH": 4,
+        "CVT": 6,
+        "MOV": 16
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.36554621848739494,
+      "ld_fraction": 0.03361344537815126,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v917fused_gemv_smallT24fused_gemv_smallT_kernelILi8ELi4EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 44,
+      "stack": 0,
+      "shared": 2312,
+      "local": 0,
+      "total_insts": 1144,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 403,
+        "INT_ALU": 319,
+        "LDG": 26,
+        "STG": 4,
+        "LDS": 12,
+        "STS": 18,
+        "BAR": 5,
+        "SYNC": 14,
+        "BRANCH": 4,
+        "CVT": 6,
+        "MOV": 14
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.3522727272727273,
+      "ld_fraction": 0.033216783216783216,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v917fused_gemv_smallT24fused_gemv_smallT_kernelILi8ELi8EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 48,
+      "stack": 0,
+      "shared": 4624,
+      "local": 0,
+      "total_insts": 1480,
+      "counts": {
+        "TC_MMA": 0,
+        "CUDA_FMA": 515,
+        "INT_ALU": 428,
+        "LDG": 26,
+        "STG": 8,
+        "LDS": 24,
+        "STS": 18,
+        "BAR": 5,
+        "SYNC": 14,
+        "BRANCH": 4,
+        "CVT": 6,
+        "MOV": 14
+      },
+      "tc_fraction": 0.0,
+      "fma_fraction": 0.34797297297297297,
+      "ld_fraction": 0.033783783783783786,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi32ELi128ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 141,
+      "stack": 0,
+      "shared": 20800,
+      "local": 0,
+      "total_insts": 2672,
+      "counts": {
+        "TC_MMA": 16,
+        "CUDA_FMA": 733,
+        "INT_ALU": 566,
+        "LDG": 25,
+        "STG": 32,
+        "LDS": 24,
+        "STS": 63,
+        "BAR": 3,
+        "SYNC": 118,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 75
+      },
+      "tc_fraction": 0.005988023952095809,
+      "fma_fraction": 0.27432634730538924,
+      "ld_fraction": 0.018338323353293412,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi32ELi128ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 141,
+      "stack": 0,
+      "shared": 12608,
+      "local": 0,
+      "total_insts": 2672,
+      "counts": {
+        "TC_MMA": 16,
+        "CUDA_FMA": 733,
+        "INT_ALU": 566,
+        "LDG": 25,
+        "STG": 32,
+        "LDS": 24,
+        "STS": 63,
+        "BAR": 3,
+        "SYNC": 118,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 75
+      },
+      "tc_fraction": 0.005988023952095809,
+      "fma_fraction": 0.27432634730538924,
+      "ld_fraction": 0.018338323353293412,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi32ELi32ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 141,
+      "stack": 0,
+      "shared": 20800,
+      "local": 0,
+      "total_insts": 2672,
+      "counts": {
+        "TC_MMA": 16,
+        "CUDA_FMA": 733,
+        "INT_ALU": 566,
+        "LDG": 25,
+        "STG": 32,
+        "LDS": 24,
+        "STS": 63,
+        "BAR": 3,
+        "SYNC": 118,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 75
+      },
+      "tc_fraction": 0.005988023952095809,
+      "fma_fraction": 0.27432634730538924,
+      "ld_fraction": 0.018338323353293412,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi32ELi32ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 141,
+      "stack": 0,
+      "shared": 12608,
+      "local": 0,
+      "total_insts": 2672,
+      "counts": {
+        "TC_MMA": 16,
+        "CUDA_FMA": 733,
+        "INT_ALU": 566,
+        "LDG": 25,
+        "STG": 32,
+        "LDS": 24,
+        "STS": 63,
+        "BAR": 3,
+        "SYNC": 118,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 75
+      },
+      "tc_fraction": 0.005988023952095809,
+      "fma_fraction": 0.27432634730538924,
+      "ld_fraction": 0.018338323353293412,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi64ELi128ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 194,
+      "stack": 0,
+      "shared": 25216,
+      "local": 0,
+      "total_insts": 3616,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 1057,
+        "INT_ALU": 745,
+        "LDG": 25,
+        "STG": 64,
+        "LDS": 48,
+        "STS": 63,
+        "BAR": 3,
+        "SYNC": 182,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 37
+      },
+      "tc_fraction": 0.008849557522123894,
+      "fma_fraction": 0.2923119469026549,
+      "ld_fraction": 0.020188053097345133,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi64ELi128ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 194,
+      "stack": 0,
+      "shared": 17024,
+      "local": 0,
+      "total_insts": 3616,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 1058,
+        "INT_ALU": 744,
+        "LDG": 25,
+        "STG": 64,
+        "LDS": 48,
+        "STS": 63,
+        "BAR": 3,
+        "SYNC": 182,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 38
+      },
+      "tc_fraction": 0.008849557522123894,
+      "fma_fraction": 0.29258849557522126,
+      "ld_fraction": 0.020188053097345133,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi64ELi32ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 194,
+      "stack": 0,
+      "shared": 25216,
+      "local": 0,
+      "total_insts": 3616,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 1057,
+        "INT_ALU": 745,
+        "LDG": 25,
+        "STG": 64,
+        "LDS": 48,
+        "STS": 63,
+        "BAR": 3,
+        "SYNC": 182,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 37
+      },
+      "tc_fraction": 0.008849557522123894,
+      "fma_fraction": 0.2923119469026549,
+      "ld_fraction": 0.020188053097345133,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi64ELi32ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 194,
+      "stack": 0,
+      "shared": 17024,
+      "local": 0,
+      "total_insts": 3616,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 1058,
+        "INT_ALU": 744,
+        "LDG": 25,
+        "STG": 64,
+        "LDS": 48,
+        "STS": 63,
+        "BAR": 3,
+        "SYNC": 182,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 38
+      },
+      "tc_fraction": 0.008849557522123894,
+      "fma_fraction": 0.29258849557522126,
+      "ld_fraction": 0.020188053097345133,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi128ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 72,
+      "stack": 0,
+      "shared": 17488,
+      "local": 0,
+      "total_insts": 1432,
+      "counts": {
+        "TC_MMA": 4,
+        "CUDA_FMA": 357,
+        "INT_ALU": 265,
+        "LDG": 13,
+        "STG": 8,
+        "LDS": 6,
+        "STS": 35,
+        "BAR": 3,
+        "SYNC": 54,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 32
+      },
+      "tc_fraction": 0.002793296089385475,
+      "fma_fraction": 0.24930167597765363,
+      "ld_fraction": 0.013268156424581005,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi128ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 72,
+      "stack": 0,
+      "shared": 9296,
+      "local": 0,
+      "total_insts": 1432,
+      "counts": {
+        "TC_MMA": 4,
+        "CUDA_FMA": 357,
+        "INT_ALU": 265,
+        "LDG": 13,
+        "STG": 8,
+        "LDS": 6,
+        "STS": 35,
+        "BAR": 3,
+        "SYNC": 54,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 32
+      },
+      "tc_fraction": 0.002793296089385475,
+      "fma_fraction": 0.24930167597765363,
+      "ld_fraction": 0.013268156424581005,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi32ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 72,
+      "stack": 0,
+      "shared": 17488,
+      "local": 0,
+      "total_insts": 1432,
+      "counts": {
+        "TC_MMA": 4,
+        "CUDA_FMA": 357,
+        "INT_ALU": 265,
+        "LDG": 13,
+        "STG": 8,
+        "LDS": 6,
+        "STS": 35,
+        "BAR": 3,
+        "SYNC": 54,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 32
+      },
+      "tc_fraction": 0.002793296089385475,
+      "fma_fraction": 0.24930167597765363,
+      "ld_fraction": 0.013268156424581005,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi32ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
+      "regs": 72,
+      "stack": 0,
+      "shared": 9296,
+      "local": 0,
+      "total_insts": 1432,
+      "counts": {
+        "TC_MMA": 4,
+        "CUDA_FMA": 357,
+        "INT_ALU": 265,
+        "LDG": 13,
+        "STG": 8,
+        "LDS": 6,
+        "STS": 35,
+        "BAR": 3,
+        "SYNC": 54,
+        "BRANCH": 5,
+        "CVT": 6,
+        "MOV": 32
+      },
+      "tc_fraction": 0.002793296089385475,
+      "fma_fraction": 0.24930167597765363,
+      "ld_fraction": 0.013268156424581005,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v920sparse_gemm_mma_int427sparse_gemm_mma_int4_kernelILi32EEEvPKhPKiS5_S3_PK6__halfS8_PS6_iiillllllllll",
+      "regs": 130,
+      "stack": 0,
+      "shared": 20800,
+      "local": 0,
+      "total_insts": 1584,
+      "counts": {
+        "TC_MMA": 16,
+        "CUDA_FMA": 375,
+        "INT_ALU": 356,
+        "LDG": 14,
+        "STG": 32,
+        "LDS": 16,
+        "STS": 22,
+        "BAR": 3,
+        "SYNC": 74,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 75
+      },
+      "tc_fraction": 0.010101010101010102,
+      "fma_fraction": 0.23674242424242425,
+      "ld_fraction": 0.01893939393939394,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v920sparse_gemm_mma_int427sparse_gemm_mma_int4_kernelILi64EEEvPKhPKiS5_S3_PK6__halfS8_PS6_iiillllllllll",
+      "regs": 170,
+      "stack": 0,
+      "shared": 24960,
+      "local": 0,
+      "total_insts": 2488,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 605,
+        "INT_ALU": 500,
+        "LDG": 14,
+        "STG": 64,
+        "LDS": 32,
+        "STS": 22,
+        "BAR": 3,
+        "SYNC": 138,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 62
+      },
+      "tc_fraction": 0.012861736334405145,
+      "fma_fraction": 0.24316720257234728,
+      "ld_fraction": 0.018488745980707395,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v920sparse_gemm_mma_int427sparse_gemm_mma_int4_kernelILi8EEEvPKhPKiS5_S3_PK6__halfS8_PS6_iiillllllllll",
+      "regs": 60,
+      "stack": 0,
+      "shared": 17680,
+      "local": 0,
+      "total_insts": 736,
+      "counts": {
+        "TC_MMA": 4,
+        "CUDA_FMA": 174,
+        "INT_ALU": 155,
+        "LDG": 14,
+        "STG": 8,
+        "LDS": 4,
+        "STS": 22,
+        "BAR": 3,
+        "SYNC": 26,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 10
+      },
+      "tc_fraction": 0.005434782608695652,
+      "fma_fraction": 0.23641304347826086,
+      "ld_fraction": 0.024456521739130436,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb0ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 162,
+      "stack": 0,
+      "shared": 21056,
+      "local": 0,
+      "total_insts": 2880,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 710,
+        "INT_ALU": 611,
+        "LDG": 24,
+        "STG": 32,
+        "LDS": 40,
+        "STS": 70,
+        "BAR": 5,
+        "SYNC": 107,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 104
+      },
+      "tc_fraction": 0.011111111111111112,
+      "fma_fraction": 0.2465277777777778,
+      "ld_fraction": 0.022222222222222223,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb0ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 162,
+      "stack": 0,
+      "shared": 12736,
+      "local": 0,
+      "total_insts": 2880,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 705,
+        "INT_ALU": 621,
+        "LDG": 24,
+        "STG": 32,
+        "LDS": 40,
+        "STS": 70,
+        "BAR": 5,
+        "SYNC": 107,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 102
+      },
+      "tc_fraction": 0.011111111111111112,
+      "fma_fraction": 0.24479166666666666,
+      "ld_fraction": 0.022222222222222223,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb1ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 144,
+      "stack": 0,
+      "shared": 37440,
+      "local": 0,
+      "total_insts": 3864,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 1080,
+        "INT_ALU": 824,
+        "LDG": 52,
+        "STG": 32,
+        "LDS": 40,
+        "STS": 98,
+        "BAR": 6,
+        "SYNC": 145,
+        "BRANCH": 5,
+        "CVT": 12,
+        "MOV": 127
+      },
+      "tc_fraction": 0.008281573498964804,
+      "fma_fraction": 0.2795031055900621,
+      "ld_fraction": 0.023809523809523808,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb1ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 146,
+      "stack": 0,
+      "shared": 20928,
+      "local": 0,
+      "total_insts": 3872,
+      "counts": {
+        "TC_MMA": 32,
+        "CUDA_FMA": 1089,
+        "INT_ALU": 830,
+        "LDG": 52,
+        "STG": 32,
+        "LDS": 40,
+        "STS": 98,
+        "BAR": 6,
+        "SYNC": 145,
+        "BRANCH": 5,
+        "CVT": 12,
+        "MOV": 127
+      },
+      "tc_fraction": 0.008264462809917356,
+      "fma_fraction": 0.28125,
+      "ld_fraction": 0.023760330578512397,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi64ELb0ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 192,
+      "stack": 0,
+      "shared": 25472,
+      "local": 0,
+      "total_insts": 3840,
+      "counts": {
+        "TC_MMA": 64,
+        "CUDA_FMA": 924,
+        "INT_ALU": 796,
+        "LDG": 28,
+        "STG": 64,
+        "LDS": 80,
+        "STS": 74,
+        "BAR": 5,
+        "SYNC": 173,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 71
+      },
+      "tc_fraction": 0.016666666666666666,
+      "fma_fraction": 0.240625,
+      "ld_fraction": 0.028125,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi64ELb0ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 204,
+      "stack": 0,
+      "shared": 17152,
+      "local": 0,
+      "total_insts": 3856,
+      "counts": {
+        "TC_MMA": 64,
+        "CUDA_FMA": 932,
+        "INT_ALU": 807,
+        "LDG": 28,
+        "STG": 64,
+        "LDS": 80,
+        "STS": 74,
+        "BAR": 5,
+        "SYNC": 173,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 86
+      },
+      "tc_fraction": 0.016597510373443983,
+      "fma_fraction": 0.241701244813278,
+      "ld_fraction": 0.028008298755186723,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi64ELb1ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 202,
+      "stack": 0,
+      "shared": 41856,
+      "local": 0,
+      "total_insts": 5000,
+      "counts": {
+        "TC_MMA": 64,
+        "CUDA_FMA": 1408,
+        "INT_ALU": 1052,
+        "LDG": 52,
+        "STG": 64,
+        "LDS": 80,
+        "STS": 98,
+        "BAR": 6,
+        "SYNC": 209,
+        "BRANCH": 5,
+        "CVT": 12,
+        "MOV": 81
+      },
+      "tc_fraction": 0.0128,
+      "fma_fraction": 0.2816,
+      "ld_fraction": 0.0264,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi64ELb1ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 202,
+      "stack": 0,
+      "shared": 25344,
+      "local": 0,
+      "total_insts": 5000,
+      "counts": {
+        "TC_MMA": 64,
+        "CUDA_FMA": 1413,
+        "INT_ALU": 1064,
+        "LDG": 52,
+        "STG": 64,
+        "LDS": 80,
+        "STS": 98,
+        "BAR": 6,
+        "SYNC": 208,
+        "BRANCH": 5,
+        "CVT": 12,
+        "MOV": 93
+      },
+      "tc_fraction": 0.0128,
+      "fma_fraction": 0.2826,
+      "ld_fraction": 0.0264,
+      "verdicts": [
+        "tc_underutil",
+        "high_reg_pressure"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb0ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 86,
+      "stack": 0,
+      "shared": 17744,
+      "local": 0,
+      "total_insts": 1552,
+      "counts": {
+        "TC_MMA": 8,
+        "CUDA_FMA": 323,
+        "INT_ALU": 317,
+        "LDG": 16,
+        "STG": 8,
+        "LDS": 10,
+        "STS": 46,
+        "BAR": 5,
+        "SYNC": 47,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 32
+      },
+      "tc_fraction": 0.005154639175257732,
+      "fma_fraction": 0.20811855670103094,
+      "ld_fraction": 0.01675257731958763,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb0ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 86,
+      "stack": 0,
+      "shared": 9424,
+      "local": 0,
+      "total_insts": 1560,
+      "counts": {
+        "TC_MMA": 8,
+        "CUDA_FMA": 325,
+        "INT_ALU": 319,
+        "LDG": 16,
+        "STG": 8,
+        "LDS": 10,
+        "STS": 46,
+        "BAR": 5,
+        "SYNC": 47,
+        "BRANCH": 4,
+        "CVT": 0,
+        "MOV": 34
+      },
+      "tc_fraction": 0.005128205128205128,
+      "fma_fraction": 0.20833333333333334,
+      "ld_fraction": 0.016666666666666666,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb1ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 87,
+      "stack": 0,
+      "shared": 34128,
+      "local": 0,
+      "total_insts": 2424,
+      "counts": {
+        "TC_MMA": 8,
+        "CUDA_FMA": 632,
+        "INT_ALU": 470,
+        "LDG": 40,
+        "STG": 8,
+        "LDS": 10,
+        "STS": 70,
+        "BAR": 6,
+        "SYNC": 81,
+        "BRANCH": 5,
+        "CVT": 12,
+        "MOV": 53
+      },
+      "tc_fraction": 0.0033003300330033004,
+      "fma_fraction": 0.2607260726072607,
+      "ld_fraction": 0.020627062706270627,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    },
+    {
+      "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb1ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
+      "regs": 87,
+      "stack": 0,
+      "shared": 17616,
+      "local": 0,
+      "total_insts": 2424,
+      "counts": {
+        "TC_MMA": 8,
+        "CUDA_FMA": 638,
+        "INT_ALU": 482,
+        "LDG": 40,
+        "STG": 8,
+        "LDS": 10,
+        "STS": 70,
+        "BAR": 6,
+        "SYNC": 81,
+        "BRANCH": 5,
+        "CVT": 12,
+        "MOV": 49
+      },
+      "tc_fraction": 0.0033003300330033004,
+      "fma_fraction": 0.2632013201320132,
+      "ld_fraction": 0.020627062706270627,
+      "verdicts": [
+        "tc_underutil"
+      ]
+    }
+  ]
+}

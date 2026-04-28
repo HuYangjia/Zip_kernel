@@ -1,0 +1,22 @@
+{
+  "shape": {
+    "tag": "prefill_T1024_down_3072_1024",
+    "T": 1024,
+    "d_in": 3072,
+    "d_out": 1024,
+    "model": "Qwen3-0.6B",
+    "proj": "down_proj",
+    "n_hp_blocks": 9
+  },
+  "timings_us": {
+    "base_us": 82.4396800994873,
+    "l2_hot_us": 81.37824058532715,
+    "x_zero_us": 81.8073558807373,
+    "scale_one_us": 79.98239994049072
+  },
+  "deltas_pct": {
+    "l2_hot_delta_pct": 1.2875347319145618,
+    "x_zero_delta_pct": 0.7670144013015553,
+    "scale_one_delta_pct": 2.9807007451158993
+  }
+}
