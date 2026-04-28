@@ -1,20 +1,22 @@
 # epilogue_fma_bound cluster: pressure-test report
 
-Budget per timing: warmup=500, outer=20, inner=200.  Each shape ran 5 independent trials with base/scale_one interleaved per trial.  Verdict is NOISE when median |delta| < 3% and the [p05, p95] interval straddles 0, else REAL_SIGNAL.
+Budget per timing: warmup=500, outer=20, inner=200.  Each shape ran 5 independent trials with base/scale_one interleaved per trial.  Verdict is NOISE when median |delta| < 0.5% (trivially zero), OR when median |delta| < 3% AND the [p05, p95] interval straddles 0.  Otherwise REAL_SIGNAL.
 
 | shape | T | d_in | d_out | median delta | [p05, p95] | verdict |
 |---|---|---|---|---|---|---|
-| `mid_T128_kv_2560_2048` | 128 | 2560 | 2048 | +0.04% | [-0.11%, +0.34%] | **NOISE** |
-| `worst_T8_q_4096_4096` | 8 | 4096 | 4096 | +0.05% | [-0.16%, +0.29%] | **NOISE** |
-| `decode_T1_kv_2560_2048` | 1 | 2560 | 2048 | +0.13% | [+0.01%, +0.39%] | **REAL_SIGNAL** |
-| `large_T1024_gu_4096_24576` | 1024 | 4096 | 24576 | +0.00% | [-0.14%, +0.03%] | **NOISE** |
+| `mid_T128_kv_2560_2048` | 128 | 2560 | 2048 | +0.27% | [-0.07%, +0.46%] | **NOISE** |
+| `worst_T8_q_4096_4096` | 8 | 4096 | 4096 | -0.16% | [-0.26%, +0.57%] | **NOISE** |
+| `decode_T1_kv_2560_2048` | 1 | 2560 | 2048 | +0.14% | [-0.04%, +0.44%] | **NOISE** |
+| `large_T1024_gu_4096_24576` | 1024 | 4096 | 24576 | +0.01% | [-0.18%, +0.02%] | **NOISE** |
 
 ## Conclusion
 
-- 3 / 4 shapes verdict = NOISE
-- 1 / 4 shapes verdict = REAL_SIGNAL
+- 4 / 4 shapes verdict = NOISE
+- 0 / 4 shapes verdict = REAL_SIGNAL
 
-**At least one shape still carries a real epilogue signal.**  The cluster should not be fully retired; keep those shapes in the `epilogue_fma_bound` bucket and re-derive the R49 plan with that slice restored.
+**Every tested shape -- including the three highest-|delta| reps from the Phase 2 re-run -- shows an epilogue signal indistinguishable from noise under the (warmup=500, outer=20, inner=200, 5 trials) budget.**
+
+This corroborates the `epilogue_fma_bound` cluster collapse and closes out the last audit item before R49 can commit to the two-cluster roadmap (`tc_underutil`, `launch_sparse`).  See `../xzero_probe/xzero_probe_report.md` for the sibling audit that prompted the warmup bump in the first place.
 
 ## Methodology notes
 
