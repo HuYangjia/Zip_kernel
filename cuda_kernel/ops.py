@@ -253,14 +253,15 @@ def dense_gemv_cuda_decode(
 def dense_gemm_cuda(
     W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
 ) -> torch.Tensor:
-    d_in = W_low_packed.shape[1] * 2
-    if X_s4.shape[0] == 1 and _can_use_decode_gemv_for_din(d_in):
-        return dense_gemv_cuda_decode(
+    with _nvtx_range("cuda.dense_gemm"):
+        d_in = W_low_packed.shape[1] * 2
+        if X_s4.shape[0] == 1 and _can_use_decode_gemv_for_din(d_in):
+            return dense_gemv_cuda_decode(
+                W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
+            )
+        return dense_gemm_cuda_int4(
             W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
         )
-    return dense_gemm_cuda_int4(
-        W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -307,15 +308,16 @@ def sparse_gemm_cuda_int4(
     X_s4, scale_u4, scale_x, d_out, d_in,
 ) -> torch.Tensor:
     """BSR sparse SINT4 x SINT4 GEMM via mma.m16n8k64.s4 (CUDA, SM89)."""
-    prepared = _prepare_sparse_args(
-        W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-        X_s4, scale_u4, scale_x, d_out, d_in
-    )
-    args, Y_high = prepared
-    if args is None:
+    with _nvtx_range("cuda.sparse_gemm"):
+        prepared = _prepare_sparse_args(
+            W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+            X_s4, scale_u4, scale_x, d_out, d_in
+        )
+        args, Y_high = prepared
+        if args is None:
+            return Y_high
+        _ext.sparse_gemm_mma_int4_launch(*args)
         return Y_high
-    _ext.sparse_gemm_mma_int4_launch(*args)
-    return Y_high
 
 
 sparse_gemm_cuda = sparse_gemm_cuda_int4

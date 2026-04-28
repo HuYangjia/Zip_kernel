@@ -57,6 +57,8 @@ NAMED_RANGES = (
     "dispatcher.select_impl",
     "cuda.activation_quant",
     "cuda.fused_dense_sparse",
+    "cuda.dense_gemm",
+    "cuda.sparse_gemm",
 )
 
 
@@ -195,14 +197,21 @@ def _analyse_shape(shape: PhaseShape, out_dir: Path) -> Optional[Dict[str, Any]]
     dispatcher_us = _mean_us(ranges_ns["dispatcher.select_impl"])
     quant_us = _mean_us(ranges_ns["cuda.activation_quant"])
     fused_us = _mean_us(ranges_ns["cuda.fused_dense_sparse"])
+    dense_us = _mean_us(ranges_ns["cuda.dense_gemm"])
+    sparse_us = _mean_us(ranges_ns["cuda.sparse_gemm"])
     kernel_body_us = _mean_us(kernel_ns)
+
+    # Determine which GEMM path was active:
+    # fused path: fused_us > 0; split path: dense_us + sparse_us > 0.
+    gemm_us = fused_us if fused_us > 0 else (dense_us + sparse_us)
+    path = "fused" if fused_us > 0 else "split"
 
     # Outside-of-forward (the iter window includes 1 torch.cuda.synchronize()
     # after the forward and the NVTX push/pop themselves).
     outside_forward_us = max(0.0, total_us - forward_us)
 
     # Inside forward: forward = named_inner_sum + (host_python_glue + gaps).
-    inner_named_us = quant_us + fused_us + dispatcher_us
+    inner_named_us = quant_us + gemm_us + dispatcher_us
     python_glue_us = max(0.0, forward_us - inner_named_us)
     # Inter-kernel gap on the GPU timeline:
     inter_kernel_gap_us = max(0.0, forward_us - kernel_body_us - python_glue_us)
@@ -210,12 +219,16 @@ def _analyse_shape(shape: PhaseShape, out_dir: Path) -> Optional[Dict[str, Any]]
     entry = {
         "tag": shape.tag,
         "iters": n,
+        "gemm_path": path,
         "total_us": round(total_us, 3),
         "forward_us": round(forward_us, 3),
         "outside_forward_us": round(outside_forward_us, 3),
         "dispatcher_us": round(dispatcher_us, 3),
         "activation_quant_us": round(quant_us, 3),
         "fused_dense_sparse_us": round(fused_us, 3),
+        "dense_gemm_us": round(dense_us, 3),
+        "sparse_gemm_us": round(sparse_us, 3),
+        "gemm_us": round(gemm_us, 3),
         "kernel_body_us": round(kernel_body_us, 3),
         "python_glue_us": round(python_glue_us, 3),
         "inter_kernel_gap_us": round(inter_kernel_gap_us, 3),
@@ -261,24 +274,28 @@ def _render_md(
     lines.append("## 1. Attribution Table (per forward, microseconds)")
     lines.append("")
     lines.append(
-        "| shape | T | forward | disp | quant | fused | kernel_body | "
+        "| shape | T | path | forward | disp | quant | fused | dense | sparse | kernel_body | "
         "python_glue | inter_kernel_gap |"
     )
     lines.append(
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     )
     for r in records:
         if "error" in r:
-            lines.append(f"| {r['tag']} | — | **{r['error']}** | | | | | | |")
+            lines.append(f"| {r['tag']} | — | — | **{r['error']}** | | | | | | | | |")
             continue
         shape = next((s for s in PHASE1_SHAPES if s.tag == r["tag"]), None)
         T = shape.T if shape else "?"
         lines.append(
-            "| {tag} | {T} | {fwd:.2f} | {d:.2f} | {q:.2f} | {f:.2f} | "
-            "{k:.2f} | {glue:.2f} | {gap:.2f} |".format(
-                tag=r["tag"], T=T, fwd=r["forward_us"],
+            "| {tag} | {T} | {path} | {fwd:.2f} | {d:.2f} | {q:.2f} | {f:.2f} | "
+            "{dn:.2f} | {sp:.2f} | {k:.2f} | {glue:.2f} | {gap:.2f} |".format(
+                tag=r["tag"], T=T, path=r.get("gemm_path", "?"),
+                fwd=r["forward_us"],
                 d=r["dispatcher_us"], q=r["activation_quant_us"],
-                f=r["fused_dense_sparse_us"], k=r["kernel_body_us"],
+                f=r["fused_dense_sparse_us"],
+                dn=r.get("dense_gemm_us", 0.0),
+                sp=r.get("sparse_gemm_us", 0.0),
+                k=r["kernel_body_us"],
                 glue=r["python_glue_us"], gap=r["inter_kernel_gap_us"],
             )
         )
