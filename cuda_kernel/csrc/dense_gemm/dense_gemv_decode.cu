@@ -55,6 +55,8 @@
 namespace hkust_v9 {
 namespace dense_gemv_decode {
 
+constexpr int kMaxGroups = 160;
+
 // s4 -> s8 unpack: 2 packed bytes (4 s4 values) -> one int32 (4 s8 lanes).
 // Input layout (little-endian within each byte):
 //   packed = [b1 b0]  (uint16)
@@ -110,9 +112,9 @@ __global__ void dense_gemv_decode_kernel(
 
     // Shmem: stage X for the current group (128 s4 = 64 packed bytes),
     // reused by all kBm warps in the CTA.  Also stage sum_X per group
-    // (small; n_groups <= 128 in all production shapes).
+    // (current Qwen3 decode shapes fit under kMaxGroups = 160).
     __shared__ alignas(16) uint8_t s_X[kGroupBytes];
-    __shared__ int s_sum_X[128];     // upper bound on n_groups
+    __shared__ int s_sum_X[kMaxGroups];
     __shared__ __half s_scale_x_val;
 
     // Prefetch sum_X (all groups) once.  First warp cooperatively loads.
@@ -203,7 +205,9 @@ void launch(
     const int d_in = d_in_half * 2;
     TORCH_CHECK(d_in % BCOL == 0);
     const int n_groups = d_in / BCOL;
-    TORCH_CHECK(n_groups <= 128, "n_groups > 128 unsupported in GEMV path");
+    TORCH_CHECK(n_groups <= kMaxGroups,
+                "n_groups (", n_groups, ") > kMaxGroups (", kMaxGroups,
+                ") unsupported in dense_gemv_decode");
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
     constexpr int kBm = 8;   // 8 warps per CTA = 256 threads

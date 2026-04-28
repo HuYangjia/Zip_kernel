@@ -30,7 +30,13 @@ namespace dense_gemm_mma_int4 {
 // so kMaxGroups = 128.  Scale/zero shmem uses ceil_div path-wise max.
 constexpr int kMaxGroups = 128;
 
-template <int kBn, int kGrpBuf = 32>
+// Round 40-B: kBm is now a template parameter (was hard-coded to 128).
+//   kBm=128 is the default and matches the historical behaviour.
+//   kBm=64  is a new variant used only on the dense-only path via
+//     gated dispatch (T in [16,64] && d_out<=4096 && waves improve).
+//   This kernel is dense-only; it does NOT consume BSR sparse blocks,
+//   so there is no physical BROW=128 constraint here (unlike fused).
+template <int kBn, int kGrpBuf = 32, int kBm = 128>
 __global__ void dense_gemm_mma_int4_kernel(
     const uint8_t* __restrict__ W,         // (d_out, d_in/2)
     const uint8_t* __restrict__ X,         // (T, d_in/2)
@@ -48,7 +54,6 @@ __global__ void dense_gemm_mma_int4_kernel(
     int64_t stride_sx_n,  int64_t stride_sx_g,
     int64_t stride_y_m,   int64_t stride_y_n
 ) {
-    constexpr int kBm = 128;
     constexpr int kBk = 128;                 // one group
     constexpr int kMmaK = 64;
     constexpr int kKSteps = kBk / kMmaK;     // 2
@@ -455,10 +460,15 @@ void launch(
     const int n_groups = d_in / BCOL;
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
-    constexpr int kBm = 128;
 
-    auto do_launch = [&](auto kBn_c) {
+    // R40-B: kBm is now a template parameter.  Default kBm=128 preserves
+    //   historical behaviour.  kBm=64 is opt-in via a conservative gate
+    //   aimed at T in [16,64] && d_out<=4096, where the kBm=128 launch
+    //   under-fills the grid (wave quantization).  This does NOT affect
+    //   fused_dense_sparse (which must stay at BROW=128 for BSR).
+    auto do_launch = [&](auto kBn_c, auto kBm_c) {
         constexpr int kBn = decltype(kBn_c)::value;
+        constexpr int kBm = decltype(kBm_c)::value;
         dim3 block(kBm, 1, 1);
         dim3 grid(ceil_div(d_out, kBm), ceil_div(T, kBn), 1);
 
@@ -469,7 +479,7 @@ void launch(
         if (n_groups <= 32) {
             constexpr int kGrpBuf = 32;
             const int dyn_smem_bytes = 2 * kBm * kGrpBuf * (int)sizeof(__half);
-            dense_gemm_mma_int4_kernel<kBn, kGrpBuf>
+            dense_gemm_mma_int4_kernel<kBn, kGrpBuf, kBm>
                 <<<grid, block, dyn_smem_bytes, stream>>>(
                 reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
                 reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
@@ -494,8 +504,8 @@ void launch(
             //   <= sharedMemPerBlockOptin.  We therefore request exactly
             //   dyn_smem_bytes, which is the smallest value that works.
             constexpr int kGrpBuf = 128;
-            const int dyn_smem_bytes = 2 * kBm * kGrpBuf * (int)sizeof(__half);  // 64KB
-            auto kptr = &dense_gemm_mma_int4_kernel<kBn, kGrpBuf>;
+            const int dyn_smem_bytes = 2 * kBm * kGrpBuf * (int)sizeof(__half);
+            auto kptr = &dense_gemm_mma_int4_kernel<kBn, kGrpBuf, kBm>;
             C10_CUDA_CHECK(cudaFuncSetAttribute(
                 (const void*)kptr,
                 cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -524,31 +534,60 @@ void launch(
     //   identical epilogue cost per output, so total latency is
     //   roughly (waves * per-CTA-cost).
     //
-    //   wave_occupancy(kBn) = ceil(d_out/128) * ceil(T/kBn) / 128
+    //   wave_occupancy(kBn) = ceil(d_out/kBm) * ceil(T/kBn) / 128
     //   want: pick the largest kBn with wave_occupancy >= 1 (per-CTA
     //   amortisation is best at big kBn provided we don't underfill SMs).
     //
-    //   A/B bench bench_20260425_093655:
-    //     bat_T128_4k_4k  kBn=32 (52us)  vs kBn=64 (57us)   -> pick 32
-    //     bat_T128_4k_11k kBn=32 (127us) vs kBn=64 (75us)   -> pick 64
-    //     bat_T128_11k_4k kBn=32 (167us) vs kBn=64 (180us)  -> pick 32
-    //
-    //   The pattern aligns with CTA count:
-    //     4k_4k    T=128 kBn=64 -> grid=32*2=64  CTAs (0.5 wave, bad)
-    //     4k_4k    T=128 kBn=32 -> grid=32*4=128 CTAs (1.0 wave, ok)
-    //     4k_11k   T=128 kBn=64 -> grid=86*2=172 CTAs (1.3 waves, good)
-    //     4k_11k   T=128 kBn=32 -> grid=86*4=344 CTAs (2.7 waves, worse amortisation)
-    //     11k_4k   T=128 kBn=64 -> grid=32*2=64  CTAs (0.5 wave, bad)
-    //     11k_4k   T=128 kBn=32 -> grid=32*4=128 CTAs (1.0 wave, ok)
-    //
-    //   Decision rule: pick kBn=64 iff grid at kBn=64 >= 128 (one wave).
-    const int n_cta_m = ceil_div(d_out, kBm);
-    auto waves_at = [&](int kBn_c) {
-        return (int64_t)n_cta_m * ceil_div(T, kBn_c);
+    // R40-B: added kBm=64 gated path on top of R25 kBn selection.
+    //   When kBm=128 under-fills the grid (n_cta_m small, T modest),
+    //   halving kBm doubles grid.x, recovering wave occupancy.
+    //   Gate: T in [16, 64] && d_out <= 4096 && kBm=128 grid < 1 wave.
+    //   Rationale: Qwen3 q/o/kv_proj at T=16..64 have n_cta_m=32 at
+    //   kBm=128 (grid=32*1=32 CTAs, 0.25 wave).  Switching to kBm=64
+    //   gives n_cta_m=64 -> grid=64*1=64 CTAs (0.5 wave).  With kBn=32
+    //   on top: grid=64*2=128 CTAs = 1 full wave.
+    auto waves_at_kbm128 = [&](int kBn_c) {
+        return (int64_t)ceil_div(d_out, 128) * ceil_div(T, kBn_c);
     };
-    if      (T <= 8)                 do_launch(std::integral_constant<int, 8>{});
-    else if (waves_at(64) >= 128)    do_launch(std::integral_constant<int, 64>{});
-    else                             do_launch(std::integral_constant<int, 32>{});
+    auto pick_kbn_for_kbm = [&](int kbm_val) -> int {
+        const int n_cta_m = ceil_div(d_out, kbm_val);
+        auto waves_at = [&](int kBn_c) {
+            return (int64_t)n_cta_m * ceil_div(T, kBn_c);
+        };
+        if (T <= 8) return 8;
+        if (waves_at(64) >= 128) return 64;
+        if (waves_at(32) >= 64)  return 32;
+        return 8;
+    };
+    // Gate kBm=64 opt-in: only when kBm=128 is under-filled and T is
+    //   in the mid-batch regime where extra grid_M helps amortise the
+    //   per-CTA epilogue cost.
+    // R40-B v2 bench result (confirmed same-env, same build):
+    //   d_out=2048: 1.7B q/kv/o/down T=16 all improve by 14-18%,
+    //               14B kv_proj T=16 improves 27.6%, 8B kv_proj 15.8%.
+    //   d_out=4096: 8B q/o_proj T=16 regress by ~9% (kBm=64 wave @ 64
+    //               is still < 1 wave, and per-CTA cost savings don't
+    //               offset the occupancy loss for d_in=4096).
+    //   d_out=12288+: not considered (gate intentionally excludes).
+    // Conclusion: keep the tight d_out<=2048 rule; enlarging to 4096
+    //             net-regresses on the wide Qwen3-8B attention shapes.
+    const bool kbm64_gate =
+        (T >= 16 && T <= 64) &&
+        (d_out <= 2048) &&
+        (waves_at_kbm128(32) < 64);  // kBm=128 kBn=32 < 0.5 wave
+    const int kbm_pick = kbm64_gate ? 64 : 128;
+    const int kbn_pick = pick_kbn_for_kbm(kbm_pick);
+    if (kbm_pick == 128) {
+        auto kbm_c = std::integral_constant<int, 128>{};
+        if      (kbn_pick == 64) do_launch(std::integral_constant<int, 64>{}, kbm_c);
+        else if (kbn_pick == 32) do_launch(std::integral_constant<int, 32>{}, kbm_c);
+        else                     do_launch(std::integral_constant<int, 8>{},  kbm_c);
+    } else {
+        auto kbm_c = std::integral_constant<int, 64>{};
+        if      (kbn_pick == 64) do_launch(std::integral_constant<int, 64>{}, kbm_c);
+        else if (kbn_pick == 32) do_launch(std::integral_constant<int, 32>{}, kbm_c);
+        else                     do_launch(std::integral_constant<int, 8>{},  kbm_c);
+    }
 
     C10_CUDA_CHECK(cudaGetLastError());
 }

@@ -394,6 +394,153 @@ __global__ void activation_quant_kernel_sp(
 }
 
 // ---------------------------------------------------------------------------
+// Multi-CTA kernels (Round 33 optimisation for small T)
+// ---------------------------------------------------------------------------
+//
+// Rationale: the single-CTA sp/2p kernels bottleneck on a single SM's
+//   HBM bandwidth for T in {1, 2, 4}.  Wall time ~20 us for D=4096 is
+//   dominated by the gather latency chain, NOT compute.  For T=1 only
+//   1 CTA is launched; 127 SMs idle.
+//
+// Solution: split quant into two phases, each fully parallelised across
+//   groups (grid.x) so all SMs participate in the HBM read.
+//
+//   Phase A (max): grid=(n_groups, T), block=(128,1).  Each CTA scans
+//     its own group's 128 gathered elements, does warp-max-abs, then
+//     atomicMax-into-int the per-token running max (fp32 bits, safe
+//     because max is non-negative and we flush-denormals-to-zero).
+//
+//   Phase B (pack): grid=(n_groups, T), block=(128,1).  Each CTA
+//     re-loads its group of X[t, perm[...]], reads per_token_max[t],
+//     recomputes scale via the bit-exact (/7 -> fp16 -> fp32) chain,
+//     quantises, packs, writes sum_X[t, g] once (single int32 store,
+//     no cross-warp reduce because lane-parallel warp_sum is per-warp
+//     and we use 4 warps summing via a mini shmem[4] reduce -- but
+//     kept minimal with just ONE local __syncwarp + a single sync_0).
+//
+//   Contract with scale_x:
+//     scale_fp32  = max / 7
+//     scale_fp16  = fp16(scale_fp32)     (write to scale_x[t])
+//     scale_math  = fp32(scale_fp16)     (used for division)
+//   This matches the sp/2p kernels exactly.
+//
+//   per_token_max[t] lives in a small workspace tensor allocated by the
+//   host-side launcher.  We use int32 + float_as_int to reuse
+//   atomicMax(int*, int) which is lock-free on SM89.
+//
+// Bit-exactness: identical scale chain, identical quantize_one, and
+// atomicMax on positive-fp32-bits is deterministic (commutative on
+// max).  sum_X output differs from sp by at most the order of int
+// additions, but int32 add is associative, so results are bit-equal.
+
+__global__ void act_quant_phase_a_max(
+    const __half* __restrict__ X,
+    const int* __restrict__ perm,
+    int* __restrict__ per_token_max_bits,     // fp32 bits, int32
+    int T, int D,
+    int64_t stride_xt, int64_t stride_xd
+) {
+    const int g = blockIdx.x;
+    const int t = blockIdx.y;
+    const int lane_x = threadIdx.x;
+    const int lane_in_warp = lane_x & (kWarpSize - 1);
+    const int warp_id_x = lane_x / kWarpSize;
+
+    const int d = g * BCOL + lane_x;
+    int pidx = __ldg(perm + d);
+    __half h = __ldg(X + (int64_t)t * stride_xt + (int64_t)pidx * stride_xd);
+    float v = fabsf(__half2float(h));
+
+    // 128-wide max: warp-wise first then 4-warp combine via shmem.
+    #pragma unroll
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+        v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, offset));
+    }
+    __shared__ float s_part[4];
+    if (lane_in_warp == 0) s_part[warp_id_x] = v;
+    __syncthreads();
+    if (warp_id_x == 0 && lane_in_warp < 4) {
+        float m = s_part[lane_in_warp];
+        float o2 = __shfl_xor_sync(0x0000000f, m, 2);
+        m = fmaxf(m, o2);
+        float o1 = __shfl_xor_sync(0x0000000f, m, 1);
+        m = fmaxf(m, o1);
+        if (lane_in_warp == 0) {
+            // max is non-negative fp32 -> int32 bit-pattern preserves order.
+            int m_bits = __float_as_int(m);
+            atomicMax(&per_token_max_bits[t], m_bits);
+        }
+    }
+}
+
+__global__ void act_quant_phase_b_pack(
+    const __half* __restrict__ X,
+    const int* __restrict__ perm,
+    const int* __restrict__ per_token_max_bits,
+    int8_t* __restrict__ X_s4,
+    __half* __restrict__ scale_x,
+    int* __restrict__ sum_X,
+    int T, int D,
+    int64_t stride_xt, int64_t stride_xd,
+    int64_t stride_qt, int64_t stride_qd,
+    int64_t stride_st, int64_t stride_sg
+) {
+    const int g = blockIdx.x;
+    const int t = blockIdx.y;
+    const int lane_x = threadIdx.x;
+    const int lane_in_warp = lane_x & (kWarpSize - 1);
+    const int warp_id_x = lane_x / kWarpSize;
+
+    // Recompute scale using bit-exact chain.
+    float token_max = __int_as_float(per_token_max_bits[t]);
+    float scale_fp32 = token_max / 7.0f;
+    __half scale_h = __float2half(scale_fp32);
+    float scale_math = __half2float(scale_h);
+    bool is_zero = !(scale_math > 0.0f);
+    float scale_safe = is_zero ? 1.0f : scale_math;
+
+    // lane 0 of warp 0 also writes scale_x[t] (idempotent across groups;
+    // every CTA of this token writes the same value).  Gate to only the
+    // first group CTA to avoid redundant HBM traffic.
+    if (g == 0 && lane_x == 0) {
+        scale_x[t] = scale_h;
+    }
+
+    const int d = g * BCOL + lane_x;
+    int pidx = __ldg(perm + d);
+    __half h = __ldg(X + (int64_t)t * stride_xt + (int64_t)pidx * stride_xd);
+    float x = __half2float(h);
+    int q = quantize_one(x, scale_safe, is_zero);
+
+    // Per-group sum: 128-wide reduction.
+    int wsum = q;
+    #pragma unroll
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+        wsum += __shfl_xor_sync(0xffffffff, wsum, offset);
+    }
+    __shared__ int s_part_int[4];
+    if (lane_in_warp == 0) s_part_int[warp_id_x] = wsum;
+    __syncthreads();
+    if (lane_x == 0) {
+        int total = s_part_int[0] + s_part_int[1] + s_part_int[2] + s_part_int[3];
+        sum_X[(int64_t)t * stride_st + (int64_t)g * stride_sg] = total;
+    }
+
+    // Pack LE: even lane low nibble, odd lane high nibble.
+    int q_neighbour = __shfl_xor_sync(0xffffffff, q, 1);
+    if ((lane_x & 1) == 0) {
+        int low = q & 0x0F;
+        int high = q_neighbour & 0x0F;
+        int packed = (high << 4) | low;
+        int64_t byte_off = (int64_t)t * stride_qt
+                         + (int64_t)(d >> 1) * stride_qd;
+        X_s4[byte_off] = static_cast<int8_t>(
+            packed >= 128 ? packed - 256 : packed
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Host-side launcher
 // ---------------------------------------------------------------------------
 
@@ -491,6 +638,12 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
     };
 
     if (sp_ok) {
+        // R33 attempted multi-CTA mp kernels (act_quant_phase_a_max +
+        //   act_quant_phase_b_pack) to spread gather across SMs for
+        //   T<=4.  Measured regression: T=1 4k jumped 20 -> 42 us
+        //   because 2x launch overhead (~5us) + 2x gather (no shmem
+        //   reuse) + atomicMax serialization exceeded savings.
+        //   mp code kept in-tree for reference; dispatcher DISABLED.
         // Round 20: use sp for all T.  sp_kBt already chosen to fit shmem.
         if      (sp_kBt == 1) dispatch_sp(std::integral_constant<int, 1>{});
         else if (sp_kBt == 2) dispatch_sp(std::integral_constant<int, 2>{});

@@ -138,6 +138,7 @@ DENSE_SHAPES = [
     (512,  4096, 4096),
     (128,  11008, 4096),
     (128,  4096, 11008),
+    (1,    5120, 17408),
 ]
 
 
@@ -214,6 +215,16 @@ FUSED_CASES = [
     (16,   4096, 4096, 0.05),
     (128,  4096, 4096, 0.10),
     (512,  4096, 4096, 0.05),
+    (1,    5120, 17408, 0.05),
+    # Round 41-P1 parity: hp=0 path exercises the new kBm=64 gate in
+    #   fused_dense_sparse_mma_int4.cu (gate fires at T in [16,64] &&
+    #   d_out<=2048 && hp==0).  These shapes must pass bit-exactly
+    #   under BOTH the kBm=128 and kBm=64 code paths.
+    (16,   2048, 4096, 0.00),   # R41 gate hits -> kBm=64
+    (32,   2048, 4096, 0.00),   # R41 gate hits -> kBm=64
+    (64,   2048, 4096, 0.00),   # R41 gate hits -> kBm=64
+    (16,   4096, 4096, 0.00),   # R41 gate misses (d_out>2048) -> kBm=128
+    (128,  2048, 4096, 0.00),   # R41 gate misses (T>64) -> kBm=128
 ]
 
 
@@ -224,7 +235,19 @@ def test_fused_dense_sparse_parity(T, d_out, d_in, n_hp_ratio, variant):
         W_low_packed, W_high_blocks_packed,
         hp_row_offsets, hp_col_indices,
         X_s4, scale_u4, zero_u4, sum_X, scale_x,
-    ) = _make_sparse_inputs(T, d_out, d_in, n_hp_ratio=n_hp_ratio)
+    ) = _make_sparse_inputs(T, d_out, d_in, n_hp_ratio=max(n_hp_ratio, 1/1024))
+
+    # R41-P1: force hp=0 path when n_hp_ratio == 0.  This exercises the
+    #   kBm=64 gate in fused_dense_sparse_mma_int4.cu (only fires when
+    #   hp_col_indices.numel() == 0).
+    if n_hp_ratio == 0.0:
+        device = X_s4.device
+        nrow = d_out // BROW
+        W_high_blocks_packed = torch.zeros(
+            (0, BROW, BCOL // 2), dtype=torch.int8, device=device
+        )
+        hp_row_offsets = torch.zeros(nrow + 1, dtype=torch.int32, device=device)
+        hp_col_indices = torch.zeros((0,), dtype=torch.int32, device=device)
 
     Y_ref = fused_dense_sparse_gemm(
         W_low_packed, W_high_blocks_packed,
@@ -241,4 +264,155 @@ def test_fused_dense_sparse_parity(T, d_out, d_in, n_hp_ratio, variant):
     _assert_fp16_close(
         Y_cuda, Y_ref,
         f"fused_{variant} T={T} d_out={d_out} d_in={d_in} hp={n_hp_ratio}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# fused MMA windowed scale/zero cache regression (n_groups = 40 > 32)
+# ---------------------------------------------------------------------------
+
+
+def test_fused_mma_windowed_group_cache_parity():
+    T, d_out, d_in, n_hp_ratio = 16, 5120, 5120, 0.05
+    (
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+    ) = _make_sparse_inputs(T, d_out, d_in, n_hp_ratio=n_hp_ratio, seed=0x4567)
+
+    Y_ref = fused_dense_sparse_gemm(
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+        d_out, d_in,
+    )
+    Y_cuda = cuda_ops.fused_dense_sparse_cuda_int4(
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+        d_out, d_in,
+    )
+    _assert_fp16_close(
+        Y_cuda, Y_ref,
+        "fused_windowed_group_cache T=16 d_out=5120 d_in=5120 hp=0.05"
+    )
+
+
+def test_fused_mma_no_cache_large_group_parity():
+    T, d_out, d_in, n_hp_ratio = 16, 5120, 17408, 0.05
+    (
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+    ) = _make_sparse_inputs(T, d_out, d_in, n_hp_ratio=n_hp_ratio, seed=0x5678)
+
+    Y_ref = fused_dense_sparse_gemm(
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+        d_out, d_in,
+    )
+    Y_cuda = cuda_ops.fused_dense_sparse_cuda_int4(
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+        d_out, d_in,
+    )
+    _assert_fp16_close(
+        Y_cuda, Y_ref,
+        "fused_no_cache_large_group T=16 d_out=5120 d_in=17408 hp=0.05"
+    )
+
+
+# ---------------------------------------------------------------------------
+# large-group T=1 decode regressions
+# ---------------------------------------------------------------------------
+
+
+def test_dense_decode_dispatch_large_group_parity():
+    T, d_out, d_in = 1, 5120, 17408
+    W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x = _make_dense_inputs(
+        T, d_out, d_in, seed=0x1234
+    )
+    Y_ref = dense_gemm_u4_s4(W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x)
+    Y_cuda = cuda_ops.dense_gemm_cuda(
+        W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
+    )
+    _assert_fp16_close(
+        Y_cuda, Y_ref,
+        "dense_decode_dispatch_large_group T=1 d_out=5120 d_in=17408"
+    )
+
+
+def test_fused_decode_dispatch_large_group_parity():
+    T, d_out, d_in, n_hp_ratio = 1, 5120, 17408, 0.05
+    (
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+    ) = _make_sparse_inputs(T, d_out, d_in, n_hp_ratio=n_hp_ratio, seed=0x2345)
+
+    Y_ref = fused_dense_sparse_gemm(
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+        d_out, d_in,
+    )
+    Y_cuda = cuda_ops.fused_dense_sparse_cuda(
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, hp_col_indices,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+        d_out, d_in,
+    )
+    _assert_fp16_close(
+        Y_cuda, Y_ref,
+        "fused_decode_dispatch_large_group T=1 d_out=5120 d_in=17408 hp=0.05"
+    )
+
+
+def test_fused_quant_decode_large_group_parity():
+    T, d_out, d_in, n_hp_ratio = 1, 5120, 17408, 0.05
+    torch.manual_seed(0x3456)
+    X = torch.randn(T, d_in, dtype=torch.float16, device="cuda") * 0.4
+    perm = torch.arange(d_in, dtype=torch.int32, device="cuda")
+    X_s4, scale_x, sum_X = quantize_activation_s4(X, perm)
+
+    n_groups = d_in // BCOL
+    W_low_s4 = torch.randint(-8, 8, (d_out, d_in), dtype=torch.int8, device="cuda")
+    W_low_packed = pack_s4_le(W_low_s4)
+    scale_u4 = (torch.rand(d_out, n_groups, device="cuda") * 0.05 + 0.001).to(torch.float16)
+    zero_u4 = (torch.randn(d_out, n_groups, device="cuda") * 0.2).to(torch.float16)
+
+    nrow = d_out // BROW
+    ncol = d_in // BCOL
+    total_blocks = nrow * ncol
+    n_hp = max(1, int(total_blocks * n_hp_ratio))
+    torch.manual_seed(0x3456 ^ 0xA5A5)
+    flat = torch.randperm(total_blocks, device="cuda")[:n_hp]
+    br = (flat // ncol).to(torch.int32)
+    bc = (flat % ncol).to(torch.int32)
+    order = torch.argsort(br.to(torch.int64) * 100000 + bc.to(torch.int64))
+    br_sorted = br[order]
+    bc_sorted = bc[order]
+    W_high_s4 = torch.randint(-8, 8, (n_hp, BROW, BCOL), dtype=torch.int8, device="cuda")
+    W_high_blocks_packed = pack_s4_le(W_high_s4)
+    hp_row_offsets = torch.zeros(nrow + 1, dtype=torch.int32, device="cuda")
+    counts = torch.bincount(br_sorted.to(torch.int64), minlength=nrow)
+    hp_row_offsets[1:] = torch.cumsum(counts, dim=0).to(torch.int32)
+
+    Y_ref = fused_dense_sparse_gemm(
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, bc_sorted,
+        X_s4, scale_u4, zero_u4, sum_X, scale_x,
+        d_out, d_in,
+    )
+    Y_cuda = cuda_ops.fused_quant_gemv_cuda(
+        X, perm,
+        W_low_packed, W_high_blocks_packed,
+        hp_row_offsets, bc_sorted,
+        scale_u4, zero_u4, d_out, d_in,
+    )
+    _assert_fp16_close(
+        Y_cuda, Y_ref,
+        "fused_quant_decode_large_group T=1 d_out=5120 d_in=17408 hp=0.05"
     )

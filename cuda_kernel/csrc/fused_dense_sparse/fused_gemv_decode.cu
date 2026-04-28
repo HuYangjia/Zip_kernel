@@ -33,6 +33,8 @@
 namespace hkust_v9 {
 namespace fused_gemv_decode {
 
+constexpr int kMaxGroups = 160;
+
 // Same s4 -> 4 s8 unpacker used by dense_gemv_decode.cu.
 __device__ __forceinline__ uint32_t unpack_s4_to_s8x4(uint16_t packed) {
     auto s4_sext = [](unsigned nib) -> int {
@@ -83,7 +85,7 @@ __global__ void fused_gemv_decode_kernel(
 
     // Shmem: X for current group (64 packed bytes), sum_X cache, scale_x.
     __shared__ alignas(16) uint8_t s_X[kGroupBytes];
-    __shared__ int s_sum_X[128];            // upper bound on n_groups
+    __shared__ int s_sum_X[kMaxGroups];
     __shared__ __half s_scale_x_val;
 
     const int flat_tid = warp_id * kWarpSize + lane;
@@ -216,7 +218,9 @@ void launch(
     TORCH_CHECK(d_in_half * 2 == d_in);
     TORCH_CHECK(d_in % BCOL == 0);
     const int n_groups = d_in / BCOL;
-    TORCH_CHECK(n_groups <= 128, "n_groups > 128 unsupported in GEMV path");
+    TORCH_CHECK(n_groups <= kMaxGroups,
+                "n_groups (", n_groups, ") > kMaxGroups (", kMaxGroups,
+                ") unsupported in fused_gemv_decode");
 
     if (W_high_blocks.numel() == 0) {
         W_high_blocks = torch::zeros(

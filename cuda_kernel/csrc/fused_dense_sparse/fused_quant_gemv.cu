@@ -59,7 +59,7 @@ __device__ __forceinline__ int warp_sum_i(int v) {
     return v;
 }
 
-constexpr int kMaxGroups = 128;
+constexpr int kMaxGroups = 160;
 
 template <int kBm>
 __global__ void fused_quant_gemv_kernel(
