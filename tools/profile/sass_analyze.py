@@ -305,13 +305,23 @@ def render_report(stats: List[KernelStats]) -> str:
     return "\n".join(lines)
 
 
+def _repo_root() -> Path:
+    """Resolve the repository root from this file's location.
+
+    ``tools/profile/sass_analyze.py`` lives 2 directories below the repo
+    root (``tools/`` is a sibling of ``cuda_kernel/``).
+    """
+    return Path(__file__).resolve().parents[2]
+
+
 def main() -> None:
+    default_out = _repo_root() / "cuda_kernel/logs/phase2_microscope/_sass/sass_profile.md"
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--so", type=Path, default=None, help="Path to hkust_v9_cuda.so")
     ap.add_argument(
         "--out",
         type=Path,
-        default=Path("cuda_kernel/logs/phase2_microscope/_sass/sass_profile.md"),
+        default=default_out,
         help="Markdown report destination.",
     )
     args = ap.parse_args()
