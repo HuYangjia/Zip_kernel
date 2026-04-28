@@ -143,18 +143,18 @@ def activation_quant_cuda(
         assert X_fp16.dtype == torch.float16, "X must be fp16"
         assert perm.dtype in (torch.int32, torch.int64), "perm must be int32/int64"
 
-    original_shape = X_fp16.shape
-    if X_fp16.dim() == 3:
-        T, D = original_shape[0] * original_shape[1], original_shape[2]
-    elif X_fp16.dim() == 2:
-        T, D = original_shape
-    else:
-        raise ValueError(f"X must be 2D or 3D, got shape {original_shape}")
+        original_shape = X_fp16.shape
+        if X_fp16.dim() == 3:
+            T, D = original_shape[0] * original_shape[1], original_shape[2]
+        elif X_fp16.dim() == 2:
+            T, D = original_shape
+        else:
+            raise ValueError(f"X must be 2D or 3D, got shape {original_shape}")
 
-    if D % bcol != 0:
-        raise ValueError(f"d_in ({D}) must be divisible by bcol ({bcol})")
-    if D % 2 != 0:
-        raise ValueError(f"d_in ({D}) must be even for 4-bit packing")
+        if D % bcol != 0:
+            raise ValueError(f"d_in ({D}) must be divisible by bcol ({bcol})")
+        if D % 2 != 0:
+            raise ValueError(f"d_in ({D}) must be even for 4-bit packing")
 
         X_2d = X_fp16.reshape(T, D).contiguous()
         perm_i32 = perm.to(torch.int32).contiguous()
