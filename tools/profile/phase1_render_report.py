@@ -89,24 +89,18 @@ def _iter_windows(con: sqlite3.Connection) -> List[Tuple[int, int, int]]:
     """Return [(iter_index, start_ns, end_ns)] for phase1.iter_* ranges."""
     if not _table_exists(con, "NVTX_EVENTS"):
         return []
-    cur = con.execute("SELECT id, value FROM StringIds WHERE value LIKE ?",
-                      (f"{ITER_RANGE_PREFIX}%",))
-    id_to_name: Dict[int, str] = {int(i): s for (i, s) in cur.fetchall()}
-    if not id_to_name:
-        return []
-    placeholders = ",".join("?" * len(id_to_name))
+    # nsys 2025 writes the range label directly into the ``text`` column;
+    # StringIds is used only for legacy records.  Query by text.
     cur = con.execute(
-        f"SELECT start, end, textId FROM NVTX_EVENTS "
-        f"WHERE textId IN ({placeholders}) AND end IS NOT NULL",
-        tuple(id_to_name.keys()),
+        "SELECT start, end, text FROM NVTX_EVENTS "
+        "WHERE text LIKE ? AND end IS NOT NULL",
+        (f"{ITER_RANGE_PREFIX}%",),
     )
-    rows = cur.fetchall()
     out: List[Tuple[int, int, int]] = []
-    for start, end, tid in rows:
-        name = id_to_name[int(tid)]
+    for start, end, text in cur.fetchall():
         try:
-            idx = int(name.split("_")[-1])
-        except ValueError:
+            idx = int(text.split("_")[-1])
+        except (ValueError, AttributeError):
             continue
         out.append((idx, int(start), int(end)))
     out.sort()
@@ -120,22 +114,20 @@ def _range_durations(
 
     We join NVTX_EVENTS against the iter windows by start-time containment:
     any event whose ``start`` is inside ``[iter_start, iter_end]`` is
-    attributed to that iter.
+    attributed to that iter.  nsys 2025 puts the range label directly
+    into the ``text`` column, so we query by text rather than StringIds.
     """
-    sid = _string_id(con, range_name)
-    if sid is None:
-        return [0] * len(windows)
     cur = con.execute(
-        "SELECT start, end FROM NVTX_EVENTS WHERE textId=? AND end IS NOT NULL",
-        (sid,),
+        "SELECT start, end FROM NVTX_EVENTS "
+        "WHERE text = ? AND end IS NOT NULL",
+        (range_name,),
     )
     events = cur.fetchall()
+    if not events:
+        return [0] * len(windows)
     buckets = [0] * len(windows)
-    # windows is already sorted by iter index, but we need to search by
-    # time; build a time-sorted view.
     time_sorted = sorted(range(len(windows)), key=lambda i: windows[i][1])
     for s, e in events:
-        # Linear scan is fine — windows <= 20 in all our experiments.
         for i in time_sorted:
             _, ws, we = windows[i]
             if ws <= s <= we:
