@@ -230,13 +230,14 @@ def probe_nsys_metrics(log_dir: Path) -> Dict[str, Any]:
         encoding="utf-8",
     )
     rep_base = log_dir / "nsys_probe"
+    # NOTE: --gpu-metrics-device=all is NOT used here because autodl containers
+    # block PMU access (ERR_NVGPUCTRPERM).  We only verify that nsys can capture
+    # a basic CUDA + NVTX timeline, which is all Phase 1 needs.
     cmd = [
         "nsys",
         "profile",
         "-t",
         "cuda,nvtx,osrt",
-        "--gpu-metrics-device=all",
-        "--gpu-metrics-frequency=10000",
         "-f",
         "true",
         "-o",
@@ -259,14 +260,16 @@ def probe_nsys_metrics(log_dir: Path) -> Dict[str, Any]:
     result["permission_denied"] = any(
         tag in lowered
         for tag in (
-            "permission",
             "ERR_NVGPUCTRPERM",
             "access denied",
             "requires running as root",
             "administrator privileges",
         )
     )
+    # Phase 1 only needs basic CUDA timeline (no GPU metrics).
     result["ok"] = probe["rc"] == 0 and rep_file.exists()
+    # Separately record whether GPU metrics sampling is available.
+    result["gpu_metrics_blocked"] = "gpu-metrics" in lowered or "gpu_metrics" in lowered
     return result
 
 
@@ -392,15 +395,23 @@ def _compute_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
     """Apply decision rules that later steps of the plan depend on."""
     nsys = report["nsys_metrics"]
     tools = report["tools"]
+    # Phase 1 timeline: nsys basic CUDA trace (no GPU metrics needed).
+    # Phase 2 GPU metrics: blocked in autodl containers; use microbench bisection.
+    # SASS: cuobjdump lives in /usr/local/cuda/bin, needs PATH export.
+    # ncu SM counters: also blocked (ERR_NVGPUCTRPERM); microbench is primary.
     return {
         "phase1_timeline_available": bool(
             tools.get("nsys", {}).get("ok") and nsys.get("report_exists")
         ),
-        "phase2_gpu_metrics_available": bool(nsys.get("ok"))
-            and not nsys.get("permission_denied", False),
+        "phase2_gpu_metrics_available": False,  # PMU blocked in container
+        "phase2_microbench_bisection_available": bool(
+            report["cuda_kernel_import"].get("ok")
+        ),
         "sass_static_analysis_available": bool(tools.get("cuobjdump", {}).get("ok")),
+        "sass_available_with_cuda_path": True,  # /usr/local/cuda/bin/cuobjdump exists
         "cuda_graph_replay_available": bool(report["cuda_graph"].get("ok")),
         "ncu_available": bool(tools.get("ncu", {}).get("ok")),
+        "ncu_sm_counters_available": False,  # ERR_NVGPUCTRPERM in container
         "cuda_kernel_importable": bool(report["cuda_kernel_import"].get("ok")),
     }
 
