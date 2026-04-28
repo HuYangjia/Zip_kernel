@@ -1,6 +1,7 @@
 # Phase 1 — Timeline Attribution Report
 
 _Generated 2026-04-28T09:29:40.083367Z_
+_Run meta: git_sha=2db4d21 @ 2026-04-28 (autodl RTX 4090, nsys 2025.1.1.0)_
 
 Every representative shape was run under `nsys profile -t cuda,nvtx,osrt` with the inner driver emitting one `phase1.iter_<i>` NVTX range per profiled forward, plus four fine-grained sub-ranges instrumented via `HKUST_V9_PROFILE=1`:  
 * `ops.linear_forward` — whole forward, outermost range.  
