@@ -381,24 +381,38 @@ def render_report(out_dir: Path, sd: Dict, ts: Dict, sf: Dict) -> str:
     # regeneration confirmed the verdict.
     lines.append("## 4. Diagnosis\n")
     lines.append(
+        "> **Scope note.**  §1..§3 above are single-shot snapshots "
+        "(one `time_forward_us` call per cell, no trial aggregation), "
+        "so re-running this script on a noisy shared-GPU host will "
+        "show *different* single-cell |Δ| values each run.  The cells "
+        "do not form the final verdict on their own; the formal "
+        "adjudication uses `epilogue_pressure_test.py` which runs "
+        "5 interleaved trials per variant and reports median+[p05,p95].  "
+        "§4 below is tied to that adjudication, not to any single cell "
+        "of §1..§3.\n"
+    )
+    lines.append(
         "**Verdict: the -27.9% X=0 slowdown on `mid_T128_kv_2560_2048` "
         "is a measurement artefact, not a kernel bug.**\n"
     )
     lines.append("**Evidence:**\n")
     lines.append(
-        "1. Under the stronger (warmup=200, outer=10, inner=200) budget, "
-        "all three stage-decomposition tests show |Δ| within the 3% "
-        "noise floor (see §1).  The 27.9% figure from the original "
-        "bisection (warmup=80, outer=4) does not reproduce.\n"
-        "2. The order-reversal control (§1b) shows |Δ| stays in noise "
-        "regardless of whether zero is measured first or last, ruling "
-        "out L2-state bleed between variants.\n"
-        "3. The T-sweep (§2) shows no single T value carries an "
-        "anomalous signal any more; the earlier T=128-only outlier was "
-        "the tail of a warm-up / clock-scaling transient, not a "
-        "T-dependent code path.\n"
-        "4. The shape-family comparison (§3) confirms no T=128 shape "
-        "is an outlier.\n"
+        "1. Under the stronger (warmup=200, outer=10, inner=200) budget "
+        "adopted from the first run of this probe, the bisection "
+        "re-run of all 8 representatives showed "
+        "`|Δ_xzero| <= 1.55%` -- a 18x reduction vs the original -27.9% "
+        "number.  See `../bisection_summary.md`.\n"
+        "2. The order-reversal control (§1b) was in noise on the first "
+        "run, ruling out L2-state bleed between variants as the "
+        "mechanism.  (Transient re-runs can flip any single §1..§3 "
+        "cell — see the scope note above.)\n"
+        "3. The follow-up pressure test "
+        "(`../epilogue_pressure_test/pressure_test_report.md`) runs 5 "
+        "interleaved trials per variant on the top-|Δ_scale_one| shapes "
+        "plus a compute-bound control.  All 4 tested shapes "
+        "(median-of-5) returned verdict = NOISE, with the "
+        "compute-bound control tight to |Δ| <= 0.04%.  This rules out "
+        "any real data-dependent kernel path on the tested shapes.\n"
     )
     lines.append("**Downstream changes applied:**\n")
     lines.append(
@@ -422,7 +436,7 @@ def render_report(out_dir: Path, sd: Dict, ts: Dict, sf: Dict) -> str:
         "revealed that *all 8 representatives* now have "
         "`|Δ_scale_one| <= 2.2%`, which means the 43-shape "
         "`epilogue_fma_bound` cluster produced by the original "
-        "threshold also collapses.  A standalone pressure test "
+        "threshold also collapses.  The pressure test "
         "(`kernel/tools/profile/epilogue_pressure_test.py`; "
         "warmup=500, outer=20, inner=200, 5 interleaved trials per "
         "variant on the top-|Δ_scale_one| shapes plus a compute-bound "
@@ -444,11 +458,15 @@ def render_report(out_dir: Path, sd: Dict, ts: Dict, sf: Dict) -> str:
         "rule (warmup, inner, outer) stored in the long-term memo "
         "was correct in spirit but the 80/100/4 instantiation used "
         "by `microbench_bisection.py` was still on the edge of the "
-        "4090's boost-clock warm-up envelope.  A single anomalous "
-        "number was enough to spawn a phantom `x_zero_anomaly` "
-        "cluster *and* an oversized `epilogue_fma_bound` cluster.  "
-        "This probe script now serves as the reference for any "
-        "future \"did we measure this right?\" investigation.\n")
+        "4090's boost-clock warm-up envelope, **and even single-cell "
+        "timings under the stronger (warmup=500, outer=20) budget "
+        "can occasionally return a +49% outlier on this shared-GPU "
+        "host** (see trial 2 of `mid_T128_kv_2560_2048` in the "
+        "pressure-test JSON).  The only robust defence is "
+        "median-of-K-trials aggregation; any single-shot A/B |Δ| "
+        "should be treated as exploratory rather than adjudicatory.  "
+        "This probe script therefore serves as an exploration tool; "
+        "the pressure-test script is the adjudicator.\n")
     return "\n".join(lines)
 
 
