@@ -146,7 +146,13 @@ def _auto_policy(kernel_name: str, ctx: ShapeContext) -> str:
         # controls whether the fused kernel itself is CUDA or Triton.
         return "cuda"
 
-    return "triton"
+    # Unreachable for the 4 kernels registered today; kept as a
+    # forward-compatible fallback for any future kernel name that
+    # lands in the registry before this table is updated.  Defaults
+    # to CUDA because the project has committed to CUDA as the sole
+    # production path; Triton is retained only as a historical
+    # reference and is no longer a valid auto-policy target.
+    return "cuda"
 
 def _force_triton_policy(kernel_name: str, ctx: ShapeContext) -> str:
     return "triton"
