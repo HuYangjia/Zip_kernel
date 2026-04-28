@@ -1,4 +1,4 @@
-"""Qwen3 multi-scale shape benchmark (Triton vs CUDA INT4 MMA vs cuBLAS FP16).
+"""Qwen3 multi-scale shape benchmark (pure Triton vs pure CUDA, with FP16 baseline).
 
 Covers Qwen3-0.6B / 1.7B / 4B / 8B (and 14B opt-in) across 5 Linear
 projections per layer (q_proj / kv_proj / o_proj / gate_up_proj /
@@ -7,18 +7,19 @@ down_proj) and a sweep of T = {1, 8, 128, 512, 1024}.
 For every (model, proj, T) combo we measure:
 
   Sub-kernels:
-    - activation_quant   (CUDA only; Triton also for reference)
-    - dense_gemm         (Triton / CUDA / cuBLAS FP16 baseline)
-    - sparse_gemm        (Triton / CUDA / cuBLAS FP16 baseline)
-    - fused_dense_sparse (Triton / CUDA / cuBLAS FP16 baseline)
+    - activation_quant   (Triton / CUDA)
+    - dense_gemm         (Triton / CUDA / FP16 baseline)
+    - sparse_gemm        (Triton / CUDA / FP16 baseline)
+    - fused_dense_sparse (Triton / CUDA / FP16 baseline)
 
   End-to-end (quant + fused):
+    - fp16    (cuBLAS matmul baseline via torch.matmul)
     - triton  (quantize_activation_s4 + fused_dense_sparse_gemm)
-    - cuda    (activation_quant_cuda + fused_dense_sparse_cuda_int4
-               with auto-dispatch; T=1 uses fused_quant_gemv)
-    - fp16    (torch.matmul baseline)
+    - cuda    (activation_quant_cuda + fused_dense_sparse_cuda;
+               T=1 uses fused_quant_gemv)
 
-All timings via torch.cuda.Event, min-of-means (10 outer * 50 inner, 10 warmup).
+All timings use the shared stable microbenchmark helper:
+50 warmup, 100 inner iterations, 3 repeats, min-of-means.
 Outputs: logs/qwen3_bench/qwen3_{TS}/{bench.md, bench.json, bench.log}
 """
 
@@ -45,6 +46,7 @@ if str(_IMPORT_ROOT) not in sys.path:
 
 from kernel.cuda_kernel import ops as cuda_ops
 from kernel.triton_kernel.activation_quant import quantize_activation_s4
+from kernel.triton_kernel.benchmarks._bench_util import time_ms
 from kernel.triton_kernel.dense_u4s4_gemm import dense_gemm_u4_s4
 from kernel.triton_kernel.sparse_s4s4_gemm import sparse_gemm_s4_s4
 from kernel.triton_kernel.fused_dense_sparse_gemm import fused_dense_sparse_gemm
@@ -137,31 +139,21 @@ def setup_logging(out_dir: Path) -> tuple[logging.Logger, Path]:
 
 
 # ---------------------------------------------------------------------------
-# Timer (torch.cuda.Event, min-of-means)
+# Timer (shared stable microbenchmark helper)
 # ---------------------------------------------------------------------------
 def bench_us(
     fn: Callable[[], None],
     *,
-    warmup: int = 10,
-    outer: int = 10,
-    inner: int = 50,
+    warmup: int = 50,
+    outer: int = 3,
+    inner: int = 100,
 ) -> float:
-    torch.cuda.synchronize()
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-
-    start_ev = torch.cuda.Event(enable_timing=True)
-    end_ev = torch.cuda.Event(enable_timing=True)
-    means: list[float] = []
-    for _ in range(outer):
-        start_ev.record()
-        for _ in range(inner):
-            fn()
-        end_ev.record()
-        torch.cuda.synchronize()
-        means.append(start_ev.elapsed_time(end_ev) * 1000.0 / inner)  # ms -> us
-    return min(means)
+    return time_ms(
+        fn,
+        n_warmup=warmup,
+        n_iter=inner,
+        n_repeat=outer,
+    ) * 1000.0
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +169,7 @@ def make_inputs(
 ):
     torch.manual_seed(seed + T + d_out + d_in)
     X = torch.randn(T, d_in, dtype=torch.float16, device=device) * 0.4
+    X_fp_t = X.transpose(0, 1).contiguous()
     perm = torch.arange(d_in, dtype=torch.int32, device=device)
 
     n_groups = d_in // BCOL
@@ -211,7 +204,7 @@ def make_inputs(
     X_s4, scale_x, sum_X = quantize_activation_s4(X, perm)
 
     return dict(
-        X=X, perm=perm,
+        X=X, X_fp_t=X_fp_t, perm=perm,
         W_low_packed=W_low_packed,
         W_high_packed=W_high_packed,
         hp_row_offsets=hp_row_offsets,
@@ -227,12 +220,16 @@ def make_inputs(
 # ---------------------------------------------------------------------------
 # Per-sub-kernel benches.  Each returns dict with three entries when applicable.
 # ---------------------------------------------------------------------------
+def bench_fp16_matmul(inp: dict) -> float:
+    return bench_us(lambda: torch.matmul(inp["W_fp"], inp["X_fp_t"]))
+
+
 def bench_activation_quant(T: int, d_in: int, log: logging.Logger):
     X = torch.randn(T, d_in, dtype=torch.float16, device="cuda") * 0.4
     perm = torch.arange(d_in, dtype=torch.int32, device="cuda")
     t_triton = bench_us(lambda: quantize_activation_s4(X, perm))
     t_cuda = bench_us(lambda: cuda_ops.activation_quant_cuda(X, perm))
-    # No fp16 baseline for quant (it's a non-matmul op)
+    # No fp16 baseline for quant (it is a non-matmul op).
     return {"triton_us": t_triton, "cuda_us": t_cuda}
 
 
@@ -243,28 +240,30 @@ def bench_dense_gemm(inp: dict, T: int, d_out: int, d_in: int):
     zero_u4 = inp["zero_u4"]
     sum_X = inp["sum_X"]
     scale_x = inp["scale_x"]
-    W_fp = inp["W_fp"]
-    X_fp = inp["X"]  # (T, d_in)
 
-    t_fp16 = bench_us(lambda: torch.matmul(W_fp, X_fp.t()))
+    t_fp16 = bench_fp16_matmul(inp)
     t_triton = bench_us(lambda: dense_gemm_u4_s4(
         W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
     ))
     t_cuda = bench_us(lambda: cuda_ops.dense_gemm_cuda(
         W_low_packed, X_s4, scale_u4, zero_u4, sum_X, scale_x
     ))
-    return {"fp16_us": t_fp16, "triton_us": t_triton, "cuda_us": t_cuda}
+    return {
+        "fp16_us": t_fp16,
+        "triton_us": t_triton,
+        "cuda_us": t_cuda,
+        "triton_speedup_vs_fp16": t_fp16 / t_triton,
+        "cuda_speedup_vs_fp16": t_fp16 / t_cuda,
+        "cuda_speedup_vs_triton": t_triton / t_cuda,
+    }
 
 
 def bench_sparse_gemm(inp: dict, T: int, d_out: int, d_in: int):
     X_s4 = inp["X_s4"]
     scale_u4 = inp["scale_u4"]
     scale_x = inp["scale_x"]
-    W_fp = inp["W_fp"]
-    X_fp = inp["X"]
 
-    # FP16 baseline is the same matmul (sparse has no fp16 analogue; use full matmul).
-    t_fp16 = bench_us(lambda: torch.matmul(W_fp, X_fp.t()))
+    t_fp16 = bench_fp16_matmul(inp)
     t_triton = bench_us(lambda: sparse_gemm_s4_s4(
         inp["W_high_packed"], inp["hp_row_offsets"], inp["hp_col_indices"],
         X_s4, scale_u4, scale_x, d_out, d_in,
@@ -273,14 +272,18 @@ def bench_sparse_gemm(inp: dict, T: int, d_out: int, d_in: int):
         inp["W_high_packed"], inp["hp_row_offsets"], inp["hp_col_indices"],
         X_s4, scale_u4, scale_x, d_out, d_in,
     ))
-    return {"fp16_us": t_fp16, "triton_us": t_triton, "cuda_us": t_cuda}
+    return {
+        "fp16_us": t_fp16,
+        "triton_us": t_triton,
+        "cuda_us": t_cuda,
+        "triton_speedup_vs_fp16": t_fp16 / t_triton,
+        "cuda_speedup_vs_fp16": t_fp16 / t_cuda,
+        "cuda_speedup_vs_triton": t_triton / t_cuda,
+    }
 
 
 def bench_fused(inp: dict, T: int, d_out: int, d_in: int):
-    W_fp = inp["W_fp"]
-    X_fp = inp["X"]
-
-    t_fp16 = bench_us(lambda: torch.matmul(W_fp, X_fp.t()))
+    t_fp16 = bench_fp16_matmul(inp)
     t_triton = bench_us(lambda: fused_dense_sparse_gemm(
         inp["W_low_packed"], inp["W_high_packed"],
         inp["hp_row_offsets"], inp["hp_col_indices"],
@@ -295,17 +298,23 @@ def bench_fused(inp: dict, T: int, d_out: int, d_in: int):
         inp["sum_X"], inp["scale_x"],
         d_out, d_in,
     ))
-    return {"fp16_us": t_fp16, "triton_us": t_triton, "cuda_us": t_cuda}
+    return {
+        "fp16_us": t_fp16,
+        "triton_us": t_triton,
+        "cuda_us": t_cuda,
+        "triton_speedup_vs_fp16": t_fp16 / t_triton,
+        "cuda_speedup_vs_fp16": t_fp16 / t_cuda,
+        "cuda_speedup_vs_triton": t_triton / t_cuda,
+    }
 
 
 def bench_end_to_end(inp: dict, T: int, d_out: int, d_in: int):
-    """Full quant + fused pipeline, as it would run in a real layer."""
-    W_fp = inp["W_fp"]
+    """Full quant + fused pipeline, comparing FP16 vs pure Triton vs pure CUDA."""
     X_fp = inp["X"]
     perm = inp["perm"]
 
-    # FP16 baseline: (T, d_in) @ (d_in, d_out) = (T, d_out)
-    t_fp16 = bench_us(lambda: torch.matmul(X_fp, W_fp.t()))
+    def run_fp16():
+        return torch.matmul(inp["W_fp"], inp["X_fp_t"])
 
     def run_triton():
         X_s4, sx, sX = quantize_activation_s4(X_fp, perm)
@@ -335,9 +344,17 @@ def bench_end_to_end(inp: dict, T: int, d_out: int, d_in: int):
             d_out, d_in,
         )
 
+    t_fp16 = bench_us(run_fp16)
     t_triton = bench_us(run_triton)
     t_cuda = bench_us(run_cuda)
-    return {"fp16_us": t_fp16, "triton_us": t_triton, "cuda_us": t_cuda}
+    return {
+        "fp16_us": t_fp16,
+        "triton_us": t_triton,
+        "cuda_us": t_cuda,
+        "triton_speedup_vs_fp16": t_fp16 / t_triton,
+        "cuda_speedup_vs_fp16": t_fp16 / t_cuda,
+        "cuda_speedup_vs_triton": t_triton / t_cuda,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -425,38 +442,44 @@ def run_one_shape(
     if e2e is not None:
         log.info(
             "%-11s %-12s T=%-4d [%5d->%5d] "
-            "e2e: fp16=%6.1f  triton=%6.1f (%4.2fx)  cuda=%6.1f (%4.2fx)",
+            "e2e: fp16=%6.1f  triton=%6.1f  cuda=%6.1f  cuda/fp16=%4.2fx  cuda/triton=%4.2fx",
             model.name, proj.proj, T, d_in, d_out,
             e2e["fp16_us"],
-            e2e["triton_us"], e2e["fp16_us"] / e2e["triton_us"],
-            e2e["cuda_us"],   e2e["fp16_us"] / e2e["cuda_us"],
+            e2e["triton_us"],
+            e2e["cuda_us"],
+            e2e["cuda_speedup_vs_fp16"],
+            e2e["cuda_speedup_vs_triton"],
         )
     return records
 
 
 def write_markdown(records: list[dict], out_path: Path, meta: dict):
-    """Produce a human-friendly markdown summary with per-model tables."""
+    """Produce a human-friendly markdown summary with FP16, Triton, and CUDA tables."""
+    def fmt_us(v):
+        return " - " if v is None else f"{v:.2f}"
+
+    def fmt_ratio(v):
+        return " - " if v is None else f"{v:.2f}x"
+
     lines: list[str] = []
     lines.append(f"# Qwen3 multi-scale kernel benchmark\n")
     lines.append(f"- Timestamp: `{meta['ts']}`")
     lines.append(f"- Device: `{meta['device_name']}`")
     lines.append(f"- PyTorch: `{meta['torch_version']}`  Triton: `{meta['triton_version']}`")
     lines.append(f"- Baseline: cuBLAS FP16 matmul (`torch.matmul` on `fp16`)")
-    lines.append(f"- CUDA path: `mma.m16n8k64.s4.s4.s32` INT4 Tensor Core + GEMV decode")
-    lines.append(f"- Triton path: `dense_u4s4_gemm` / `sparse_s4s4_gemm` / `fused_dense_sparse_gemm`")
+    lines.append(f"- CUDA path: `activation_quant_cuda` + `fused_dense_sparse_cuda` (T=1 uses `fused_quant_gemv_cuda`, with automatic fallback on unsupported decode-group counts)")
+    lines.append(f"- Triton path: `quantize_activation_s4` + `fused_dense_sparse_gemm`")
     lines.append(f"- hp_ratio: `{meta['hp_ratio']}`  (block-sparse density)")
-    lines.append(f"- Stats: min-of-means, 10 outer x 50 inner, after 10 warmup\n")
+    lines.append(f"- Stats: stable microbenchmark helper = 50 warmup, 100 inner, 3 repeats, min-of-means\n")
 
-    # Collect distinct models and Ts
     models = []
     for r in records:
         if r["model"] not in models:
             models.append(r["model"])
     Ts = sorted({r["T"] for r in records})
 
-    # ------- Section 1: End-to-end, per model, rows = proj, cols = T -------
-    lines.append("\n## 1. End-to-end v9_linear (quant + fused), speedup vs cuBLAS FP16\n")
-    lines.append("Rows: projection.  Cells: `cuda / fp16` ratio (>1.0x = CUDA wins).\n")
+    lines.append("\n## 1. End-to-end speedup vs FP16\n")
+    lines.append("Rows: projection. Cells: `fp16_us / cuda_us` (>1.0x means CUDA wins).\n")
     for m in models:
         lines.append(f"\n### {m}")
         projs = []
@@ -464,7 +487,7 @@ def write_markdown(records: list[dict], out_path: Path, meta: dict):
             if r["model"] == m and r["kernel"] == "end_to_end" and r["proj"] not in projs:
                 projs.append(r["proj"])
         header = "| proj | shape |" + "".join(f" T={t} |" for t in Ts)
-        sep    = "|---|---|" + "---:|" * len(Ts)
+        sep = "|---|---|" + "---:|" * len(Ts)
         lines.append(header)
         lines.append(sep)
         for p in projs:
@@ -478,38 +501,31 @@ def write_markdown(records: list[dict], out_path: Path, meta: dict):
                     row_cells.append(" - ")
                 else:
                     shape_str = f"{rec['d_in']}->{rec['d_out']}"
-                    ratio = rec["fp16_us"] / rec["cuda_us"]
-                    row_cells.append(f" **{ratio:.2f}x** ")
+                    row_cells.append(f" **{rec['cuda_speedup_vs_fp16']:.2f}x** ")
             lines.append(f"| {p} | {shape_str} |" + "|".join(row_cells) + "|")
 
-    # ------- Section 2: End-to-end raw us tables -------
     lines.append("\n\n## 2. End-to-end raw latencies (us)\n")
     for m in models:
         lines.append(f"\n### {m} - end-to-end (us)")
-        header = ("| proj | shape | T |"
-                  " fp16 | triton | triton/fp16 |"
-                  " cuda | cuda/fp16 | cuda/triton |")
-        sep = "|---|---|---:|" + "---:|" * 7
+        header = "| proj | shape | T | fp16 | triton | cuda | triton/fp16 | cuda/fp16 | cuda/triton |"
+        sep = "|---|---|---:|---:|---:|---:|---:|---:|---:|"
         lines.append(header)
         lines.append(sep)
         rows = [r for r in records if r["model"] == m and r["kernel"] == "end_to_end"]
         rows.sort(key=lambda r: (r["proj"], r["T"]))
         for r in rows:
             shape_str = f"{r['d_in']}->{r['d_out']}"
-            fp = r["fp16_us"]; tri = r["triton_us"]; cu = r["cuda_us"]
             lines.append(
                 f"| {r['proj']} | {shape_str} | {r['T']} | "
-                f"{fp:.2f} | {tri:.2f} | {fp/tri:.2f}x | "
-                f"{cu:.2f} | {fp/cu:.2f}x | {tri/cu:.2f}x |"
+                f"{fmt_us(r.get('fp16_us'))} | {fmt_us(r.get('triton_us'))} | {fmt_us(r.get('cuda_us'))} | "
+                f"{fmt_ratio(r.get('triton_speedup_vs_fp16'))} | {fmt_ratio(r.get('cuda_speedup_vs_fp16'))} | {fmt_ratio(r.get('cuda_speedup_vs_triton'))} |"
             )
 
-    # ------- Section 3: sub-kernel breakdown (keep compact per-model) -------
-    lines.append("\n\n## 3. Sub-kernel breakdown\n")
+    lines.append("\n\n## 3. Sub-kernel breakdown (us)\n")
     for m in models:
-        lines.append(f"\n### {m} - sub-kernels (us)")
-        header = ("| proj | T | kernel | fp16 | triton | cuda"
-                  " | triton/fp16 | cuda/fp16 | cuda/triton |")
-        sep = "|---|---:|---|" + "---:|" * 6
+        lines.append(f"\n### {m} - sub-kernels")
+        header = "| proj | T | kernel | fp16 | triton | cuda | triton/fp16 | cuda/fp16 | cuda/triton |"
+        sep = "|---|---:|---|---:|---:|---:|---:|---:|---:|"
         lines.append(header)
         lines.append(sep)
         rows = [r for r in records if r["model"] == m and r["kernel"] != "end_to_end"]
@@ -517,20 +533,66 @@ def write_markdown(records: list[dict], out_path: Path, meta: dict):
                                  ["activation_quant", "dense_gemm", "sparse_gemm",
                                   "fused_dense_sparse"].index(r["kernel"])))
         for r in rows:
-            fp = r.get("fp16_us")
-            tri = r.get("triton_us")
-            cu = r.get("cuda_us")
-            fp_s = f"{fp:.2f}" if fp is not None else " - "
-            tri_s = f"{tri:.2f}" if tri is not None else " - "
-            cu_s = f"{cu:.2f}" if cu is not None else " - "
-            t_fp = f"{fp/tri:.2f}x" if fp and tri else " - "
-            c_fp = f"{fp/cu:.2f}x" if fp and cu else " - "
-            c_tri = f"{tri/cu:.2f}x" if tri and cu else " - "
             lines.append(
-                f"| {r['proj']} | {r['T']} | {r['kernel']} "
-                f"| {fp_s} | {tri_s} | {cu_s} "
-                f"| {t_fp} | {c_fp} | {c_tri} |"
+                f"| {r['proj']} | {r['T']} | {r['kernel']} | "
+                f"{fmt_us(r.get('fp16_us'))} | {fmt_us(r.get('triton_us'))} | {fmt_us(r.get('cuda_us'))} | "
+                f"{fmt_ratio(r.get('triton_speedup_vs_fp16'))} | {fmt_ratio(r.get('cuda_speedup_vs_fp16'))} | {fmt_ratio(r.get('cuda_speedup_vs_triton'))} |"
             )
+
+    lines.append("\n\n## 4. End-to-end speedup (CUDA over Triton)\n")
+    lines.append("Rows: projection. Cells: `triton_us / cuda_us` (>1.0x means CUDA wins).\n")
+    for m in models:
+        lines.append(f"\n### {m}")
+        projs = []
+        for r in records:
+            if r["model"] == m and r["kernel"] == "end_to_end" and r["proj"] not in projs:
+                projs.append(r["proj"])
+        header = "| proj | shape |" + "".join(f" T={t} |" for t in Ts)
+        sep = "|---|---|" + "---:|" * len(Ts)
+        lines.append(header)
+        lines.append(sep)
+        for p in projs:
+            shape_str = ""
+            row_cells = []
+            for t in Ts:
+                rec = next((r for r in records if r["model"] == m
+                            and r["proj"] == p and r["kernel"] == "end_to_end"
+                            and r["T"] == t), None)
+                if rec is None:
+                    row_cells.append(" - ")
+                else:
+                    shape_str = f"{rec['d_in']}->{rec['d_out']}"
+                    row_cells.append(f" **{rec['cuda_speedup_vs_triton']:.2f}x** ")
+            lines.append(f"| {p} | {shape_str} |" + "|".join(row_cells) + "|")
+
+    lines.append("\n\n## 5. CUDA end-to-end bottleneck hint\n")
+    lines.append("For each shape, compare CUDA `activation_quant` against CUDA `fused_dense_sparse`. A larger `quant_share` means launch/prologue dominates; a larger `fused_share` means the main CUDA matmul kernel dominates.\n")
+    lines.append("| model | proj | T | shape | quant_us | fused_us | quant_share | fused_share | likely_bottleneck |")
+    lines.append("|---|---|---:|---|---:|---:|---:|---:|---|")
+    for m in models:
+        for p in ["q_proj", "kv_proj", "o_proj", "gate_up_proj", "down_proj"]:
+            for t in Ts:
+                cell = {r["kernel"]: r for r in records if r["model"] == m and r["proj"] == p and r["T"] == t}
+                q = cell.get("activation_quant")
+                f = cell.get("fused_dense_sparse")
+                e = cell.get("end_to_end")
+                if q is None or f is None or e is None:
+                    continue
+                quant_us = q["cuda_us"]
+                fused_us = f["cuda_us"]
+                total = quant_us + fused_us
+                quant_share = quant_us / total if total > 0 else 0.0
+                fused_share = fused_us / total if total > 0 else 0.0
+                if quant_share >= 0.35:
+                    bottleneck = "quant/prologue dominated"
+                elif fused_share >= 0.80:
+                    bottleneck = "main fused kernel dominated"
+                else:
+                    bottleneck = "mixed"
+                lines.append(
+                    f"| {m} | {p} | {t} | {e['d_in']}->{e['d_out']} | "
+                    f"{quant_us:.2f} | {fused_us:.2f} | {quant_share:.1%} | {fused_share:.1%} | {bottleneck} |"
+                )
 
     out_path.write_text("\n".join(lines) + "\n")
 

@@ -36,6 +36,7 @@ if str(_IMPORT_ROOT) not in sys.path:
     sys.path.insert(0, str(_IMPORT_ROOT))
 
 from kernel.triton_kernel.activation_quant import quantize_activation_s4
+from kernel.triton_kernel.benchmarks._bench_util import time_ms
 from kernel.triton_kernel.pack_utils import BCOL, BROW, pack_s4_le
 from kernel.cuda_kernel import ops as cuda_ops
 
@@ -65,35 +66,23 @@ def _setup_logging(log_file: Path) -> logging.Logger:
 
 
 # ---------------------------------------------------------------------------
-# Timing (min-of-means)
+# Timing (stable shared microbenchmark helper)
 # ---------------------------------------------------------------------------
 def _bench_fn(
     fn: Callable[[], None],
     *,
-    warmup: int = 10,
-    outer: int = 10,
-    inner: int = 50,
+    warmup: int = 50,
+    outer: int = 3,
+    inner: int = 100,
     device: torch.device | None = None,
 ) -> float:
-    if device is None:
-        device = torch.device("cuda")
-    torch.cuda.synchronize(device)
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize(device)
-
-    start_ev = torch.cuda.Event(enable_timing=True)
-    end_ev = torch.cuda.Event(enable_timing=True)
-    means_us = []
-    for _ in range(outer):
-        start_ev.record()
-        for _ in range(inner):
-            fn()
-        end_ev.record()
-        torch.cuda.synchronize(device)
-        batch_us = start_ev.elapsed_time(end_ev) * 1000.0 / inner
-        means_us.append(batch_us)
-    return min(means_us)
+    del device
+    return time_ms(
+        fn,
+        n_warmup=warmup,
+        n_iter=inner,
+        n_repeat=outer,
+    ) * 1000.0
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +340,7 @@ def main():
     lines: list[str] = []
     lines.append(f"# CUDA INT4 MMA benchmark ({ts})\n")
     lines.append("Host: `autodl` / RTX 4090 (SM89)\n")
-    lines.append("Stats: min-of-means, 10 outer x 50 inner, after 10 warmup calls.\n")
+    lines.append("Stats: stable microbenchmark helper = 50 warmup, 100 inner, 3 repeats, min-of-means.\n")
     lines.append("**Baseline**: cuBLAS FP16 matmul (`torch.matmul` on `torch.float16`).\n")
     lines.append(
         "**CUDA path**: `mma.m16n8k64.s4.s4.s32` (native INT4 Tensor Core MMA).\n"
