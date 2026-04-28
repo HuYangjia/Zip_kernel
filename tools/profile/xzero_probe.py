@@ -226,10 +226,17 @@ def _stage_fused_mma(bundle) -> Callable[[], None]:
 # ---------------------------------------------------------------------------
 # Experiments
 # ---------------------------------------------------------------------------
-def exp_stage_decomp(shape_args: Dict) -> Dict:
-    """Time each of the two CUDA ops, base vs X=0."""
-    out = {"shape": shape_args, "timings": []}
-    for fill in ("random", "zero"):
+def exp_stage_decomp(shape_args: Dict, *, reverse_order: bool = False) -> Dict:
+    """Time each of the two CUDA ops, base vs X=0.
+
+    When ``reverse_order`` is True we measure zero *before* random.  If
+    the slowdown signal flips sign under order reversal, it's a warm-up
+    / clock-scaling artefact of the measurement pipeline rather than a
+    real data-dependent kernel effect.
+    """
+    out = {"shape": shape_args, "timings": [], "order": "zero,random" if reverse_order else "random,zero"}
+    fills = ("zero", "random") if reverse_order else ("random", "zero")
+    for fill in fills:
         bundle = _make_inputs(**shape_args, x_fill=fill)
         t_quant = _bench_us(_stage_activation_quant(bundle))
         t_mma = _bench_us(_stage_fused_mma(bundle))
@@ -239,14 +246,17 @@ def exp_stage_decomp(shape_args: Dict) -> Dict:
             "fused_mma_us": t_mma,
             "sum_us": t_quant + t_mma,
         })
-    # Derived deltas
+    # Derived deltas — always reference random as base regardless of run order.
     base = next(t for t in out["timings"] if t["x_fill"] == "random")
     zero = next(t for t in out["timings"] if t["x_fill"] == "zero")
     out["deltas_pct"] = {
-        "activation_quant": (zero["activation_quant_us"] - base["activation_quant_us"]) / base["activation_quant_us"] * 100.0,
-        "fused_mma":        (zero["fused_mma_us"] - base["fused_mma_us"]) / base["fused_mma_us"] * 100.0,
-        "sum":              (zero["sum_us"] - base["sum_us"]) / base["sum_us"] * 100.0,
+        "activation_quant": (base["activation_quant_us"] - zero["activation_quant_us"]) / base["activation_quant_us"] * 100.0,
+        "fused_mma":        (base["fused_mma_us"] - zero["fused_mma_us"]) / base["fused_mma_us"] * 100.0,
+        "sum":              (base["sum_us"] - zero["sum_us"]) / base["sum_us"] * 100.0,
     }
+    # NOTE: delta sign convention is now "positive = zero is faster",
+    # same as microbench_bisection.py.  A value of -27.9 means "zero is
+    # 27.9% slower than random".
     return out
 
 
@@ -279,15 +289,18 @@ def exp_shape_family(shapes: List[Dict]) -> Dict:
     out = {"rows": []}
     for s in shapes:
         try:
-            row = exp_stage_decomp(s)
+            # Strip non-kernel kwargs before passing to _make_inputs.
+            name = s.get("name", f"T{s['T']}_{s['d_in']}_{s['d_out']}")
+            kargs = {k: v for k, v in s.items() if k != "name"}
+            row = exp_stage_decomp(kargs)
             out["rows"].append({
-                "name": s.get("name", f"T{s['T']}_{s['d_in']}_{s['d_out']}"),
-                **{k: v for k, v in s.items() if k != "name"},
+                "name": name,
+                **kargs,
                 "quant_delta_pct": row["deltas_pct"]["activation_quant"],
                 "mma_delta_pct":   row["deltas_pct"]["fused_mma"],
                 "sum_delta_pct":   row["deltas_pct"]["sum"],
             })
-            print(f"  {s.get('name','?'):<40s} quant Δ={row['deltas_pct']['activation_quant']:+.1f}%  mma Δ={row['deltas_pct']['fused_mma']:+.1f}%", flush=True)
+            print(f"  {name:<40s} quant Δ={row['deltas_pct']['activation_quant']:+.1f}%  mma Δ={row['deltas_pct']['fused_mma']:+.1f}%", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"  {s}: FAILED {exc}", flush=True)
             out["rows"].append({**s, "error": str(exc)})
@@ -400,9 +413,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         sd = exp_stage_decomp(mid)
         (args.out / "stage_decomp.json").write_text(json.dumps(sd, indent=2))
         d = sd["deltas_pct"]
-        print(f"  activation_quant Δ = {d['activation_quant']:+.2f}%")
+        print(f"  activation_quant Δ = {d['activation_quant']:+.2f}%  (positive = zero faster)")
         print(f"  fused_mma        Δ = {d['fused_mma']:+.2f}%")
-        print(f"  sum              Δ = {d['sum']:+.2f}%\n")
+        print(f"  sum              Δ = {d['sum']:+.2f}%")
+
+        # Order-reversal control: measure zero BEFORE random.  If the
+        # anomaly is a measurement artefact (warm-up / clock scaling /
+        # L2 state bleed between variants), reversing the order flips
+        # the sign.  If it is a genuine data-dependent kernel effect,
+        # the sign is preserved.
+        print("=== 1b. Order-reversal control (zero first, then random) ===", flush=True)
+        sd_rev = exp_stage_decomp(mid, reverse_order=True)
+        (args.out / "stage_decomp_reversed.json").write_text(json.dumps(sd_rev, indent=2))
+        dr = sd_rev["deltas_pct"]
+        print(f"  activation_quant Δ = {dr['activation_quant']:+.2f}%")
+        print(f"  fused_mma        Δ = {dr['fused_mma']:+.2f}%")
+        print(f"  sum              Δ = {dr['sum']:+.2f}%\n")
+        # Attach the reversed measurement to the main stage_decomp payload for the
+        # renderer.
+        sd["reversed"] = sd_rev
 
     if args.only in ("t_sweep", "all"):
         print("=== 2. T-sweep (d_in=2560, d_out=2048, hp_ratio=0.05) ===", flush=True)
