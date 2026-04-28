@@ -9,14 +9,14 @@
     "n_hp_blocks": 12
   },
   "timings_us": {
-    "base_us": 46.542720794677734,
-    "l2_hot_us": 45.519680976867676,
-    "x_zero_us": 45.49727916717529,
-    "scale_one_us": 45.548157691955566
+    "base_us": 42.0249605178833,
+    "l2_hot_us": 41.6153621673584,
+    "x_zero_us": 41.56479835510254,
+    "scale_one_us": 41.66656017303467
   },
   "deltas_pct": {
-    "l2_hot_delta_pct": 2.198066207438061,
-    "x_zero_delta_pct": 2.2461979223655315,
-    "scale_one_delta_pct": 2.1368821713489052
+    "l2_hot_delta_pct": 0.9746549323957172,
+    "x_zero_delta_pct": 1.0949734565126938,
+    "scale_one_delta_pct": 0.8528273207921733
   }
 }
