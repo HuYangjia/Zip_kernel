@@ -45,6 +45,7 @@ from .registry import (
     KERNEL_SPARSE_GEMM,
     BackendKernel,
 )
+from kernel.tools.profile.nvtx_shim import nvtx_range as _nvtx_range
 
 logger = logging.getLogger(__name__)
 
@@ -71,23 +72,24 @@ def select_impl(kernel_name: str, args: tuple, kwargs: dict) -> Callable[..., An
     kernel, 2-4 kernels per forward).  Keep it allocation-free apart
     from the :class:`ShapeContext` dataclass.
     """
-    ctx = _build_shape_context(kernel_name, args, kwargs)
-    choice = current_policy()(kernel_name, ctx)
+    with _nvtx_range("dispatcher.select_impl"):
+        ctx = _build_shape_context(kernel_name, args, kwargs)
+        choice = current_policy()(kernel_name, ctx)
 
-    if choice == "cuda":
-        fn = BackendKernel.cuda_impl(kernel_name)
-        if fn is not None:
-            return fn
-        # Silent fallback: we promised in set_backend_policy('cuda')'s
-        # docstring that missing CUDA impls transparently degrade.
-        return BackendKernel.triton_impl(kernel_name)
+        if choice == "cuda":
+            fn = BackendKernel.cuda_impl(kernel_name)
+            if fn is not None:
+                return fn
+            # Silent fallback: we promised in set_backend_policy('cuda')'s
+            # docstring that missing CUDA impls transparently degrade.
+            return BackendKernel.triton_impl(kernel_name)
 
-    if choice == "triton":
-        return BackendKernel.triton_impl(kernel_name)
+        if choice == "triton":
+            return BackendKernel.triton_impl(kernel_name)
 
-    raise ValueError(
-        f"Policy returned unexpected backend {choice!r} for kernel {kernel_name!r}"
-    )
+        raise ValueError(
+            f"Policy returned unexpected backend {choice!r} for kernel {kernel_name!r}"
+        )
 
 
 def _build_shape_context(
@@ -274,22 +276,23 @@ def v9_linear_forward(X_fp16: torch.Tensor, W: V9WeightContainer) -> torch.Tenso
     tensor with last dim replaced by ``W.d_out``.  Per-kernel backend
     selection happens inside the pipeline via the active policy.
     """
-    assert X_fp16.is_cuda and X_fp16.dtype == torch.float16
-    original_shape = X_fp16.shape
-    d_in = W.d_in
-    d_out = W.d_out
-    if X_fp16.shape[-1] != d_in:
-        raise ValueError(
-            f"X last dim ({X_fp16.shape[-1]}) must match d_in ({d_in})"
-        )
-    X_2d = X_fp16.reshape(-1, d_in)
-    T = X_2d.shape[0]
-    if T <= DECODE_T_THRESHOLD:
-        Y_out = _forward_decode(X_2d, W, T=T, d_out=d_out, d_in=d_in)
-    else:
-        Y_out = _forward_prefill(X_2d, W, T=T, d_out=d_out, d_in=d_in)
-    out_shape = original_shape[:-1] + (d_out,)
-    return Y_out.reshape(out_shape)
+    with _nvtx_range("ops.linear_forward"):
+        assert X_fp16.is_cuda and X_fp16.dtype == torch.float16
+        original_shape = X_fp16.shape
+        d_in = W.d_in
+        d_out = W.d_out
+        if X_fp16.shape[-1] != d_in:
+            raise ValueError(
+                f"X last dim ({X_fp16.shape[-1]}) must match d_in ({d_in})"
+            )
+        X_2d = X_fp16.reshape(-1, d_in)
+        T = X_2d.shape[0]
+        if T <= DECODE_T_THRESHOLD:
+            Y_out = _forward_decode(X_2d, W, T=T, d_out=d_out, d_in=d_in)
+        else:
+            Y_out = _forward_prefill(X_2d, W, T=T, d_out=d_out, d_in=d_in)
+        out_shape = original_shape[:-1] + (d_out,)
+        return Y_out.reshape(out_shape)
 
 
 def v9_linear_forward_decode(

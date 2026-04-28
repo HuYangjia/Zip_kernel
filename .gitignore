@@ -8,11 +8,20 @@ __pycache__/
 triton/benchmarks/results/
 triton_kernel/benchmarks/results/
 
-# Profiling outputs (nsys/ncu reports)
+# Profiling outputs (nsys/ncu reports) — large binary artefacts
 *.nsys-rep
 *.qdrep
 *.ncu-rep
 *.sqlite
+
+# Phase 1/2 profile data dirs — keep .gitkeep, .md, .json; ignore large binaries
+cuda_kernel/logs/phase1_timeline/**/*.nsys-rep
+cuda_kernel/logs/phase1_timeline/**/*.sqlite
+cuda_kernel/logs/phase2_microscope/**/*.nsys-rep
+cuda_kernel/logs/phase2_microscope/**/*.sqlite
+cuda_kernel/logs/_profile/**/*.nsys-rep
+cuda_kernel/logs/_profile/**/*.sqlite
+cuda_kernel/logs/_profile/**/trivial.py
 
 # Editor
 .vscode/

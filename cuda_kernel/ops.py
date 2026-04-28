@@ -33,6 +33,7 @@ from typing import Tuple
 import torch
 
 from kernel.triton_kernel.pack_utils import BCOL
+from kernel.tools.profile.nvtx_shim import nvtx_range as _nvtx_range
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +138,10 @@ def activation_quant_cuda(
     bcol: int = BCOL,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fused per-token SINT4 activation quantization (CUDA)."""
-    assert X_fp16.is_cuda, "activation_quant_cuda requires a CUDA tensor"
-    assert X_fp16.dtype == torch.float16, "X must be fp16"
-    assert perm.dtype in (torch.int32, torch.int64), "perm must be int32/int64"
+    with _nvtx_range("cuda.activation_quant"):
+        assert X_fp16.is_cuda, "activation_quant_cuda requires a CUDA tensor"
+        assert X_fp16.dtype == torch.float16, "X must be fp16"
+        assert perm.dtype in (torch.int32, torch.int64), "perm must be int32/int64"
 
     original_shape = X_fp16.shape
     if X_fp16.dim() == 3:
@@ -154,20 +156,20 @@ def activation_quant_cuda(
     if D % 2 != 0:
         raise ValueError(f"d_in ({D}) must be even for 4-bit packing")
 
-    X_2d = X_fp16.reshape(T, D).contiguous()
-    perm_i32 = perm.to(torch.int32).contiguous()
+        X_2d = X_fp16.reshape(T, D).contiguous()
+        perm_i32 = perm.to(torch.int32).contiguous()
 
-    n_groups = D // bcol
-    device = X_2d.device
-    X_s4 = torch.empty((T, D // 2), dtype=torch.int8, device=device)
-    scale_x = torch.empty((T,), dtype=torch.float16, device=device)
-    sum_X = torch.empty((T, n_groups), dtype=torch.int32, device=device)
+        n_groups = D // bcol
+        device = X_2d.device
+        X_s4 = torch.empty((T, D // 2), dtype=torch.int8, device=device)
+        scale_x = torch.empty((T,), dtype=torch.float16, device=device)
+        sum_X = torch.empty((T, n_groups), dtype=torch.int32, device=device)
 
-    _ext.activation_quant_launch(
-        X_2d, perm_i32, X_s4, scale_x, sum_X,
-        int(T), int(D), int(bcol),
-    )
-    return X_s4, scale_x, sum_X
+        _ext.activation_quant_launch(
+            X_2d, perm_i32, X_s4, scale_x, sum_X,
+            int(T), int(D), int(bcol),
+        )
+        return X_s4, scale_x, sum_X
 
 
 # ---------------------------------------------------------------------------
@@ -472,16 +474,17 @@ def fused_dense_sparse_cuda(
     # than INT4 MMA because MMA already uses N=8 perfectly at T>=8 and
     # the dp4a warp-reduce latency dominates.  Kept the smallT kernel
     # available via fused_gemv_cuda_smallT but NOT on the default path.
-    T = X_s4.shape[0]
-    if T == 1 and _can_use_decode_gemv_for_din(d_in):
-        return fused_gemv_cuda_decode(
+    with _nvtx_range("cuda.fused_dense_sparse"):
+        T = X_s4.shape[0]
+        if T == 1 and _can_use_decode_gemv_for_din(d_in):
+            return fused_gemv_cuda_decode(
+                W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+                X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+            )
+        return fused_dense_sparse_cuda_int4(
             W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
             X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
         )
-    return fused_dense_sparse_cuda_int4(
-        W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
-        X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
-    )
 
 
 __all__ = [
