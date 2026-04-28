@@ -149,6 +149,7 @@ def _collect_one(
         sql_cmd = [
             "nsys", "export",
             "-t", "sqlite",
+            "-f", "true",
             "-o", str(sqlite_file),
             str(rep_file),
         ]
