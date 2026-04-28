@@ -1,0 +1,22 @@
+{
+  "shape": {
+    "tag": "mid_T128_kv_2560_2048",
+    "T": 128,
+    "d_in": 2560,
+    "d_out": 2048,
+    "hp_ratio": 0.05,
+    "model": "Qwen3-4B",
+    "proj": "kv_proj",
+    "note": "mid-T regime, representative of 13% median eff bucket"
+  },
+  "git_sha": "30bedb0a5d90",
+  "gpu": "NVIDIA GeForce RTX 4090, 580.105.08, 8.9",
+  "nsys_version": "NVIDIA Nsight Systems version 2025.1.1.0",
+  "start_time_utc": "2026-04-28T09:22:12.997701Z",
+  "end_time_utc": "2026-04-28T09:22:19.541066Z",
+  "cmd_line": "nsys profile -t cuda,nvtx,osrt -f true -o /root/Zip_kernel/cuda_kernel/logs/phase1_timeline/mid_T128_kv_2560_2048/report --stats=false /root/miniconda3/envs/zip/bin/python /root/Zip_kernel/tools/profile/phase1_inner_driver.py mid_T128_kv_2560_2048 --calls 10",
+  "inner_calls": 10,
+  "rc": 0,
+  "report_exists": true,
+  "sqlite_exists": true
+}

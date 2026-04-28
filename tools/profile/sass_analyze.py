@@ -5,14 +5,41 @@ runs ``cuobjdump --dump-sass`` and ``cuobjdump --dump-resource-usage``,
 classifies SASS instructions into operational families, and emits three
 static verdicts per kernel:
 
-  * ``tc_underutil``      - HMMA / IMMA fraction < 5 % (not using TC).
-  * ``epilogue_fma_bound``- IMAD + FFMA fraction > 40 % (FMA dominant).
+  * ``tc_underutil``      - **MAC-weighted** TC share < 50 %.  Meaning:
+                            the tensor pipeline is emitted (IMMA/HMMA
+                            present) but does not dominate the MAC
+                            budget, or it dominates MACs but its issue
+                            slots are starved by epilogue FMA / address
+                            IMAD / shared-memory roundtrip.  The label
+                            name is retained for downstream taxonomy
+                            stability; the *meaning* is "MMA pipeline
+                            starvation".  See
+                            ``cuda_kernel/logs/phase2_microscope/
+                            phase2_tc_rediagnosis.md`` for the
+                             2026-04-28 rediagnosis that swapped the
+                            trigger from ``tc_fraction<5 %`` (issue-slot
+                            share) to ``mac_tc_share<50 %`` (MAC share).
+  * ``epilogue_fma_bound``- CUDA_FMA issue-slot fraction > 40 %
+                            (FMA dominant) — typically the dequant
+                            epilogue dominates the non-tensor-pipeline
+                            budget.
   * ``register_spill``    - resource-usage reports STACK > 0 or LOCAL > 0
                             (indicates local-memory usage i.e. register
                             spilling).
 
 The script does **not** require a GPU, it's a pure offline static pass;
 we rely on cuobjdump being on ``$PATH`` (typically ``/usr/local/cuda/bin``).
+
+MAC-weight reference (sm_89)
+----------------------------
+One ``mma.m16n8k64.s4.s4.s32`` does ``16 * 8 * 64 = 8192`` integer MACs;
+one ``HFMA2`` does 2 MACs; one ``FFMA`` / ``IMAD`` does 1 MAC; one
+``IDP4A`` does 4 MACs.  A naive "TC-instruction-count / total-insts"
+ratio therefore *underestimates* TC compute share by several thousand
+times whenever the kernel is IMMA-based: 64 IMMAs looks like ~1.3 %
+of a 5000-instruction histogram but delivers 99 % of the MACs.  The
+``mac_tc_share`` property below fixes this by weighing each family
+by its per-instruction MAC throughput.
 
 Usage
 -----
@@ -49,6 +76,10 @@ FAMILY_PATTERNS: Dict[str, re.Pattern[str]] = {
     "TC_MMA":   re.compile(r"^\s*(?:HMMA|IMMA|BMMA|DMMA)\b"),
     # CUDA core ALU-FMA family.
     "CUDA_FMA": re.compile(r"^\s*(?:FFMA|DFMA|IMAD|IMAD\.)"),
+    # Dot-product-accumulate (INT8x4 -> INT32, 4 MAC / inst on sm_89).
+    # Used by dense_gemv_decode / fused_gemv_decode to compute the W4
+    # GEMV lane on CUDA cores (dp4a path, not MMA path).
+    "DP4A":     re.compile(r"^\s*(?:IDP|IDP\.4A|IDP4A)\b"),
     # Integer ALU (not FMA): adds, shifts, logic.
     "INT_ALU":  re.compile(r"^\s*(?:IADD|IADD3|ISETP|ISCADD|LOP3|LOP|SHF|SHL|SHR|IMUL|XMAD)\b"),
     # Load/store to global memory.
@@ -84,9 +115,51 @@ class KernelStats:
     total_insts: int
     counts: Dict[str, int] = field(default_factory=dict)
 
+    # Per-instruction MAC throughput on sm_89.  These constants underpin
+    # ``mac_tc_share`` and fix the 2026-04-28 rediagnosis (see
+    # ``phase2_tc_rediagnosis.md``).  An IMMA m16n8k64.s4.s4.s32 does
+    # 16*8*64=8192 MACs; HMMA m16n8k16.f16 does 16*8*16=2048 MACs; we
+    # pick the dominant s4 variant since our W4A4 kernels use s4 IMMA
+    # throughout.  For HFMA2 nvcc emits FFMA-buckets as scalar FMA so we
+    # keep the conservative 1 MAC/inst (pack-2 underestimate is OK: it
+    # biases MAC share *down*, so tc_underutil triggering is still
+    # sound as an upper bound).
+    _MAC_PER_INST = {
+        "TC_MMA": 8192,  # s4 m16n8k64 on sm_89 (our hot path)
+        "CUDA_FMA": 1,
+        "DP4A": 4,
+    }
+
     @property
     def tc_fraction(self) -> float:
+        """Issue-slot share of TC instructions (not MAC share).
+
+        This is the *count-weighted* fraction of IMMA/HMMA in the SASS
+        histogram.  It is useful as a pipeline-scheduling indicator
+        ("how often does the warp scheduler hand off to the tensor
+        pipeline?") but is **not** a direct proxy for compute share.
+        See :attr:`mac_tc_share` for the compute-weighted equivalent.
+        """
         return self.counts.get("TC_MMA", 0) / self.total_insts if self.total_insts else 0.0
+
+    @property
+    def mac_tc_share(self) -> float:
+        """MAC-weighted share of work delivered by TC instructions.
+
+        ``mac_tc_share = MAC(TC) / MAC(TC + CUDA_FMA + DP4A)``.  This is
+        the correct denominator for claims of the form "is TC carrying
+        the compute?".  See module docstring and
+        ``phase2_tc_rediagnosis.md`` for why this matters.
+        """
+        mac_tc = self.counts.get("TC_MMA", 0) * self._MAC_PER_INST["TC_MMA"]
+        mac_cuda = (
+            self.counts.get("CUDA_FMA", 0) * self._MAC_PER_INST["CUDA_FMA"]
+            + self.counts.get("DP4A", 0) * self._MAC_PER_INST["DP4A"]
+        )
+        total = mac_tc + mac_cuda
+        if total == 0:
+            return 0.0
+        return mac_tc / total
 
     @property
     def fma_fraction(self) -> float:
@@ -100,7 +173,15 @@ class KernelStats:
 
     def verdicts(self) -> List[str]:
         v: List[str] = []
-        if self.tc_fraction < 0.05:
+        # Gate ``tc_underutil`` on MAC-weighted share, not issue-slot
+        # share.  A kernel with 64 IMMAs + 1408 FFMAs has tc_fraction=
+        # 1.28 % but mac_tc_share=99.5 %; the old rule flagged it as
+        # "TC not emitted", which is wrong.  We keep the 50 % threshold
+        # deliberately loose so that only kernels whose MAC budget
+        # genuinely does not reach the tensor pipeline (e.g.
+        # ``activation_quant``, ``gemv_decode`` which are dp4a / pure
+        # dequant) still trigger; that is the correct semantics.
+        if self.mac_tc_share < 0.50:
             v.append("tc_underutil")
         if self.fma_fraction > 0.40:
             v.append("epilogue_fma_bound")
@@ -272,19 +353,25 @@ def render_report(stats: List[KernelStats]) -> str:
     lines.append("# Phase 2 SASS Static Profile\n")
     lines.append(
         "One row per kernel instantiation compiled into `hkust_v9_cuda.so`.\n"
-        "`TC%` counts HMMA+IMMA against total SASS instructions; `FMA%` counts\n"
-        "FFMA+IMAD; `LD%` counts LDG+LDS.  Verdicts follow task-item.md §9.\n"
+        "`TC%` = issue-slot share of HMMA+IMMA (useful as a scheduler\n"
+        "indicator but **not** a compute-share proxy); `MAC_TC%` =\n"
+        "MAC-weighted compute share of TC under sm_89 s4 IMMA throughput\n"
+        "(8192 MAC/IMMA vs 1 MAC/FFMA, 4 MAC/DP4A) — this is the field\n"
+        "that now drives the ``tc_underutil`` verdict; `FMA%` counts\n"
+        "FFMA+IMAD; `LD%` counts LDG+LDS.  Verdicts follow task-item.md\n"
+        "§9 as amended by ``phase2_tc_rediagnosis.md`` (2026-04-28).\n"
     )
     lines.append(
-        "| # | family | regs | shared | stack | insts | TC% | FMA% | LD% | verdicts |"
+        "| # | family | regs | shared | stack | insts | TC% | MAC_TC% | FMA% | LD% | verdicts |"
     )
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for i, s in enumerate(stats, 1):
         fam = _short_name(s.name)
         verd = ",".join(s.verdicts()) or "-"
         lines.append(
             f"| {i} | `{fam}` | {s.regs} | {s.shared} | {s.stack} | "
             f"{s.total_insts} | {s.tc_fraction*100:.1f} | "
+            f"{s.mac_tc_share*100:.1f} | "
             f"{s.fma_fraction*100:.1f} | {s.ld_fraction*100:.1f} | {verd} |"
         )
     lines.append("")
@@ -348,6 +435,7 @@ def main() -> None:
                     {
                         **asdict(s),
                         "tc_fraction": s.tc_fraction,
+                        "mac_tc_share": s.mac_tc_share,
                         "fma_fraction": s.fma_fraction,
                         "ld_fraction": s.ld_fraction,
                         "verdicts": s.verdicts(),

@@ -13,6 +13,9 @@ Public API
 - ``v9_linear_fakequant``      : reference fp16 forward for correctness checks
 - ``set_backend_policy``       : override the per-kernel backend selection
 - ``get_backend_status``       : report CUDA availability and current policy
+- ``v9_linear_forward_cuda_graph``: opt-in CUDA Graph replay entry (R49 Step 1;
+                                    behaviour-compatible with ``v9_linear_forward``)
+- ``set_cuda_graph_policy``    : enable/disable/force the CUDA Graph path
 
 Isolation guarantee
 -------------------
@@ -31,6 +34,14 @@ from .dispatcher import (
     v9_linear_forward_decode,
     v9_linear_forward_prefill,
 )
+from .graph_cache import (
+    clear_cuda_graph_cache,
+    cuda_graph_cache_stats,
+    get_cuda_graph_policy,
+    prewarm_cuda_graph_cache,
+    set_cuda_graph_policy,
+    v9_linear_forward_cuda_graph,
+)
 from .policy import get_backend_status, set_backend_policy
 from .registry import BackendKernel
 
@@ -42,4 +53,11 @@ __all__ = [
     "set_backend_policy",
     "get_backend_status",
     "BackendKernel",
+    # R49 Step 1 — CUDA Graph opt-in path (see graph_cache.py)
+    "v9_linear_forward_cuda_graph",
+    "set_cuda_graph_policy",
+    "get_cuda_graph_policy",
+    "prewarm_cuda_graph_cache",
+    "cuda_graph_cache_stats",
+    "clear_cuda_graph_cache",
 ]

@@ -153,11 +153,16 @@ def _attribute_bottleneck(
 
     # tc_underutil is the universal fallback for compute-bound kernels
     # when no single lever helps.  Holds whenever max|Δ| < 3 %.
+    # Label retained for taxonomy stability; meaning redefined by
+    # phase2_tc_rediagnosis.md (2026-04-28) from "TC not emitted" to
+    # "MMA pipeline starvation".
     if max_delta < 3.0:
         return (
             "tc_underutil",
             f"all bisection deltas < 3% (max {max_delta:.1f}%); "
-            f"SASS shows TC% < 2% on all MMA kernels -> CUDA-core FMA bound",
+            f"SASS mac_tc_share >= 99% (IMMA active) but TC pipeline "
+            f"idle ~76% due to epilogue/IMAD/async-copy serialisation -> "
+            f"MMA pipeline starvation",
         )
 
     if 0.3 <= launch_frac <= 0.5:
@@ -212,13 +217,20 @@ def render() -> str:
         out.append(f"- `{v}`: **{c}** / {total_kernels} kernels")
     out.append("")
     out.append(
-        "→ **The decisive finding is `tc_underutil` firing on 42/42 "
-        "kernels**: every `*_mma_int4_kernel` has HMMA/IMMA fraction **< 2 %** of "
-        "SASS, with CUDA-core FMA (FFMA+IMAD) at 24-36 %.  "
-        "This means the roofline denominator (660 TOPS INT4 Tensor Core peak) "
-        "is effectively **unreachable with the current dequant-into-FMA chain**; "
-        "real throughput is CUDA-core-bound at roughly 1/8 of TC peak, which "
-        "matches the 13-39 % `cuda_eff` observed in the Roofline report."
+        "→ **Rediagnosed reading (2026-04-28)**: the `tc_underutil` "
+        "label fires on every `*_mma_int4_kernel` but the original "
+        "trigger (issue-slot TC fraction < 5 %) was a false positive.  "
+        "Under MAC-weighted analysis `mac_tc_share >= 99 %` — IMMA is "
+        "already carrying the full compute budget.  The 13–39 % "
+        "`cuda_eff` observed in the Roofline report reflects **MMA "
+        "pipeline starvation**: the tensor pipeline sits idle ~76 % of "
+        "cycles while the warp scheduler runs (i) HFMA2 dequant "
+        "epilogue, (ii) IMAD shared-memory swizzle, and (iii) a "
+        "2-stage `cp.async` pipeline that cannot saturate the "
+        "MMA-consumer rate.  See "
+        "`phase2_tc_rediagnosis.md` for the evidence chain and the "
+        "sub-bottleneck decomposition; Step 2 in `phase3_roadmap.md` "
+        "has been recalibrated accordingly."
     )
     out.append("")
 

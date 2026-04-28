@@ -11,6 +11,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 14,
+        "DP4A": 0,
         "INT_ALU": 7,
         "LDG": 2,
         "STG": 0,
@@ -23,6 +24,7 @@
         "MOV": 3
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.175,
       "ld_fraction": 0.0375,
       "verdicts": [
@@ -39,6 +41,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 63,
+        "DP4A": 0,
         "INT_ALU": 49,
         "LDG": 3,
         "STG": 2,
@@ -51,6 +54,7 @@
         "MOV": 6
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.30288461538461536,
       "ld_fraction": 0.019230769230769232,
       "verdicts": [
@@ -67,6 +71,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 130,
+        "DP4A": 0,
         "INT_ALU": 108,
         "LDG": 8,
         "STG": 6,
@@ -79,6 +84,7 @@
         "MOV": 11
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.2226027397260274,
       "ld_fraction": 0.0273972602739726,
       "verdicts": [
@@ -95,6 +101,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 132,
+        "DP4A": 0,
         "INT_ALU": 105,
         "LDG": 8,
         "STG": 6,
@@ -107,6 +114,7 @@
         "MOV": 11
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.22297297297297297,
       "ld_fraction": 0.037162162162162164,
       "verdicts": [
@@ -123,6 +131,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 132,
+        "DP4A": 0,
         "INT_ALU": 105,
         "LDG": 8,
         "STG": 6,
@@ -135,6 +144,7 @@
         "MOV": 13
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.22602739726027396,
       "ld_fraction": 0.0273972602739726,
       "verdicts": [
@@ -151,6 +161,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 125,
+        "DP4A": 0,
         "INT_ALU": 102,
         "LDG": 5,
         "STG": 6,
@@ -163,6 +174,7 @@
         "MOV": 8
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.22977941176470587,
       "ld_fraction": 0.04779411764705882,
       "verdicts": [
@@ -179,6 +191,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 125,
+        "DP4A": 0,
         "INT_ALU": 101,
         "LDG": 5,
         "STG": 6,
@@ -191,6 +204,7 @@
         "MOV": 10
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.22977941176470587,
       "ld_fraction": 0.04779411764705882,
       "verdicts": [
@@ -207,6 +221,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 125,
+        "DP4A": 0,
         "INT_ALU": 101,
         "LDG": 5,
         "STG": 6,
@@ -219,6 +234,7 @@
         "MOV": 10
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.2332089552238806,
       "ld_fraction": 0.033582089552238806,
       "verdicts": [
@@ -235,6 +251,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 577,
+        "DP4A": 6,
         "INT_ALU": 367,
         "LDG": 93,
         "STG": 1,
@@ -247,6 +264,7 @@
         "MOV": 27
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.32784090909090907,
       "ld_fraction": 0.06079545454545455,
       "verdicts": [
@@ -263,6 +281,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 49,
+        "DP4A": 1,
         "INT_ALU": 44,
         "LDG": 1,
         "STG": 1,
@@ -275,6 +294,7 @@
         "MOV": 5
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.2784090909090909,
       "ld_fraction": 0.017045454545454544,
       "verdicts": [
@@ -291,6 +311,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 141,
+        "DP4A": 4,
         "INT_ALU": 141,
         "LDG": 9,
         "STG": 1,
@@ -303,6 +324,7 @@
         "MOV": 10
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.27976190476190477,
       "ld_fraction": 0.027777777777777776,
       "verdicts": [
@@ -319,6 +341,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 730,
+        "DP4A": 32,
         "INT_ALU": 624,
         "LDG": 26,
         "STG": 16,
@@ -331,6 +354,7 @@
         "MOV": 12
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.3342490842490842,
       "ld_fraction": 0.03388278388278388,
       "verdicts": [
@@ -347,6 +371,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 348,
+        "DP4A": 4,
         "INT_ALU": 269,
         "LDG": 26,
         "STG": 2,
@@ -359,6 +384,7 @@
         "MOV": 16
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.36554621848739494,
       "ld_fraction": 0.03361344537815126,
       "verdicts": [
@@ -375,6 +401,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 403,
+        "DP4A": 8,
         "INT_ALU": 319,
         "LDG": 26,
         "STG": 4,
@@ -387,6 +414,7 @@
         "MOV": 14
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.3522727272727273,
       "ld_fraction": 0.033216783216783216,
       "verdicts": [
@@ -403,6 +431,7 @@
       "counts": {
         "TC_MMA": 0,
         "CUDA_FMA": 515,
+        "DP4A": 16,
         "INT_ALU": 428,
         "LDG": 26,
         "STG": 8,
@@ -415,6 +444,7 @@
         "MOV": 14
       },
       "tc_fraction": 0.0,
+      "mac_tc_share": 0.0,
       "fma_fraction": 0.34797297297297297,
       "ld_fraction": 0.033783783783783786,
       "verdicts": [
@@ -431,6 +461,7 @@
       "counts": {
         "TC_MMA": 16,
         "CUDA_FMA": 733,
+        "DP4A": 0,
         "INT_ALU": 566,
         "LDG": 25,
         "STG": 32,
@@ -443,10 +474,10 @@
         "MOV": 75
       },
       "tc_fraction": 0.005988023952095809,
+      "mac_tc_share": 0.9944387542202496,
       "fma_fraction": 0.27432634730538924,
       "ld_fraction": 0.018338323353293412,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -460,6 +491,7 @@
       "counts": {
         "TC_MMA": 16,
         "CUDA_FMA": 733,
+        "DP4A": 0,
         "INT_ALU": 566,
         "LDG": 25,
         "STG": 32,
@@ -472,10 +504,10 @@
         "MOV": 75
       },
       "tc_fraction": 0.005988023952095809,
+      "mac_tc_share": 0.9944387542202496,
       "fma_fraction": 0.27432634730538924,
       "ld_fraction": 0.018338323353293412,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -489,6 +521,7 @@
       "counts": {
         "TC_MMA": 16,
         "CUDA_FMA": 733,
+        "DP4A": 0,
         "INT_ALU": 566,
         "LDG": 25,
         "STG": 32,
@@ -501,10 +534,10 @@
         "MOV": 75
       },
       "tc_fraction": 0.005988023952095809,
+      "mac_tc_share": 0.9944387542202496,
       "fma_fraction": 0.27432634730538924,
       "ld_fraction": 0.018338323353293412,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -518,6 +551,7 @@
       "counts": {
         "TC_MMA": 16,
         "CUDA_FMA": 733,
+        "DP4A": 0,
         "INT_ALU": 566,
         "LDG": 25,
         "STG": 32,
@@ -530,10 +564,10 @@
         "MOV": 75
       },
       "tc_fraction": 0.005988023952095809,
+      "mac_tc_share": 0.9944387542202496,
       "fma_fraction": 0.27432634730538924,
       "ld_fraction": 0.018338323353293412,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -547,6 +581,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 1057,
+        "DP4A": 0,
         "INT_ALU": 745,
         "LDG": 25,
         "STG": 64,
@@ -559,10 +594,10 @@
         "MOV": 37
       },
       "tc_fraction": 0.008849557522123894,
+      "mac_tc_share": 0.9959840578113305,
       "fma_fraction": 0.2923119469026549,
       "ld_fraction": 0.020188053097345133,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -576,6 +611,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 1058,
+        "DP4A": 0,
         "INT_ALU": 744,
         "LDG": 25,
         "STG": 64,
@@ -588,10 +624,10 @@
         "MOV": 38
       },
       "tc_fraction": 0.008849557522123894,
+      "mac_tc_share": 0.9959802737061269,
       "fma_fraction": 0.29258849557522126,
       "ld_fraction": 0.020188053097345133,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -605,6 +641,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 1057,
+        "DP4A": 0,
         "INT_ALU": 745,
         "LDG": 25,
         "STG": 64,
@@ -617,10 +654,10 @@
         "MOV": 37
       },
       "tc_fraction": 0.008849557522123894,
+      "mac_tc_share": 0.9959840578113305,
       "fma_fraction": 0.2923119469026549,
       "ld_fraction": 0.020188053097345133,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -634,6 +671,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 1058,
+        "DP4A": 0,
         "INT_ALU": 744,
         "LDG": 25,
         "STG": 64,
@@ -646,10 +684,10 @@
         "MOV": 38
       },
       "tc_fraction": 0.008849557522123894,
+      "mac_tc_share": 0.9959802737061269,
       "fma_fraction": 0.29258849557522126,
       "ld_fraction": 0.020188053097345133,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -663,6 +701,7 @@
       "counts": {
         "TC_MMA": 4,
         "CUDA_FMA": 357,
+        "DP4A": 0,
         "INT_ALU": 265,
         "LDG": 13,
         "STG": 8,
@@ -675,11 +714,10 @@
         "MOV": 32
       },
       "tc_fraction": 0.002793296089385475,
+      "mac_tc_share": 0.989222641509434,
       "fma_fraction": 0.24930167597765363,
       "ld_fraction": 0.013268156424581005,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     },
     {
       "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi128ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
@@ -691,6 +729,7 @@
       "counts": {
         "TC_MMA": 4,
         "CUDA_FMA": 357,
+        "DP4A": 0,
         "INT_ALU": 265,
         "LDG": 13,
         "STG": 8,
@@ -703,11 +742,10 @@
         "MOV": 32
       },
       "tc_fraction": 0.002793296089385475,
+      "mac_tc_share": 0.989222641509434,
       "fma_fraction": 0.24930167597765363,
       "ld_fraction": 0.013268156424581005,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     },
     {
       "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi32ELi128EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
@@ -719,6 +757,7 @@
       "counts": {
         "TC_MMA": 4,
         "CUDA_FMA": 357,
+        "DP4A": 0,
         "INT_ALU": 265,
         "LDG": 13,
         "STG": 8,
@@ -731,11 +770,10 @@
         "MOV": 32
       },
       "tc_fraction": 0.002793296089385475,
+      "mac_tc_share": 0.989222641509434,
       "fma_fraction": 0.24930167597765363,
       "ld_fraction": 0.013268156424581005,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     },
     {
       "name": "_ZN8hkust_v919dense_gemm_mma_int426dense_gemm_mma_int4_kernelILi8ELi32ELi64EEEvPKhS3_PK6__halfS6_PKiS6_PS4_iiiillllllllllll",
@@ -747,6 +785,7 @@
       "counts": {
         "TC_MMA": 4,
         "CUDA_FMA": 357,
+        "DP4A": 0,
         "INT_ALU": 265,
         "LDG": 13,
         "STG": 8,
@@ -759,11 +798,10 @@
         "MOV": 32
       },
       "tc_fraction": 0.002793296089385475,
+      "mac_tc_share": 0.989222641509434,
       "fma_fraction": 0.24930167597765363,
       "ld_fraction": 0.013268156424581005,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     },
     {
       "name": "_ZN8hkust_v920sparse_gemm_mma_int427sparse_gemm_mma_int4_kernelILi32EEEvPKhPKiS5_S3_PK6__halfS8_PS6_iiillllllllll",
@@ -775,6 +813,7 @@
       "counts": {
         "TC_MMA": 16,
         "CUDA_FMA": 375,
+        "DP4A": 0,
         "INT_ALU": 356,
         "LDG": 14,
         "STG": 32,
@@ -787,10 +826,10 @@
         "MOV": 75
       },
       "tc_fraction": 0.010101010101010102,
+      "mac_tc_share": 0.9971471391511407,
       "fma_fraction": 0.23674242424242425,
       "ld_fraction": 0.01893939393939394,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -804,6 +843,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 605,
+        "DP4A": 0,
         "INT_ALU": 500,
         "LDG": 14,
         "STG": 64,
@@ -816,10 +856,10 @@
         "MOV": 62
       },
       "tc_fraction": 0.012861736334405145,
+      "mac_tc_share": 0.9976974222546994,
       "fma_fraction": 0.24316720257234728,
       "ld_fraction": 0.018488745980707395,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -833,6 +873,7 @@
       "counts": {
         "TC_MMA": 4,
         "CUDA_FMA": 174,
+        "DP4A": 0,
         "INT_ALU": 155,
         "LDG": 14,
         "STG": 8,
@@ -845,11 +886,10 @@
         "MOV": 10
       },
       "tc_fraction": 0.005434782608695652,
+      "mac_tc_share": 0.9947179891931273,
       "fma_fraction": 0.23641304347826086,
       "ld_fraction": 0.024456521739130436,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     },
     {
       "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi32ELb0ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
@@ -861,6 +901,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 710,
+        "DP4A": 0,
         "INT_ALU": 611,
         "LDG": 24,
         "STG": 32,
@@ -873,10 +914,10 @@
         "MOV": 104
       },
       "tc_fraction": 0.011111111111111112,
+      "mac_tc_share": 0.9972988807474872,
       "fma_fraction": 0.2465277777777778,
       "ld_fraction": 0.022222222222222223,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -890,6 +931,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 705,
+        "DP4A": 0,
         "INT_ALU": 621,
         "LDG": 24,
         "STG": 32,
@@ -902,10 +944,10 @@
         "MOV": 102
       },
       "tc_fraction": 0.011111111111111112,
+      "mac_tc_share": 0.9973178516943187,
       "fma_fraction": 0.24479166666666666,
       "ld_fraction": 0.022222222222222223,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -919,6 +961,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 1080,
+        "DP4A": 0,
         "INT_ALU": 824,
         "LDG": 52,
         "STG": 32,
@@ -931,10 +974,10 @@
         "MOV": 127
       },
       "tc_fraction": 0.008281573498964804,
+      "mac_tc_share": 0.9958970306658967,
       "fma_fraction": 0.2795031055900621,
       "ld_fraction": 0.023809523809523808,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -948,6 +991,7 @@
       "counts": {
         "TC_MMA": 32,
         "CUDA_FMA": 1089,
+        "DP4A": 0,
         "INT_ALU": 830,
         "LDG": 52,
         "STG": 32,
@@ -960,10 +1004,10 @@
         "MOV": 127
       },
       "tc_fraction": 0.008264462809917356,
+      "mac_tc_share": 0.9958629807053067,
       "fma_fraction": 0.28125,
       "ld_fraction": 0.023760330578512397,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -977,6 +1021,7 @@
       "counts": {
         "TC_MMA": 64,
         "CUDA_FMA": 924,
+        "DP4A": 0,
         "INT_ALU": 796,
         "LDG": 28,
         "STG": 64,
@@ -989,10 +1034,10 @@
         "MOV": 71
       },
       "tc_fraction": 0.016666666666666666,
+      "mac_tc_share": 0.9982407104178884,
       "fma_fraction": 0.240625,
       "ld_fraction": 0.028125,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -1006,6 +1051,7 @@
       "counts": {
         "TC_MMA": 64,
         "CUDA_FMA": 932,
+        "DP4A": 0,
         "INT_ALU": 807,
         "LDG": 28,
         "STG": 64,
@@ -1018,10 +1064,10 @@
         "MOV": 86
       },
       "tc_fraction": 0.016597510373443983,
+      "mac_tc_share": 0.9982255055024561,
       "fma_fraction": 0.241701244813278,
       "ld_fraction": 0.028008298755186723,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -1035,6 +1081,7 @@
       "counts": {
         "TC_MMA": 64,
         "CUDA_FMA": 1408,
+        "DP4A": 0,
         "INT_ALU": 1052,
         "LDG": 52,
         "STG": 64,
@@ -1047,10 +1094,10 @@
         "MOV": 81
       },
       "tc_fraction": 0.0128,
+      "mac_tc_share": 0.9973216459702946,
       "fma_fraction": 0.2816,
       "ld_fraction": 0.0264,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -1064,6 +1111,7 @@
       "counts": {
         "TC_MMA": 64,
         "CUDA_FMA": 1413,
+        "DP4A": 0,
         "INT_ALU": 1064,
         "LDG": 52,
         "STG": 64,
@@ -1076,10 +1124,10 @@
         "MOV": 93
       },
       "tc_fraction": 0.0128,
+      "mac_tc_share": 0.9973121603344867,
       "fma_fraction": 0.2826,
       "ld_fraction": 0.0264,
       "verdicts": [
-        "tc_underutil",
         "high_reg_pressure"
       ]
     },
@@ -1093,6 +1141,7 @@
       "counts": {
         "TC_MMA": 8,
         "CUDA_FMA": 323,
+        "DP4A": 0,
         "INT_ALU": 317,
         "LDG": 16,
         "STG": 8,
@@ -1105,11 +1154,10 @@
         "MOV": 32
       },
       "tc_fraction": 0.005154639175257732,
+      "mac_tc_share": 0.9950955829878984,
       "fma_fraction": 0.20811855670103094,
       "ld_fraction": 0.01675257731958763,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     },
     {
       "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb0ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
@@ -1121,6 +1169,7 @@
       "counts": {
         "TC_MMA": 8,
         "CUDA_FMA": 325,
+        "DP4A": 0,
         "INT_ALU": 319,
         "LDG": 16,
         "STG": 8,
@@ -1133,11 +1182,10 @@
         "MOV": 34
       },
       "tc_fraction": 0.005128205128205128,
+      "mac_tc_share": 0.9950653649352424,
       "fma_fraction": 0.20833333333333334,
       "ld_fraction": 0.016666666666666666,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     },
     {
       "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb1ELi128EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
@@ -1149,6 +1197,7 @@
       "counts": {
         "TC_MMA": 8,
         "CUDA_FMA": 632,
+        "DP4A": 0,
         "INT_ALU": 470,
         "LDG": 40,
         "STG": 8,
@@ -1161,11 +1210,10 @@
         "MOV": 53
       },
       "tc_fraction": 0.0033003300330033004,
+      "mac_tc_share": 0.9904485551928425,
       "fma_fraction": 0.2607260726072607,
       "ld_fraction": 0.020627062706270627,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     },
     {
       "name": "_ZN8hkust_v927fused_dense_sparse_mma_int434fused_dense_sparse_mma_int4_kernelILi8ELb1ELi64EEEvPKhS3_PK6__halfS6_PKiS6_S3_S8_S8_PS4_iiiilllllllllllllll",
@@ -1177,6 +1225,7 @@
       "counts": {
         "TC_MMA": 8,
         "CUDA_FMA": 638,
+        "DP4A": 0,
         "INT_ALU": 482,
         "LDG": 40,
         "STG": 8,
@@ -1189,11 +1238,10 @@
         "MOV": 49
       },
       "tc_fraction": 0.0033003300330033004,
+      "mac_tc_share": 0.9903587511711548,
       "fma_fraction": 0.2632013201320132,
       "ld_fraction": 0.020627062706270627,
-      "verdicts": [
-        "tc_underutil"
-      ]
+      "verdicts": []
     }
   ]
 }

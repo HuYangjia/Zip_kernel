@@ -56,9 +56,12 @@ class ClusterPlan:
     # fraction of the roofline:
     #   - launch_sparse    : 0.75 (CUDA Graph removes 70% of launch tax
     #                              but still leaves some dispatcher cost)
-    #   - tc_underutil     : 0.60 (switching to real HMMA + proper tile
-    #                              should reach 60% with current weight
-    #                              layout; 80% needs CUTLASS persistent)
+    #   - tc_underutil     : 0.50 (REDIAGNOSED 2026-04-28 — TC already
+    #                              emitted, so the win is the pipeline
+    #                              unstarving via CUTLASS 3.x; committed
+    #                              neutral band, stretch 0.60-0.70 only
+    #                              with full warp-specialisation;
+    #                              see phase2_tc_rediagnosis.md)
     #   - epilogue_fma_bound: 0.70 (fused mul-add epilogue + vectorised
     #                              scale broadcast)
     #   - physics_loss     : N/A  (routed to FP16 cuBLAS; no kernel fix)
@@ -110,22 +113,41 @@ PLANS: Dict[str, ClusterPlan] = {
     "tc_underutil": ClusterPlan(
         bottleneck="tc_underutil",
         proposed_technique=(
-            "Rewrite `fused_dense_sparse_mma_int4` to actually emit **HMMA.16816.F16** "
-            "or **IMMA.8816.S8** via `cutlass::arch::Mma` templates.  Current "
-            "SASS shows TC% < 2% across all 42 kernels; the FMA chain from "
-            "dequant-then-multiply forces CUDA-core execution.  Plan: "
-            "(a) dequant into shared-memory tile in a separate warp, "
-            "(b) producer/consumer async pipeline with `cp.async.bulk` so HBM "
-            "loads overlap TC compute, (c) use CUTLASS 3.x `CollectiveBuilder` "
-            "for tile-level orchestration to avoid a hand-rolled pipeline."
+            "[REDIAGNOSED 2026-04-28] The label name is kept for taxonomy "
+            "stability but the root cause is **MMA pipeline starvation**, "
+            "not \"Tensor Core not emitted\".  SASS MAC-weighted analysis "
+            "shows `mac_tc_share >= 99 %` on all `*_mma_int4_kernel` entries "
+            "— IMMA is active and carries virtually all MAC work.  The "
+            "observed `cuda_eff` of 13-39 % comes from the tensor pipeline "
+            "being idle ~76 % of the time while the warp scheduler drives "
+            "(B1) in-kernel serialised HFMA2 dequant epilogue (~30-40 % of "
+            "non-TC slots), (B2) shared-memory swizzle IMAD address math "
+            "(~20-30 %), and (B3) only 2-stage `cp.async` double-buffering "
+            "(~20-30 %).  Plan: rewrite `fused_dense_sparse_mma_int4` with "
+            "CUTLASS 3.x `CollectiveBuilder` for sm_89 so the 3-4 stage "
+            "async pipeline + warp-specialised producer/consumer + "
+            "vectorised epilogue template are emitted for free.  See "
+            "`cuda_kernel/logs/phase2_microscope/phase2_tc_rediagnosis.md` "
+            "for the full evidence chain (issue-slot vs MAC-weighted "
+            "analysis of `_sass/sass_profile.json`, per-sub-bottleneck "
+            "share estimate, and CUTLASS -> sub-bottleneck mapping)."
         ),
-        expected_eff_after=0.60,
+        # Target band instead of a single number.  The pessimistic case
+        # (epilogue vectorise only) lifts eff to ~0.30-0.35; neutral
+        # case (add 3-stage async copy) to ~0.45-0.55; optimistic case
+        # (full warp-specialised pipeline) to ~0.60-0.70.  The
+        # verification gate below asks for >=0.50, i.e. we commit to the
+        # neutral case and treat the rest as stretch.
+        expected_eff_after=0.50,
         effort_days=10.0,
         dependencies=[
             "CUTLASS 3.5+ headers (vendored or git submodule)",
-            "sm_89 target + `-arch=sm_89` so `cp.async.bulk` is available",
+            "sm_89 target + `-arch=sm_89` so `cp.async` 3+-stage is available",
             "new weight layout: interleave W_low + W_scale so a single async "
-            "copy fills both sub-tiles",
+            "copy fills both sub-tiles (enables B3 fix)",
+            "Step 1 (CUDA Graph) completed first so that kernel-only `cuda_us` "
+            "is measurable without Python launch-tax contamination; this is "
+            "a measurement prerequisite, not a technical one.",
         ],
         risk_notes=(
             "CUTLASS 3.x adds ~10MB of headers and slows incremental build by "
@@ -134,13 +156,23 @@ PLANS: Dict[str, ClusterPlan] = {
             "the dequant-before-MMA pattern changes accumulation order vs "
             "current dequant-after-FMA — run the full unit-test suite in "
             "`triton_kernel/tests/` as a regression gate (re-purpose them as "
-            "numerical equivalence tests against FP16)."
+            "numerical equivalence tests against FP16).  ROI risk: because "
+            "the rediagnosis revealed TC was already emitted, the expected "
+            "speedup is now a pipeline-overlap win (1.3-2.5x), not a "
+            "compute-unit win (was assumed 5-8x).  If we land in the "
+            "pessimistic band (<0.35 eff) we should re-open the sub-bottleneck "
+            "microbench before committing further CUTLASS engineering."
         ),
         verification_recipe=(
-            "Re-run SASS analyser on the new `.so`; `TC% > 20%` on all "
-            "`*_mma_int4_kernel` entries.  Re-run roofline bench on the 8 "
-            "representative shapes; `cuda_efficiency` must reach >=0.50 on all "
-            "`tc_underutil` cluster members or we're regressing the plan."
+            "Re-run SASS analyser on the new `.so`; `mac_tc_share >= 0.99` "
+            "must hold (invariant check: TC still dominates MACs) and "
+            "`fma_fraction` (issue-slot) should *drop* below 20 % on all "
+            "`*_mma_int4_kernel` entries, indicating the epilogue has moved "
+            "off the MMA critical path.  Re-run roofline bench on the 8 "
+            "representative shapes under the median-of-K (warmup=500, "
+            "outer=20, inner=200, K>=5) schedule; `cuda_efficiency` must "
+            "reach >=0.50 on all `tc_underutil` cluster members, otherwise "
+            "we regress the plan and reopen rediagnosis."
         ),
     ),
     "epilogue_fma_bound": ClusterPlan(
@@ -523,7 +555,7 @@ def render(recs: List[ShapeRec]) -> str:
 def _bottleneck_label(bn: str) -> str:
     return {
         "launch_sparse":       "Python/launch tax dominates",
-        "tc_underutil":        "Tensor Core not emitted",
+        "tc_underutil":        "MMA pipeline starvation (TC emits but starves on epilogue/IMAD/async-copy)",
         "epilogue_fma_bound":  "Dequant FMA epilogue tail",
         "physics_loss":        "W4A4 roof below FP16 roof",
     }.get(bn, bn)

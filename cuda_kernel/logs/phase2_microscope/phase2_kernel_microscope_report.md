@@ -1,5 +1,18 @@
 # Phase 2 Kernel Microscope Report
 
+> ⚠️  **REDIAGNOSED 2026-04-28** — the "Global SASS finding" section
+> below used issue-slot-count TC% to conclude "Tensor Core not
+> emitted".  That conclusion was *wrong*: re-analysis with MAC-weighted
+> share shows `mac_tc_share ≥ 99 %` on every `*_mma_int4_kernel`.  IMMA
+> is active and carries virtually all MAC work; the 13–39 % cuda_eff
+> comes from **MMA pipeline starvation** (epilogue / IMAD / async-copy
+> serialisation), not from CUDA-core-only execution.  The `tc_underutil`
+> label is retained as a stable taxonomy key but its meaning is changed
+> accordingly.  See
+> [`phase2_tc_rediagnosis.md`](phase2_tc_rediagnosis.md) for the
+> evidence chain and the sub-bottleneck decomposition driving Step 2
+> expected-gain recalibration.
+
 Joined sources:
 - Phase 1 timeline attribution (`phase1_timeline/phase1_attribution.json`)
 - Phase 1 launch tax (`phase1_timeline/<tag>/launch_tax.json`)
@@ -9,10 +22,21 @@ Joined sources:
 ## Global SASS finding
 
 Static analysis of **all 42 compiled kernel instantiations** in `hkust_v9_cuda.so` gives:
-- `tc_underutil`: **42** / 42 kernels
+- `tc_underutil`: **42** / 42 kernels (now meaning *MMA pipeline
+  starvation*; see banner above)
 - `high_reg_pressure`: **18** / 42 kernels
 
-→ **The decisive finding is `tc_underutil` firing on 42/42 kernels**: every `*_mma_int4_kernel` has HMMA/IMMA fraction **< 2 %** of SASS, with CUDA-core FMA (FFMA+IMAD) at 24-36 %.  This means the roofline denominator (660 TOPS INT4 Tensor Core peak) is effectively **unreachable with the current dequant-into-FMA chain**; real throughput is CUDA-core-bound at roughly 1/8 of TC peak, which matches the 13-39 % `cuda_eff` observed in the Roofline report.
+→ **Rediagnosed reading**: every `*_mma_int4_kernel` has IMMA
+issue-slot share of 0.8–1.7 % and MAC-weighted TC share ≥ 99 %.  One
+`mma.m16n8k64.s4` does 8192 MACs, so 32–64 IMMAs are already carrying
+the full compute budget; the tensor pipeline is busy only ~24 % of the
+time because the warp scheduler spends the rest on (i) in-kernel HFMA2
+dequant epilogue, (ii) shared-memory swizzle IMAD address math, and
+(iii) only 2-stage `cp.async` double-buffering.  This is a *pipeline
+organisation* problem, not a *TC-not-emitted* problem.  The roofline
+denominator (660 TOPS INT4 Tensor Core peak) is therefore reachable in
+principle; the 13–39 % observed `cuda_eff` reflects the 76 % tensor
+pipeline idle share.
 
 ## Per-shape bottleneck attribution
 

@@ -1,0 +1,111 @@
+{
+  "timestamp_utc": "20260428_084505",
+  "host": {
+    "python_version": "3.10.20",
+    "executable": "/root/miniconda3/envs/zip/bin/python",
+    "cwd": "/root",
+    "user": "root",
+    "hostname": "autodl-container-d4f6428c8a-e20470d8",
+    "platform": "linux",
+    "git_sha": "n/a"
+  },
+  "gpu": {
+    "available": true,
+    "name": "NVIDIA GeForce RTX 4090",
+    "driver": "580.105.08",
+    "memory": "49140 MiB",
+    "compute_capability": "8.9"
+  },
+  "tools": {
+    "nsys_path": "/usr/local/bin/nsys",
+    "nsys": {
+      "cmd": "nsys --version",
+      "rc": 0,
+      "stdout": "NVIDIA Nsight Systems version 2025.1.1.0",
+      "stderr": "",
+      "ok": true
+    },
+    "ncu": {
+      "cmd": "ncu --version",
+      "rc": 0,
+      "stdout": "NVIDIA (R) Nsight Compute Command Line Profiler\nCopyright (c) 2018-2025 NVIDIA Corporation\nVersion 2025.1.1.0 (build 35528883) (public-release)",
+      "stderr": "",
+      "ok": true
+    },
+    "cuobjdump": {
+      "cmd": "cuobjdump --version",
+      "rc": 0,
+      "stdout": "cuobjdump: NVIDIA (R) fat binary listing tool\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Thu_Feb_13_02:19:26_PST_2025\nCuda compilation tools, release 12.8, V12.8.90\nBuild cuda_12.8.r12.8/compiler.35538042_0",
+      "stderr": "",
+      "ok": true
+    },
+    "nvcc": {
+      "cmd": "nvcc --version",
+      "rc": 0,
+      "stdout": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Fri_Feb_21_20:23:50_PST_2025\nCuda compilation tools, release 12.8, V12.8.93\nBuild cuda_12.8.r12.8/compiler.35583870_0",
+      "stderr": "",
+      "ok": true
+    },
+    "ptxas": {
+      "cmd": "ptxas --version",
+      "rc": 0,
+      "stdout": "ptxas: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Fri_Feb_21_20:21:21_PST_2025\nCuda compilation tools, release 12.8, V12.8.93\nBuild cuda_12.8.r12.8/compiler.35583870_0",
+      "stderr": "",
+      "ok": true
+    },
+    "nvidia_smi": {
+      "cmd": "nvidia-smi -L",
+      "rc": 0,
+      "stdout": "GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-db3dd60c-c8c6-1d3c-f099-76aa9a05e1d4)",
+      "stderr": "",
+      "ok": true
+    }
+  },
+  "torch": {
+    "import_ok": true,
+    "version": "2.8.0+cu126",
+    "cuda_available": true,
+    "cuda_version": "12.6",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "device_cap": [
+      8,
+      9
+    ],
+    "sm_count": 128,
+    "total_memory_gb": 47.37
+  },
+  "cuda_graph": {
+    "ok": true,
+    "replayed": 5,
+    "result_sample": 4.216493129730225
+  },
+  "nsys_metrics": {
+    "ok": true,
+    "cmd": "nsys profile -t cuda,nvtx,osrt -f true -o /root/Zip_kernel/cuda_kernel/logs/_profile/20260428_084505/nsys_probe /root/miniconda3/envs/zip/bin/python /root/Zip_kernel/cuda_kernel/logs/_profile/20260428_084505/trivial.py",
+    "rc": 0,
+    "stderr_tail": "",
+    "stdout_tail": "sys-rep\n[1/1] [0%                          ] nsys_probe.nsys-rep\n[1/1] [7%                          ] nsys_probe.nsys-rep\n[1/1] [13%                         ] nsys_probe.nsys-rep\n[1/1] [14%                         ] nsys_probe.nsys-rep\n[1/1] [===============65%          ] nsys_probe.nsys-rep\n[1/1] [========================100%] nsys_probe.nsys-rep\n[1/1] [========================100%] nsys_probe.nsys-rep\nGenerated:\n    /root/Zip_kernel/cuda_kernel/logs/_profile/20260428_084505/nsys_probe.nsys-rep",
+    "report_exists": true,
+    "report_size_bytes": 154703,
+    "permission_denied": false,
+    "gpu_metrics_blocked": false
+  },
+  "cuda_kernel_import": {
+    "attempted": true,
+    "ok": true,
+    "module_file": "/root/kernel/cuda_kernel/ops.py",
+    "has_activation_quant_cuda": true,
+    "has_fused_dense_sparse_cuda": true
+  },
+  "verdict": {
+    "phase1_timeline_available": true,
+    "phase2_gpu_metrics_available": false,
+    "phase2_microbench_bisection_available": true,
+    "sass_static_analysis_available": true,
+    "sass_available_with_cuda_path": true,
+    "cuda_graph_replay_available": true,
+    "ncu_available": true,
+    "ncu_sm_counters_available": false,
+    "cuda_kernel_importable": true
+  }
+}

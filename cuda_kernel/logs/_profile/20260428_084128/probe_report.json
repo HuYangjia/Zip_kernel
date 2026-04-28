@@ -1,0 +1,106 @@
+{
+  "timestamp_utc": "20260428_084128",
+  "host": {
+    "python_version": "3.10.20",
+    "executable": "/root/miniconda3/envs/zip/bin/python",
+    "cwd": "/root",
+    "user": "root",
+    "hostname": "autodl-container-d4f6428c8a-e20470d8",
+    "platform": "linux",
+    "git_sha": "n/a"
+  },
+  "gpu": {
+    "available": true,
+    "name": "NVIDIA GeForce RTX 4090",
+    "driver": "580.105.08",
+    "memory": "49140 MiB",
+    "compute_capability": "8.9"
+  },
+  "tools": {
+    "nsys_path": "/usr/local/bin/nsys",
+    "nsys": {
+      "cmd": "nsys --version",
+      "rc": 0,
+      "stdout": "NVIDIA Nsight Systems version 2025.1.1.0",
+      "stderr": "",
+      "ok": true
+    },
+    "ncu": {
+      "cmd": "ncu --version",
+      "rc": 0,
+      "stdout": "NVIDIA (R) Nsight Compute Command Line Profiler\nCopyright (c) 2018-2025 NVIDIA Corporation\nVersion 2025.1.1.0 (build 35528883) (public-release)",
+      "stderr": "",
+      "ok": true
+    },
+    "cuobjdump": {
+      "cmd": "cuobjdump --version",
+      "rc": -1,
+      "stdout": "",
+      "stderr": "executable not found",
+      "ok": false
+    },
+    "nvcc": {
+      "cmd": "nvcc --version",
+      "rc": -1,
+      "stdout": "",
+      "stderr": "executable not found",
+      "ok": false
+    },
+    "ptxas": {
+      "cmd": "ptxas --version",
+      "rc": -1,
+      "stdout": "",
+      "stderr": "executable not found",
+      "ok": false
+    },
+    "nvidia_smi": {
+      "cmd": "nvidia-smi -L",
+      "rc": 0,
+      "stdout": "GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-db3dd60c-c8c6-1d3c-f099-76aa9a05e1d4)",
+      "stderr": "",
+      "ok": true
+    }
+  },
+  "torch": {
+    "import_ok": true,
+    "version": "2.8.0+cu126",
+    "cuda_available": true,
+    "cuda_version": "12.6",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "device_cap": [
+      8,
+      9
+    ],
+    "sm_count": 128,
+    "total_memory_gb": 47.37
+  },
+  "cuda_graph": {
+    "ok": true,
+    "replayed": 5,
+    "result_sample": -2.0839242935180664
+  },
+  "nsys_metrics": {
+    "ok": false,
+    "cmd": "nsys profile -t cuda,nvtx,osrt --gpu-metrics-device=all --gpu-metrics-frequency=10000 -f true -o /root/Zip_kernel/cuda_kernel/logs/_profile/20260428_084128/nsys_probe /root/miniconda3/envs/zip/bin/python /root/Zip_kernel/cuda_kernel/logs/_profile/20260428_084128/trivial.py",
+    "rc": 1,
+    "stderr_tail": "Illegal --gpu-metrics-devices arguments.\nNone of the installed GPUs are supported:\nSee the user guide: https://docs.nvidia.com/nsight-systems/UserGuide/index.html#gpu-metrics\n\nusage: nsys profile [<args>] [application] [<application args>]\nTry 'nsys profile --help' for more information.",
+    "stdout_tail": "Warning: '--gpu-metrics-device' is deprecated. Use '--gpu-metrics-devices' instead.\n\tNVIDIA GeForce RTX 4090 PCI[0000:d8:00.0] - Insufficient privilege, see https://developer.nvidia.com/ERR_NVGPUCTRPERM",
+    "report_exists": false,
+    "permission_denied": false
+  },
+  "cuda_kernel_import": {
+    "attempted": true,
+    "ok": true,
+    "module_file": "/root/kernel/cuda_kernel/ops.py",
+    "has_activation_quant_cuda": true,
+    "has_fused_dense_sparse_cuda": true
+  },
+  "verdict": {
+    "phase1_timeline_available": false,
+    "phase2_gpu_metrics_available": false,
+    "sass_static_analysis_available": false,
+    "cuda_graph_replay_available": true,
+    "ncu_available": true,
+    "cuda_kernel_importable": true
+  }
+}

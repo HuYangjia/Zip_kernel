@@ -1,5 +1,16 @@
 """Propagate Phase 2 bottleneck labels to all 100 shapes + compute targets.
 
+.. note::
+   **Rediagnosis 2026-04-28** — the ``tc_underutil`` label produced by
+   this pipeline retains its name for downstream taxonomy stability
+   but its *meaning* has been corrected from "Tensor Core not emitted"
+   to **"MMA pipeline starvation"**.  See
+   ``cuda_kernel/logs/phase2_microscope/phase2_tc_rediagnosis.md``
+   for the full evidence chain (MAC-weighted SASS share, sub-bottleneck
+   decomposition, and recalibrated Step 2 expected gain).  All
+   ``POST_AUDIT_OVERRIDES`` entries and all 84 cluster members under
+   ``tc_underutil`` now mean *pipeline starvation*, not *no TC*.
+
 Implements task-item.md steps 12 & 13:
 
 Step 12 — cluster every shape in ``roofline_compare.csv`` (100 rows) by
