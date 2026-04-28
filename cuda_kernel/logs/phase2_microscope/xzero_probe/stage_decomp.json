@@ -8,21 +8,21 @@
   "timings": [
     {
       "x_fill": "random",
-      "activation_quant_us": 21.80608034133911,
-      "fused_mma_us": 40.82176208496094,
-      "sum_us": 62.62784242630005
+      "activation_quant_us": 15.319360494613647,
+      "fused_mma_us": 40.683040618896484,
+      "sum_us": 56.00240111351013
     },
     {
       "x_fill": "zero",
-      "activation_quant_us": 21.60576105117798,
-      "fused_mma_us": 37.452800273895264,
-      "sum_us": 59.05856132507324
+      "activation_quant_us": 15.267839431762695,
+      "fused_mma_us": 37.446720600128174,
+      "sum_us": 52.71456003189087
     }
   ],
   "order": "random,zero",
   "deltas_pct": {
-    "activation_quant": 0.9186396043005279,
-    "fused_mma": 8.252857395165766,
-    "sum": 5.699192185052692
+    "activation_quant": 0.3363134046559396,
+    "fused_mma": 7.954961009637766,
+    "sum": 5.870893062165681
   }
 }
