@@ -134,7 +134,16 @@ def _run_one_shape(tag: str) -> Dict[str, object]:
     p95 = deltas_sorted[-1]
 
     # Verdict rule.
-    noise = abs(med) < 3.0 and (p05 <= 0.0 <= p95)
+    # A signal this close to zero is meaningless given HBM schedule
+    # jitter and clock drift at these timescales; if |median| is
+    # below the "trivially zero" floor (0.5%) we call it NOISE
+    # unconditionally, otherwise we require median < 3% AND the
+    # [p05, p95] interval to straddle zero.
+    TRIVIAL_ZERO = 0.5  # percent
+    if abs(med) < TRIVIAL_ZERO:
+        noise = True
+    else:
+        noise = abs(med) < 3.0 and (p05 <= 0.0 <= p95)
     verdict = "NOISE" if noise else "REAL_SIGNAL"
     print(
         f"  median delta = {med:+.2f}%   "
@@ -174,8 +183,9 @@ def _render_report(results: List[Dict[str, object]], out_dir: Path) -> None:
         f"Budget per timing: warmup={WARMUP}, outer={OUTER}, inner={INNER}.  "
         f"Each shape ran {N_TRIALS} independent trials with "
         "base/scale_one interleaved per trial.  "
-        "Verdict is NOISE when median |delta| < 3% and the [p05, p95] "
-        "interval straddles 0, else REAL_SIGNAL."
+        "Verdict is NOISE when median |delta| < 0.5% (trivially zero), "
+        "OR when median |delta| < 3% AND the [p05, p95] interval "
+        "straddles 0.  Otherwise REAL_SIGNAL."
     )
     lines.append("")
     lines.append(
