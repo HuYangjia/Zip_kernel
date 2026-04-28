@@ -214,7 +214,9 @@ def _render_report(results: List[Dict[str, object]], out_dir: Path) -> None:
         lines.append(
             "This corroborates the `epilogue_fma_bound` cluster collapse "
             "and closes out the last audit item before R49 can commit to "
-            "the two-cluster roadmap (`tc_underutil`, `launch_sparse`)."
+            "the two-cluster roadmap (`tc_underutil`, `launch_sparse`).  "
+            "See `../xzero_probe/xzero_probe_report.md` for the sibling "
+            "audit that prompted the warmup bump in the first place."
         )
     else:
         lines.append(

@@ -418,6 +418,17 @@ def render_report(out_dir: Path, sd: Dict, ts: Dict, sf: Dict) -> str:
         "`cuda_kernel/logs/phase2_microscope/` re-generated from the "
         "new bisection runs.\n"
     )
+    lines.append("**Corroboration by follow-up audit.**  The warmup-bump "
+        "revealed that *all 8 representatives* now have "
+        "`|Δ_scale_one| <= 2.2%`, which means the 43-shape "
+        "`epilogue_fma_bound` cluster produced by the original "
+        "threshold also collapses.  A standalone pressure test "
+        "(`kernel/tools/profile/epilogue_pressure_test.py`; "
+        "warmup=500, outer=20, inner=200, 5 interleaved trials per "
+        "variant on the top-|Δ_scale_one| shapes plus a compute-bound "
+        "control) confirmed 3/3 suspect shapes and 1/1 control "
+        "verdict = NOISE.  See "
+        "`../epilogue_pressure_test/pressure_test_report.md`.\n")
     lines.append("**New reclassification:**\n")
     lines.append(
         "- `mid_T128_kv_2560_2048` → `tc_underutil` (nearest-neighbour "

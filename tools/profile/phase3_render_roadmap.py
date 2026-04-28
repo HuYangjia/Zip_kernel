@@ -313,6 +313,46 @@ def render(recs: List[ShapeRec]) -> str:
         "Phase 2 artefacts._"
     )
     out.append("")
+    out.append("## Provenance & audit trail")
+    out.append("")
+    out.append(
+        "This roadmap is **the second iteration** of the Phase 2 -> Phase 3 "
+        "derivation.  The first iteration produced four clusters "
+        "(`tc_underutil`, `launch_sparse`, `epilogue_fma_bound` x 43 shapes, "
+        "`x_zero_anomaly` x 1 shape).  Two of those clusters were retired "
+        "as measurement artefacts after deeper audits:"
+    )
+    out.append("")
+    out.append(
+        "1. **`x_zero_anomaly` (1 shape)** -> retired.  The -27.9% X=0 "
+        "slowdown on `mid_T128_kv_2560_2048` was reproduced as a warmup "
+        "artefact in `kernel/tools/profile/xzero_probe.py`; under "
+        "(warmup=200, outer=10, inner=200) the signal collapsed to |Δ|<3%.  "
+        "Report: `cuda_kernel/logs/phase2_microscope/xzero_probe/"
+        "xzero_probe_report.md` §4."
+    )
+    out.append(
+        "2. **`epilogue_fma_bound` (43 shapes)** -> retired.  After the "
+        "warmup bump forced by audit #1 every rep's Δ_scale_one fell "
+        "below the 2.5% attribution threshold.  A 4-shape pressure test "
+        "(warmup=500, outer=20, inner=200, 5 interleaved trials per "
+        "variant, using median-of-trials to null outliers) confirmed the "
+        "collapse: 3/3 suspect shapes and 1/1 compute-bound control all "
+        "verdict = NOISE.  Report: "
+        "`cuda_kernel/logs/phase2_microscope/epilogue_pressure_test/"
+        "pressure_test_report.md`."
+    )
+    out.append("")
+    out.append(
+        "The surviving two clusters (`tc_underutil`, `launch_sparse`) "
+        "remain backed by orthogonal hard evidence that is robust to the "
+        "warmup budget: SASS TC% < 2% across 42/42 kernels (Phase 2 §2), "
+        "and Phase 1 launch-tax JSON showing 70% of wall time in Python "
+        "dispatch at T<=8 (Phase 1 §3).  Those signals do not depend on "
+        "A/B timing and are therefore not affected by the warmup-related "
+        "audit."
+    )
+    out.append("")
     out.append("## 0. Current state")
     out.append("")
     out.append(
