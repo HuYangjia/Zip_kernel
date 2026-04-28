@@ -83,7 +83,52 @@ PHASE1_SHAPES: Tuple[PhaseShape, ...] = (
     ),
 )
 
-PHASE1_SHAPES_BY_TAG: Dict[str, PhaseShape] = {s.tag: s for s in PHASE1_SHAPES}
+
+# ---------------------------------------------------------------------------
+# Phase 2 extra shapes (task-item.md step 7)
+# ---------------------------------------------------------------------------
+# Rationale: diversify coverage along the ``cuda_roof / fp16_roof`` axis so
+# every bottleneck family has at least one representative.  Four buckets
+# were selected based on the ratio distribution observed in
+# ``roofline_compare.csv``: ~0.27, ~0.27 (GEMM-mid), ~0.32, ~0.45.
+#
+#   - decode_T1_kv_2560_2048      : ratio 0.266, worst T=1 cuda_eff (32%).
+#   - worst_T8_q_4096_4096        : ratio 0.269, T=8 large square GEMV
+#                                   (complements Phase 1 kv_1024_2048).
+#   - prefill_T512_gu_2048_12288  : ratio 0.321, T=512 wide gate_up.
+#   - prefill_T1024_down_3072_1024: ratio 0.453, T=1024 narrow d_out
+#                                   (down_proj residual).
+PHASE2_EXTRA_SHAPES: Tuple[PhaseShape, ...] = (
+    PhaseShape(
+        tag="decode_T1_kv_2560_2048",
+        T=1, d_in=2560, d_out=2048, hp_ratio=0.05,
+        model="Qwen3-4B", proj="kv_proj",
+        note="ratio~0.27, lowest cuda_eff T=1 shape (kv_proj decode)",
+    ),
+    PhaseShape(
+        tag="worst_T8_q_4096_4096",
+        T=8, d_in=4096, d_out=4096, hp_ratio=0.05,
+        model="Qwen3-8B", proj="q_proj",
+        note="ratio~0.27, T=8 large square (complements kv_1024_2048)",
+    ),
+    PhaseShape(
+        tag="prefill_T512_gu_2048_12288",
+        T=512, d_in=2048, d_out=12288, hp_ratio=0.05,
+        model="Qwen3-1.7B", proj="gate_up_proj",
+        note="ratio~0.32, T=512 wide gate_up (prefill sweet spot)",
+    ),
+    PhaseShape(
+        tag="prefill_T1024_down_3072_1024",
+        T=1024, d_in=3072, d_out=1024, hp_ratio=0.05,
+        model="Qwen3-0.6B", proj="down_proj",
+        note="ratio~0.45, T=1024 narrow d_out (down_proj residual)",
+    ),
+)
+
+
+# Union — the input builder uses this so any tag from either phase works.
+PHASE_ALL_SHAPES: Tuple[PhaseShape, ...] = PHASE1_SHAPES + PHASE2_EXTRA_SHAPES
+PHASE1_SHAPES_BY_TAG: Dict[str, PhaseShape] = {s.tag: s for s in PHASE_ALL_SHAPES}
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +299,8 @@ def time_forward_us(
 __all__ = [
     "PhaseShape",
     "PHASE1_SHAPES",
+    "PHASE2_EXTRA_SHAPES",
+    "PHASE_ALL_SHAPES",
     "PHASE1_SHAPES_BY_TAG",
     "BuiltInputs",
     "build_shape_inputs",
