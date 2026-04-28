@@ -1,0 +1,24 @@
+{
+  "total": 100,
+  "representatives": {
+    "decode_T1_kv_2560_2048": "tc_underutil",
+    "mid_T128_kv_2560_2048": "x_zero_anomaly",
+    "worst_T8_q_4096_4096": "epilogue_fma_bound",
+    "worst_T8_kv_1024_2048": "launch_sparse",
+    "prefill_T1024_down_3072_1024": "epilogue_fma_bound",
+    "prefill_T512_gu_2048_12288": "tc_underutil",
+    "decode_T1_q_2048_2048": "launch_sparse",
+    "large_T1024_gu_4096_24576": "tc_underutil"
+  },
+  "bottleneck_counts": {
+    "launch_sparse": 24,
+    "tc_underutil": 32,
+    "epilogue_fma_bound": 43,
+    "x_zero_anomaly": 1
+  },
+  "status_counts": {
+    "gap_large": 95,
+    "gap_small": 4,
+    "on_track": 1
+  }
+}
