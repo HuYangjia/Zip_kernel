@@ -142,14 +142,14 @@ def _attribute_bottleneck(
             f"L2-hot weights speed up by {d_l2:.1f}% -> HBM weight bandwidth bound",
         )
 
-    # Zero-input anomaly: slowdown instead of speedup suggests a
-    # data-dependent issue inside activation_quant or the sparse MMA.
-    if d_xzero <= -10.0:
-        return (
-            "x_zero_anomaly",
-            f"X=0 is {-d_xzero:.1f}% SLOWER than random input — "
-            f"data-dependent kernel path; investigate separately",
-        )
+    # Note: a large negative ``d_xzero`` (X=0 much slower than random) used
+    # to route to ``x_zero_anomaly`` here.  It was removed after the
+    # deep-dive in :mod:`kernel.tools.profile.xzero_probe` proved the
+    # signal is a measurement artefact of the earlier
+    # (warmup=80, outer=4) budget and disappears completely under the
+    # current (warmup=200, outer=10) schedule.  We now leave a negative
+    # ``d_xzero`` in the raw bisection JSON for audit but never use it
+    # as a classification lever.
 
     # tc_underutil is the universal fallback for compute-bound kernels
     # when no single lever helps.  Holds whenever max|Δ| < 3 %.

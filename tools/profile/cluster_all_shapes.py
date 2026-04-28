@@ -220,23 +220,27 @@ def _cluster_shapes(
 ) -> List[Dict[str, object]]:
     """Return ``[{row, primary_bottleneck, cluster_id, nearest_rep_tag}]``.
 
-    ``x_zero_anomaly`` is an investigation-only label (only ``mid_T128``
-    triggers it, caused by a data-dependent slowdown when the activation
-    is all-zero).  We therefore *exclude* it from the nearest-neighbour
-    candidate pool so the remaining 7 reps carry the classification,
-    then re-tag the single ``mid_T128`` shape explicitly.  This keeps
-    the cluster taxonomy aligned with requirements.md §3.5 which
-    lists four canonical buckets (``hbm_stall``, ``tc_underutil``,
-    ``epilogue_fma_bound``, ``launch_sparse``).
+    Historical note: an earlier version of this function carved out an
+    ``x_zero_anomaly`` bucket for the single ``mid_T128_kv_2560_2048``
+    shape whose D.2 (X=0) bisection was -27.9% vs random.  The
+    deep-dive in :mod:`kernel.tools.profile.xzero_probe` proved the
+    signal was a measurement artefact of the earlier (warmup=80,
+    outer=4) budget and vanishes under (warmup=200, outer=10).  We
+    therefore no longer special-case that shape — it falls through
+    to its real nearest-neighbour cluster like every other shape.
+    The attribution code in :func:`phase2_render_report._attribute_bottleneck`
+    was updated in lock-step so no rep is ever labelled
+    ``x_zero_anomaly`` again.
     """
-    # Candidate pool: drop x_zero_anomaly reps.
+    # Defensive filter: if any rep still carries a stale anomaly label
+    # (e.g. an outdated bisection.json on disk), drop it from the pool
+    # so the taxonomy stays {hbm_stall, tc_underutil, epilogue_fma_bound,
+    # launch_sparse}.  After the attribution update this is an invariant,
+    # but keeping the filter makes the pipeline idempotent during the
+    # transition.
     candidates = [(r, bn) for r, bn in reps if bn != "x_zero_anomaly"]
     if not candidates:
         raise RuntimeError("no non-anomaly representatives left after filtering")
-
-    # Keep the anomaly reps separate so we can exact-match them back.
-    anomaly_rows = {(r.T, r.d_in, r.d_out, r.model, r.proj)
-                    for r, bn in reps if bn == "x_zero_anomaly"}
 
     # Build feature matrix over the candidate reps -> derive z-score scale.
     rep_feats = [_feature_vec(r) for r, _ in candidates]
@@ -247,9 +251,6 @@ def _cluster_shapes(
     seen: Dict[str, int] = {}
     for _, bn in candidates:
         seen.setdefault(bn, len(seen))
-    # Reserve a dedicated id for the anomaly (only the exact mid_T128
-    # shape ever gets it).
-    seen["x_zero_anomaly"] = len(seen)
 
     # For each of the 100 shapes, compute nearest rep.
     out: List[Dict[str, object]] = []
@@ -260,16 +261,6 @@ def _cluster_shapes(
                 "primary_bottleneck": "physics_loss",
                 "cluster_id": -1,
                 "nearest_rep_tag": None,
-                "distance": 0.0,
-            })
-            continue
-        # Exact-match the anomaly: only this shape gets the label.
-        if (row.T, row.d_in, row.d_out, row.model, row.proj) in anomaly_rows:
-            out.append({
-                "row": row,
-                "primary_bottleneck": "x_zero_anomaly",
-                "cluster_id": seen["x_zero_anomaly"],
-                "nearest_rep_tag": "mid_T128_kv_2560_2048",
                 "distance": 0.0,
             })
             continue

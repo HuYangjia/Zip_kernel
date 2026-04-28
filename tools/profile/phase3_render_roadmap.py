@@ -61,8 +61,13 @@ class ClusterPlan:
     #                              layout; 80% needs CUTLASS persistent)
     #   - epilogue_fma_bound: 0.70 (fused mul-add epilogue + vectorised
     #                              scale broadcast)
-    #   - x_zero_anomaly   : 0.70 (fix the branch, then re-cluster into
-    #                              whichever canonical bucket it falls in)
+    #   - physics_loss     : N/A  (routed to FP16 cuBLAS; no kernel fix)
+    #
+    # (An earlier `x_zero_anomaly` bucket was removed after the deep-dive
+    # in kernel/tools/profile/xzero_probe.py proved it was a measurement
+    # artefact of the warmup=80 / outer=4 bisection schedule.  The single
+    # shape that previously triggered it now falls through to its real
+    # nearest-neighbour cluster.)
     expected_eff_after: float
     effort_days: float
     dependencies: List[str] = field(default_factory=list)
@@ -174,29 +179,21 @@ PLANS: Dict[str, ClusterPlan] = {
     "x_zero_anomaly": ClusterPlan(
         bottleneck="x_zero_anomaly",
         proposed_technique=(
-            "Investigate `mid_T128_kv_2560_2048` specifically: X=0 is **27.9% "
-            "SLOWER** than random input, which is the opposite of the usual "
-            "zero-short-circuit.  Hypothesis: `activation_quant` computes "
-            "`scale_x = max_abs(X) / 7` and when `max_abs=0` we fall into a "
-            "degenerate epsilon branch, OR the sparse path's `sum_X==0` "
-            "triggers a code path that skips a pipeline stage and serialises.  "
-            "Fix: add a fast-path that returns zeros directly when `scale_x < "
-            "eps`, and audit the sparse reduction for zero-input branches."
+            "DEPRECATED.  This cluster was removed after the deep-dive in "
+            "`kernel/tools/profile/xzero_probe.py` proved the -27.9% X=0 "
+            "slowdown was a measurement artefact of the earlier "
+            "(warmup=80, outer=4) bisection schedule and disappears "
+            "completely under (warmup=200, outer=10).  No shape is ever "
+            "assigned this label any more, so this ClusterPlan is left "
+            "as documentation only.  If it shows up in a generated "
+            "roadmap, that's a stale `bisection.json` on disk — rerun "
+            "`microbench_bisection.py` first."
         ),
-        expected_eff_after=0.70,  # after fix, inherits epilogue_fma_bound profile
-        effort_days=1.5,
+        expected_eff_after=0.0,
+        effort_days=0.0,
         dependencies=[],
-        risk_notes=(
-            "Pure investigation first.  Once the branch is identified the fix "
-            "is a few lines.  Risk: the anomaly may actually be an HBM "
-            "pre-fetcher artefact of the random-input case (i.e. random input "
-            "is *faster* than expected, not that zero input is slower); then "
-            "there is nothing to fix and we reclassify the shape."
-        ),
-        verification_recipe=(
-            "Re-run D.2 (X=0) microbench post-fix on `mid_T128_kv_2560_2048`; "
-            "`|Δ_xzero| < 3%` as the success criterion."
-        ),
+        risk_notes="N/A - deprecated.",
+        verification_recipe="N/A - deprecated.",
     ),
     "physics_loss": ClusterPlan(
         bottleneck="physics_loss",
@@ -422,8 +419,6 @@ def render(recs: List[ShapeRec]) -> str:
         elif bn == "epilogue_fma_bound":
             out.append(f"| `{bn}` | `Δ_scale1` in bisection | `bisection.json` | <1% |")
             out.append(f"| `{bn}` | median `cuda_efficiency` | new roofline_report | >=0.55 |")
-        elif bn == "x_zero_anomaly":
-            out.append(f"| `{bn}` | `|Δ_xzero|` in bisection | `bisection.json` | <3% |")
         elif bn == "physics_loss":
             out.append(f"| `{bn}` | policy.py routing test | pytest | passes |")
     out.append("")
@@ -470,7 +465,6 @@ def _bottleneck_label(bn: str) -> str:
         "launch_sparse":       "Python/launch tax dominates",
         "tc_underutil":        "Tensor Core not emitted",
         "epilogue_fma_bound":  "Dequant FMA epilogue tail",
-        "x_zero_anomaly":      "Data-dependent slowdown (1 shape)",
         "physics_loss":        "W4A4 roof below FP16 roof",
     }.get(bn, bn)
 

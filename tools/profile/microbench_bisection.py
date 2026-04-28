@@ -75,7 +75,16 @@ def _repo_root() -> Path:
 # ---------------------------------------------------------------------------
 # INNER mode
 # ---------------------------------------------------------------------------
-def _time_variant(X, W, warmup: int = 80, outer: int = 4, inner: int = 100) -> float:
+# Budget notes
+# ------------
+# The earlier (warmup=80, outer=4, inner=100) schedule produced a spurious
+# -27.9% ``d_xzero`` signal on ``mid_T128_kv_2560_2048`` that did not
+# reproduce under (warmup=200, outer=10, inner=200) in
+# :mod:`kernel.tools.profile.xzero_probe`.  See that script's report for
+# the ablation.  Since the whole bisection takes only a few seconds per
+# shape anyway, we standardise on the stronger schedule to keep the
+# deltas below the |Δ| < 3% noise floor stated in the rendered summary.
+def _time_variant(X, W, warmup: int = 200, outer: int = 10, inner: int = 100) -> float:
     from kernel.tools.profile._phase1_shapes import time_forward_us  # noqa: WPS433
     return time_forward_us(X, W, warmup=warmup, outer=outer, inner=inner)
 
