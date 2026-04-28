@@ -3,11 +3,276 @@
 > 项目：W4A4 量化 GEMM / Sparse-GEMM / Fused（dense+sparse）CUDA kernel
 > 硬件：RTX 4090 (SM89, Ada Lovelace) / torch 2.8.0+cu126 / triton 3.4.0
 > 基线：cuBLAS FP16 `torch.matmul`
-> 周期：2026-04-24（Round 8 → Round 18）
+> 周期：2026-04-24（Round 8 → Round 18）  
+> **追加周期：2026-04-27 → 2026-04-28（Round 19 → Round 47），详见下方 §0。**
 
 ---
 
-## 1. 一句话结论
+## 0. 2026-04-27/28 增量小结（R19 → R47）
+
+> 下面的 §1..§7 是 R8-R18 的**历史快照**，不做重写。本节只总结"自那
+> 之后到今天 HEAD 的全部变化"，按当前用户关心度排序。
+
+### 0.1 本周期**最被需要写进来的三件事**
+
+1. **最近几轮迭代的 accept / reject 判定全部补录到
+   [`VALIDATION_LOG.md`](./VALIDATION_LOG.md)**（Round 35-44）。
+2. **测量口径统一**（R38）：所有 bench 脚本接入
+   `benchmarks/_bench_util.py::robust_kernel_time`，
+   `warmup=50, inner=100, repeats=3, min-of-means`（记忆
+   [[bmmiahpl]]）。
+3. **fused kernel 的 (T, d_out) 二维 gate 矩阵成型**（R42→R43→R44）：
+   从 R42 的窄 gate（7 个命中 shape）扩到 R44 的宽 gate（16 个命中
+   shape），覆盖 T∈[8..96] × d_out∈[1024..4096] 的大片区域，每格
+   +10~20%，0 回退。
+
+### 0.2 R19 → R44 一句话结论
+
+**R19-R34 是 kernel 内部优化探索周期**（大改造基本全部 reject），
+**R35 是周期内唯一的单点大提升**（14B `down_proj` T=1: 223us →
+86.9us, **+2.18x FP16 / +4.92x Triton**），**R36-R39 是收口与文档
+整理期**。**R40-B 到 R44 是 mid-T 性能悬崖的修复周期**，核心突破是
+把 fused kernel 的 `kBm` 参数化并用 (T, d_out) 矩阵 gate 做精细
+dispatch，最终在生产 hp_ratio=0.05 下解锁了 16 个此前输给 kBm=128
+的 shape。
+
+### 0.3 R19-R44 账单（哪些 accept，哪些 reject）
+
+| Round | 内容 | 判定 |
+|------:|-----|------|
+| R19 | MMA A-operand 换 `ldmatrix` | REJECTED |
+| R20-R30 | epilogue 拆分 / wave-aware `kBn` / dense `kGrpBuf=128` 等一系列 epilogue 重写 | 分别 kept/rolled back，详见 VALIDATION_LOG |
+| **R31** | dense `kGrpBuf=128` opt-in for `d_in > 4096` | **ACCEPTED** |
+| **R32** | dispatcher `T ≤ 32 && d_out ≤ d_in → kBn=8` | **ACCEPTED** |
+| R33 | activation_quant 两阶段多-CTA 分裂 (T≤4) | REJECTED |
+| R34 | Split-K along group-axis for dense_gemm | REJECTED |
+| **R35** | decode `kMaxGroups` 128 → 160（解锁 14B `down_proj` T=1）| **ACCEPTED** |
+| R36 | fused `kGrpBuf` 32 → 40 | REJECTED |
+| R37 | `T ≤ 16` 强制 `kBn=8` 宽输出 | REJECTED |
+| **R38** | 统一 robust bench 计时 + `--out-root` 隔离 | **ACCEPTED** |
+| R39 | HEAD-state 基线快照 + 瓶颈重新锁定 | BASELINE |
+| **R40-B** | dense_gemm `kBm=64` opt-in（窄 gate：`T∈[16,64] && d_out≤2048`） | **ACCEPTED** |
+| R41-P1 | fused `kBm` 模板化基础设施（hp=0 only） | INFRA ONLY |
+| **R42-P1** | fused `kBm=64` opt-in 扩展到 hp>0（BSR 2 CTA/row 重映射） | **ACCEPTED**；7 个命中 shape +14~+34% |
+| **R43** | fused (T, d_out) 矩阵 gate（9 个新 shape 命中，+5~+17%） | **ACCEPTED** |
+| **R44** | fused `kBn` demote (`kBm=64 && T∈[32,96] → kBn=8`) + gate 再扩展 | **ACCEPTED**；d=2048 T∈[48,64] 崩盘彻底修复 |
+| **R45** | fused gate wave-threshold off-by-one 修复（`< 64` → `<= 64`） | **ACCEPTED**；T∈[48,64] × d_out=4096 解锁，生产 `bat_T64_4k_4k` **-4.4%** |
+| **R46** | dispatcher 的 `_forward_decode` 切换到 fused kernel 单次 launch 路径 | **ACCEPTED 🔥🔥**；所有 decode/batch E2E **-14% → -40%**，R19 后最大单轮提升 |
+| **R47** | `backend/policy.py::_auto_policy` 按 R46 证据重新标定（所有 kernel 在所有 T 都返回 CUDA） | **ACCEPTED**；`auto/cuda = 1.000x` on 8/9 shapes，`auto/triton = 1.77x..4.14x`，其中 T≥8 mid-narrow shape 之前全部错误 fallback 到 Triton，相当于白操作一整天 |
+
+### 0.5 R46 交付 — dispatcher 架构级别修复
+
+**背景**：R19→R45 所有圆都在调 `fused_dense_sparse_mma_int4.cu` 内部，
+但通过分段 probe 发现一个背景 bug：**`dispatcher._forward_decode`
+在 hp>0 时根本没用 fused kernel**，而是调用 dense_gemm + sparse_gemm
+两次 launch。对比 prefill 已用 fused，只有 decode 被遗忘了。
+
+**现场数据**（T=64 d=4096 d_in=4096 hp=0.05, RTX 4090）：
+- dense + sparse 两次： 51.04 + 24.31 = **75.35us**  
+- fused 单次： **54.67us**  
+- 浪费：**20.68us**
+
+**修复**：添加 gate `use_fused_decode = n_hp_blocks>0 && (d_in<=d_out || T<=16)`，
+命中时走 fused（down_proj-式 d_in>>d_out 中 T 对比可能不利，显式排除）。
+
+**E2E 成果表**（`bench_cuda_vs_triton`，R45 → R46）：
+
+| shape | R45 | R46 | 改善 |
+|---|---|---|---|
+| dec_T1_4k_4k    | 64.57us | **38.79us** | **-39.9%** 🔥🔥 |
+| dec_T1_4k_11k   | 63.71us | **48.05us** | **-24.6%** 🔥 |
+| dec_T1_11k_4k   | 75.22us | **63.96us** | **-15.0%** 🔥 |
+| dec_T8_4k_4k    | 72.17us | **49.95us** | **-30.8%** 🔥🔥 |
+| dec_T16_4k_4k   | 71.97us | **53.72us** | **-25.4%** 🔥 |
+| bat_T64_4k_4k   | 76.43us | **65.57us** | **-14.2%** 🔥 |
+| bat_T128_4k_4k  | 85.71us | **70.92us** | **-17.3%** 🔥 |
+| pre_T512        | 129.35  | 129.39      | ≈（prefill 已经用 fused） |
+| pre_T1024       | 240.29  | 241.73      | ≈ |
+
+7/7 decode+batch 全胜，0 回退，39/39 parity 通过。
+
+**教训**：纯精调 kernel 微观优化（R19-R45）在某种意义上反而屏蔽了系统层面的问题：
+我们在优化一个调用链根本没用到的 kernel。R46 证明一次端到端分段 probe 比
+27 轮 kernel 调参更有价值。
+
+---
+
+### 0.5b R47 交付 — policy.py 口径与 R46 证据对齐（ACCEPTED, 2026-04-28）
+
+**背景**：`backend/policy.py::_auto_policy` 是 `v9_linear_forward` 每
+次调用都会咨询的路由表。该表从 Round-9（2026-04-24）起一直没动，
+注释里仍然基于 "vs cuBLAS FP16" 的旧比较口径，但实际 bench 和生产
+调用比较的是 **CUDA vs Triton W4A4**，两者不是一回事。
+
+**问题体量**：R38-R46 把 CUDA 路径全面改写后，最新快照
+（`bench_20260427_224405.md`）里 CUDA 在 **所有** T（1/8/16/64/128/
+512/1024）× 所有 kernel（dense/sparse/fused/activation_quant）上
+都胜 Triton **1.45x ~ 4.91x**；但 `_auto_policy` 仍然在 T≥8 的
+mid-narrow shape 上 fallback 到 Triton，相当于每次生产调用都主动
+放弃 1.47x ~ 1.89x 的 CUDA 加速。
+
+**修复**：把四个 kernel 的 auto 决策全部改为 `"cuda"`，并在 docstring
+里贴全 R46 测量证据，保留结构化 per-kernel 分支便于未来按 shape 加
+黑名单。
+
+**E2E 证据**（`bench_auto_policy_r47_20260428_110016.md`）：
+
+| shape | triton (us) | cuda (us) | auto (us) | auto/cuda |
+|---|---:|---:|---:|---:|
+| dec_T1_4k_4k    | 154.42 | 38.65  | **38.46**  | **1.005x** |
+| dec_T1_4k_11k   | 155.05 | 48.50  | **48.50**  | 1.000x |
+| dec_T1_11k_4k   | 268.78 | 64.98  | **64.94**  | 1.001x |
+| dec_T8_4k_4k    | 164.88 | 50.34  | **50.35**  | 1.000x |
+| dec_T16_4k_4k   | 163.43 | 54.48  | **54.46**  | 1.000x |
+| bat_T64_4k_4k   | 164.29 | 66.56  | **66.57**  | 1.000x |
+| bat_T128_4k_4k  | 165.29 | 72.07  | **72.07**  | 1.000x |
+| pre_T512_4k_4k  | 250.45 | 131.11 | **131.05** | 1.000x |
+| pre_T1024_4k_4k | 433.66 | 244.63 | **244.57** | 1.000x |
+
+`auto/cuda=1.000x` 说明 auto 路径完整命中 CUDA fast path；
+`auto/triton = 1.77x..4.14x` 是生产侧真实节省。之前 auto 会在 T≥8
+mid-narrow 列和 triton 列完全对齐（即 3.0x..3.3x 慢 cuda 路径），
+每次 production call 都白跑一遍 Triton。
+
+**parity**：39/39 通过。**生产回归**：0（R47 只改 policy，不碰 kernel，
+`bench_cuda_vs_triton` 两列数值在 R46 ±2% 噪声带内）。
+
+**教训**：dispatch 表是一份随时间腐烂最快的代码 —— kernel 每改一次
+就可能让旧的证据失效。以后的每一轮内核迭代，**必须把 policy 重算
+当作强制后续动作**，否则提升会静默消失在 dispatch 层之上。
+
+---
+
+### 0.6 R42→R45 fused gate 演进图（核心成果，hp=0.05）
+
+**从“窄 gate + 7 个命中 shape”扩展到“矩阵 gate + 18 个命中 shape”，0 回退：**
+R42 gate（初版）：
+
+    T∈[16,32] && d_out<=2048   → kBm=64    (其他全部 kBm=128)
+    ↓ 覆盖 7 shape，平均 +20%
+
+R43 gate（矩阵化）：
+
+    (T<=8  && d<=4096)
+  | (T<=32 && d<=3072)
+  | (T<=96 && d<=1024)          → kBm=64
+    ↓ 新增 9 shape：T=8 全 d_out、d=1024 全 T、d=3072 T∈[16,32]
+    ↓ 修 bench 发现 d=2048 T∈[48,64] 崩 -18% 是 kBn 阈值 artifact
+
+R44 gate（+ kBn demote）：
+
+    (T<=8  && d<=4096)
+  | (T<=32 && d<=3072)
+  | (T∈[48,64] && d<=4096)      ← 新增 6 格（R43 kBn 修复解锁）
+  | (T==96 && d<=2048)           ← 新增 1 格
+    外加 launch_for_kbn() 内的 kBn demote：
+    if kBm=64 && T∈[32,96] && kBn_auto>=32 → force kBn=8
+    ↓ 再加 6 shape，包含 d=3072 T∈[48,64] 的 +20%
+
+R44 热力图（RTX 4090, hp=0.05, d_in=4096, auto vs kBm=128）：
+
+```
+              | d=1024 | d=2048 | d=3072 | d=4096 |
+    T=8       | +16%   | +17%   | +15%   | +13%   |  全 ✓
+    T=16      | +15%   | +17%   | +15%   | -14%   |  d<=3072 ✓
+    T=32      | +15%   | +18%   | +5%    | +3%    |  d<=3072 ✓（d=4096 实测中立不纳入 gate）
+    T=48      | +15%   | +7%    | +20%   | **+15%** |  全 ✓ 🔥 (R45 NEW @ d=4096)
+    T=64      | +17%   | +7%    | +19%   | **+2%**  |  全 ✓ 🔥 (R45 NEW @ d=4096)
+    T=96      | +5%    | +18%   | -9%    | -48%   |  严格只 d<=2048 ✓
+    T=128     | -19%   | +4%    | -3%    | -10%   |  全部 avoid
+```
+
+**R45 的关键发现**：R44 的 `waves_at_kbm128 < 64` 门控存在 off-by-one。T=48 d=4096
+刚好 product=64，被严格小于筛掉，但 probe 显示这个 shape 的最佳 kBm=64
+比 R44 auto 选的 kBm=128 **快 15.4%**。改为 `<= 64` 后解锁。
+### 0.5 R35 的"前后对比"——本周期单点最大提升
+
+以 `logs/qwen3_iter_round10/bench.json` 为权威结果：
+
+**Qwen3-14B `down_proj [17408 → 5120]`, T=1**：
+
+| path         | Before (R34) | After (R35) | Δ |
+|--------------|-------------:|------------:|---:|
+| Triton e2e   | 427.7 us     | 427.7 us    | 0  |
+| FP16 e2e     | 189.2 us     | 189.2 us    | 0  |
+| **CUDA e2e** | **~223 us**（泛用路径） | **86.9 us** | **−61 %** |
+| cuda/fp16    | 0.85x        | **2.18x**   | +1.33x |
+| cuda/triton  | 1.92x        | **4.92x**   | +3.0x  |
+
+其余 124 个 shape 在 R35 前后完全 bit-identical（decode 门控仅在
+T=1 且 n_groups∈[1,160] 时触发）。
+
+### 0.5 当前 HEAD 的 125-shape 汇总（纯 CUDA vs 纯 Triton，记忆 [[0d5nyof1]]）
+
+| T 段  | shapes | cuda/triton 中位 | cuda/triton p95 最差 | cuda/fp16 中位 |
+|------:|-------:|-----------------:|---------------------:|---------------:|
+| 1     | 25     | **6.5x**         | 13.5x                | **1.85x**      |
+| 16    | 25     | 2.6x             | 5.3x                 | 0.33x          |
+| 128   | 25     | 2.1x             | 5.1x                 | 0.47x          |
+| 512   | 25     | 1.9x             | 2.9x                 | 0.85x          |
+| 2048  | 25     | 1.8x             | 1.9x                 | 1.15x          |
+
+**CUDA 在 125 个 shape 中 0 败于 Triton**；T=1 全部胜 FP16；T=2048
+胜 FP16 约 60 %。
+
+### 0.6 R40-B 的"前后对比"（dense_gemm 专用）
+
+R40-B 把 `dense_gemm_mma_int4` 的 `kBm` 从 `constexpr 128` 提为模板
+参数，并新增 `kBm=64` 实例；**fused 路径不动**（BSR `BROW=128`
+硬约束）。门控最终收敛为：
+```
+T ∈ [16, 64]  AND  d_out ≤ 2048  AND  waves_at_kbm128(kBn=32) < 64
+```
+
+**gate-hit（6 shape）全部改善，0 回退；非 gate shape 与 E2E 零影响**：
+
+| Shape | d_in → d_out | T | R39 (us) | R40-B (us) | Δ |
+|---|---|---:|---:|---:|---:|
+| 1.7B q_proj    | 2048→2048 | 16 | 18.9 | 15.9 | **-16.1%** |
+| 1.7B kv_proj   | 2048→2048 | 16 | 19.4 | 16.0 | **-17.6%** |
+| 1.7B o_proj    | 2048→2048 | 16 | 18.4 | 15.8 | **-14.5%** |
+| 1.7B down_proj | 6144→2048 | 16 | 56.9 | 46.8 | **-17.8%** |
+| 8B  kv_proj    | 4096→2048 | 16 | 39.9 | 33.7 | **-15.5%** |
+| 14B kv_proj    | 5120→2048 | 16 | 49.4 | 35.6 | **-27.9%** |
+
+**全量 75 shape 统计（v3 vs same-env baseline）**：
+- dense_gemm gate-hit: avg **-17.93%**, best **-27.9%**, worst 0.0%, regress 0/6
+- dense_gemm no-gate: 0 回退（69 shape，1 个 T=1 低 μs 抖动异常值）
+- end_to_end: avg -0.00%, worst ±0.9%, **0/75 回退**
+
+E2E 看不到 dense 改善是预期的——bench 设 `hp_ratio=0.05` 全部路由到
+`fused_dense_sparse`。这 -27.9% 只在真正 dense-only 调用（hp==0 或
+直接调 `dense_gemm_cuda_int4`）时才物化。
+
+**关键工程教训**：首次 bench 在冷启动 GPU 上跑出 +50-130% 的假回退，
+是 boost clock 未到稳态所致。现强制要求每轮新改动都**同环境跑一次
+"gate-off baseline"做公平对比**——`round11_baseline` 是这个模板。
+
+### 0.7 下一步瓶颈（R40-B 后更新）
+
+1. ~~**`fused_dense_sparse` T∈[16,128] wave 饥饿**~~（下一个要尝试的
+   杠杆是 kBm=64）—— **部分 ACCEPTED (R40-B dense-only 路径)**，fused
+   仍受 BROW=128 物理约束，本身未动。
+2. **`activation_quant` 14 us 启动地板**（T=1..512 恒定）——R33 已排除
+   多 CTA 分裂；唯一剩下的可行路线是**把 quant 融进
+   `fused_dense_sparse` 的 prologue**。
+3. **14B `gate_up_proj` T=2048**——`cuda=5946us, fp16=4607us, 0.77x`，
+   真正的 compute-bound。只能从 epilogue op-repack 或 register-spill
+   入手。
+
+### 0.7 文档的"后续维护约定"
+
+- 每 round 结束都必须 append 一个块到
+  [`VALIDATION_LOG.md`](./VALIDATION_LOG.md)：动机、改动、数据对比、
+  verdict（ACCEPTED / REJECTED / BASELINE）、lesson learned。
+- 每次有 ACCEPTED round 时，顺手在本文件 §0 和 `SUMMARY_AI.md` §0
+  的账单表里加一行；REJECTED 也加，标注"已 rollback"。
+- bench 结果以带时间戳的 `logs/qwen3_iter_round{n}/` 存放，**禁止
+  覆盖**（长期记忆的"结果隔离"约定）。
+
+---
+
+## 1. 一句话结论（R11 → R18 历史段）
 
 **Round 11 → Round 18 历经 8 轮优化，把 W4A4 端到端推理（v9_linear）
 在 T=1 decode 上从 3.31x Triton（但 0.30x FP16）拉升到 0.83x / 2.07x /

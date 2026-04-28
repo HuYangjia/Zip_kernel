@@ -12,7 +12,150 @@ contracts.  All English, all exact.  For narrative / rationale see
 
 ---
 
-### 1. Module-level invariants
+### 0. Update addendum — R19 → R47 (2026-04-28)
+
+> The rest of this document (sections 1-8) documents the **R8-R18**
+> snapshot verbatim.  The state below is a drop-in delta; read it
+> first, then treat sections 1-8 as historical background.
+
+**Extended period**: 2026-04-24 (R8) → **2026-04-28 (R47)**.
+
+**Authoritative bench**: `logs/qwen3_iter_round10/bench.json` for E2E
+(625 records, 125 shapes), `logs/qwen3_iter_round11_v3/bench.json` for
+`dense_gemm` sub-kernel (RTX 4090, harness from memory [[bmmiahpl]]).
+
+**Rounds landed since R18** (see [`VALIDATION_LOG.md`](./VALIDATION_LOG.md) for full detail per round):
+
+| Round | Scope                                          | Verdict      |
+|------:|------------------------------------------------|--------------|
+| R19   | ldmatrix for MMA A-operand                     | REJECTED     |
+| R20-30| (epilogue refactors, wave-aware `kBn` dispatch, dense `kGrpBuf=128` opt-in, etc. — superset documented in VALIDATION_LOG R20-R30) | mixed; R20/R21/R22/R27/R31/R32 kept |
+| R31   | dense `kGrpBuf=128` opt-in for `d_in > 4096`   | ACCEPTED     |
+| R32   | dispatcher extension `T ≤ 32 && d_out ≤ d_in → kBn=8` | ACCEPTED |
+| R33   | multi-CTA activation_quant split (T=1..4)      | REJECTED     |
+| R34   | Split-K along group axis for dense_gemm        | REJECTED     |
+| **R35** | **decode `kMaxGroups` 128 → 160** (unlocks 14B `down_proj` T=1) | **ACCEPTED** |
+| R36   | fused `kGrpBuf` 32 → 40                        | REJECTED     |
+| R37   | fused `pick()` force `kBn=8` for T≤16 wide shapes | REJECTED     |
+| R38   | shared `robust_kernel_time` harness + per-run `--out-root` | ACCEPTED |
+| R39   | HEAD-state re-baseline + bottleneck re-lock    | BASELINE SNAPSHOT |
+| **R40-B** | `dense_gemm_mma_int4` `kBm=64` opt-in (dense-only; `T∈[16,64] && d_out≤2048`) | **ACCEPTED** |
+| R41-P1| `fused_dense_sparse_mma_int4` `kBm` template (hp=0 only, infra for R42) | infra-only |
+| **R42-P1** | fused `kBm=64` opt-in for hp>0 (BSR remap: 2 CTAs/row) | **ACCEPTED**; +14..+34% on 7 hit shapes |
+| **R43** | fused (T, d_out) matrix gate (9 extra hit shapes, +5..+17%) | **ACCEPTED** |
+| **R44** | fused kBn demote for kBm=64 & T∈[32,96] + gate expansion | **ACCEPTED**; unlocks d=2048 T∈[48,64] & d=3072/4096 T∈[48,64] |
+| **R45** | fused gate wave-threshold off-by-one fix (`< 64` → `<= 64`) | **ACCEPTED**; unlocks T∈[48,64] × d_out=4096 (+15% on T=48 d=4096, +4.4% on production bat_T64_4k_4k) |
+| **R46** | dispatcher `_forward_decode` switches hp>0 path to single `fused_dense_sparse` kernel | **ACCEPTED 🔥🔥**; E2E **-14% to -40%** across every decode/batch shape (biggest single round since R19) |
+| **R47** | `backend/policy.py::_auto_policy` recalibrated to R46 evidence (every kernel → CUDA on every T) | **ACCEPTED**; `auto/cuda = 1.000x` on 8/9 shapes, `auto/triton = 1.77x..4.14x` — every production call now hits the CUDA fast path (previously all T≥8 mid-narrow shapes fell back to Triton) |
+
+**Delta to sections 2-3 (current HEAD dispatch table)**:
+
+1. `ops.py::_DECODE_MAX_GROUPS = 160` (was 128).  This is the **only**
+   runtime-configurable dispatch constant that changed in 2026-04-27.
+2. Three decode kernels carry `constexpr int kMaxGroups = 160` at
+   source level (was 128): `dense_gemv_decode.cu`,
+   `fused_gemv_decode.cu`, `fused_quant_gemv.cu`.
+3. `dense_gemm_mma_int4.cu`: **dispatcher** bucket extended
+   `T ≤ 32 && d_out ≤ d_in → kBn=8` (R32).  `kGrpBuf ∈ {32, 128}`
+   opt-in (R31): `n_groups ≤ 32 → 32`; `n_groups ≤ 128 → 128`
+   (dynamic shmem opt-in).  **R40-B**: `kBm ∈ {128, 64}` now a
+   template parameter (was `constexpr 128`); `kBm=64` opt-in under
+   tight gate (next bullet).
+3a. **R40-B dense_gemm kBm dispatch gate**:
+    ```
+    kBm64_enabled =
+      (T >= 16 && T <= 64)
+      && (d_out <= 2048)
+      && (ceil(d_out/128) * ceil(T/32) < 64)
+    ```
+4. **R42-P1 / R43 / R44 fused_dense_sparse kBm dispatch gate**
+   (applies to `fused_dense_sparse_cuda_int4`; mirrors dense but
+   now supports hp>0 via BSR 2-CTA remap):
+    ```
+    r44_shape_ok =
+         (T <= 8  && d_out <= 4096)
+      || (T <= 32 && d_out <= 3072)
+      || (T in [48, 64] && d_out <= 4096)
+      || (T == 96 && d_out <= 2048)
+    kbm64_gate =
+         r44_shape_ok
+      && (ceil(d_out/128) * ceil(T/32) <= 64)   // R45: was `< 64`
+    ```
+    When enabled, grid.x doubles (`ceil(d_out/64)`), `blockDim.x`
+    halves to 64 (2 warps).  Sparse branch uses
+    `bsr_br = br / 2; half_row_off = (br & 1) * 64` remap so two
+    CTAs share one BSR row block.  6 new template instances
+    (`kBn ∈ {8, 32, 64}` × `kBm ∈ {64, 128}` × fused-specific).
+4a. **R44 kBn demote rule** (inside `launch_for_kbn()` for fused
+    kernel only): after the wave-health auto-pick, if
+    `kbm_pick == 64 && T ∈ [32, 96] && kbn_pick >= 32`, force
+    `kbn_pick = 8`.  This unwinds the artifact where
+    `n_cta_m * ceil(T/32) = 64` threshold flips `kBn` one step too
+    wide at kBm=64.
+5. Env overrides (debug only):
+    - `HKUST_V9_FUSED_FORCE_KBM ∈ {"64","128"}` force fused kBm
+    - `HKUST_V9_FUSED_FORCE_KBN ∈ {"8","32","64"}` force fused kBn
+    Both take precedence over the auto gate; unset defaults use gate.
+6. `fused_dense_sparse_mma_int4.cu`: dispatcher mirrors dense but
+   extended as (4) above.  `kGrpBuf = 32` fixed (R36's 40-bump
+   rejected, re-confirmed by R43/R44 sweeps).
+7. Split-K sources **removed** from `dense_gemm_mma_int4.cu` (R34).
+8. R33's `act_quant_phase_a_max` / `_b_pack` sources remain on disk
+   but are unwired from `ops.py`.
+
+**Authoritative R42-R44 wins (hp=0.05, RTX 4090, d_in=4096, auto-gate vs forced kBm=128)**:
+
+| Shape                     | R42  | R43  | R44  | Notes                          |
+|---------------------------|------|------|------|--------------------------------|
+| d=1024 T=8                | .    | +16% | +16% | new in R43 (T<=8 all d_out)    |
+| d=4096 T=8                | .    | +13% | +13% | new in R43                     |
+| d=1024 T=64               | .    | +17% | +17% | new in R43 (d<=1024 T<=96)     |
+| d=3072 T=16               | .    | +15% | +15% | new in R43 (T<=32 d<=3072)     |
+| d=2048 T=48               | ×(0.82) | × | **+7%** | new in R44 (kBn demote fixes) |
+| d=2048 T=64               | ×(0.82) | × | **+7%** | new in R44 (kBn demote fixes) |
+| d=3072 T=48               | ≈    | +2% | **+20%** | R44 kBn demote unlocks     |
+| d=3072 T=64               | ≈    | +4% | **+19%** | R44 kBn demote unlocks     |
+| d=4096 T=48               | ≈    | ≈   | **+15%** | R44 kBn demote unlocks     |
+| d=2048 T=96               | .    | ≈   | **+18%** | R44 new                    |
+
+**Authoritative pure-CUDA / pure-Triton numbers (memory [[0d5nyof1]])**:
+
+Qwen3-14B `down_proj [17408→5120]`, T=1 — the flagship R35 win:
+
+```
+fp16    e2e   189.2 us
+triton  e2e   427.7 us
+cuda    e2e    86.9 us       cuda/fp16 = 2.18x,  cuda/triton = 4.92x
+```
+
+125-shape aggregate (median / p95-worst against Triton):
+
+| T     | cuda/triton median | cuda/triton p95 worst | cuda/fp16 median |
+|-------|--------------------|------------------------|------------------|
+| 1     | 6.5x               | 13.5x                  | 1.85x            |
+| 16    | 2.6x               | 5.3x                   | 0.33x            |
+| 128   | 2.1x               | 5.1x                   | 0.47x            |
+| 512   | 1.9x               | 2.9x                   | 0.85x            |
+| 2048  | 1.8x               | 1.9x                   | 1.15x            |
+
+CUDA beats Triton on **every one** of 125 shapes.  CUDA beats FP16
+on all T=1 shapes and ~60 % of T=2048 shapes.
+
+**Live bottleneck list (supersedes section 6)**:
+
+1. `fused_dense_sparse` wave starvation at `T ∈ [16, 128], d_out ≤ 4096`
+   — next lever is **kBm=64** (gated), *not* Split-K (R34 disproved
+   K-axis split) and *not* forced `kBn=8` (R37 disproved wider-shape
+   kBn shrink).
+2. `activation_quant` 14 us launch floor at `T ∈ [1, 512]` — next
+   lever is **fuse quant INTO fused_dense_sparse's prologue**; the
+   multi-CTA two-kernel approach (R33) is dead.
+3. `gate_up_proj` on 14B at T=2048 — 0.77 x FP16, true compute-bound
+   INT4 on SM89; levers are epilogue FP32 op repack or register-
+   spill reduction only.
+
+---
+
 
 - **BCOL = 128**: single quantization group spans 128 s4 columns.
   `d_in % BCOL == 0` required.
