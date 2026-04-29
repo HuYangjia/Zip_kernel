@@ -580,6 +580,20 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
     }
 
     // Writeback.
+    // Stage B.1 — vectorized writeback.
+    //
+    // Layout (per thread in a warp):
+    //   r=0: (row = lane>>2,     col = (lane&3)*2    )
+    //   r=1: (row = lane>>2,     col = (lane&3)*2 + 1)  <- adjacent
+    //   r=2: (row = lane>>2 + 8, col = (lane&3)*2    )
+    //   r=3: (row = lane>>2 + 8, col = (lane&3)*2 + 1)  <- adjacent
+    //
+    // Y is (d_out, T) row-major with stride_y_n == 1, so the (r=0,r=1)
+    // and (r=2,r=3) pairs are contiguous 2-element spans in memory.
+    // We pack each pair into an __half2 and issue a single 32-bit store,
+    // cutting the global-store instruction count in half, provided both
+    // lanes of the pair are in-bounds. Otherwise we fall back to
+    // per-element writeback (rare: only on the right/bottom tile edges).
     #pragma unroll
     for (int im = 0; im < kMsubPerWarp; ++im) {
         int msub_base = warp_id * 32 + im * 16;
@@ -587,18 +601,36 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
         for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
             int nsub_base = in_sub * 8;
             #pragma unroll
-            for (int r = 0; r < 4; ++r) {
-                int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
-                int col_local = (lane & 3) * 2 + (r & 1);
+            for (int rpair = 0; rpair < 2; ++rpair) {
+                int r0 = rpair * 2;       // 0 or 2
+                int r1 = r0 + 1;          // 1 or 3
+                int row_local = (lane >> 2) + ((r0 >> 1) ? 8 : 0);
+                int col_local = (lane & 3) * 2;
                 int m_global = m_tile + msub_base + row_local;
-                int n_local = nsub_base + col_local;
-                if (n_local >= kBn) continue;
-                int n_global = n_tile + n_local;
+                int n_local0 = nsub_base + col_local;
+                int n_local1 = n_local0 + 1;
                 if (m_global >= d_out) continue;
-                if (n_global >= T) continue;
+                if (n_local0 >= kBn) continue;
+                int n_global0 = n_tile + n_local0;
+                if (n_global0 >= T) continue;
+
+                float v0 = y_fp[im][in_sub][r0];
+                float v1 = y_fp[im][in_sub][r1];
                 int64_t y_off = (int64_t)m_global * stride_y_m
-                              + (int64_t)n_global * stride_y_n;
-                Y[y_off] = __float2half(y_fp[im][in_sub][r]);
+                              + (int64_t)n_global0 * stride_y_n;
+
+                bool pair_ok =
+                    (n_local1 < kBn) && (n_global0 + 1 < T) && (stride_y_n == 1);
+                if (pair_ok) {
+                    __half2 packed = __floats2half2_rn(v0, v1);
+                    *reinterpret_cast<__half2*>(&Y[y_off]) = packed;
+                } else {
+                    // Scalar fallback for tile/row edges.
+                    Y[y_off] = __float2half(v0);
+                    if ((n_local1 < kBn) && (n_global0 + 1 < T)) {
+                        Y[y_off + stride_y_n] = __float2half(v1);
+                    }
+                }
             }
         }
     }
