@@ -35,6 +35,8 @@
 #include <torch/extension.h>
 
 #include <cstdint>
+#include <cstdlib>
+#include <string>
 #include <type_traits>
 
 namespace cg = cooperative_groups;
@@ -541,6 +543,156 @@ __global__ void act_quant_phase_b_pack(
 }
 
 // ---------------------------------------------------------------------------
+// Multi-CTA v2 kernels (r62 P0 optimisation for all T)
+// ---------------------------------------------------------------------------
+//
+// Rationale: the sp path uses grid=ceil_div(T, 4), so for T=1 only 1 CTA
+//   runs and 127 SMs idle.  Measured wall time is ~9.5 us for T=1 D=4096
+//   but HBM roofline is ~0.03 us -> 300x slowdown driven by SM underuse.
+//
+// R33's original mp split used atomicMax on a single per-token max slot,
+//   which serialised the n_groups CTAs and canceled the SM-spread gain.
+//
+// This v2 split avoids the atomic entirely:
+//   Phase A: grid=(n_groups, T, 1), block=(128,1,1).  Each CTA computes
+//            max_abs over its own 128 elements and writes
+//            workspace[t, g] (fp32, non-atomic, unique slot).
+//   Phase B: grid=(n_groups, T, 1), block=(128,1,1).  Each CTA reduces
+//            workspace[t, :] across g via a strided loop (ng <= 128 on
+//            all shapes we care about), recomputes the scale chain
+//            locally, gathers its own group, quantises, packs, writes
+//            sum_X[t, g] (exactly once per CTA).
+//
+// Shmem: only 32 B per CTA (warp reduction staging), so occupancy is
+//   bound purely by register pressure.  Kernels are <30 regs each, so
+//   at least 16 CTAs per SM are resident -> full HBM pipeline.
+//
+// Bit-exactness: identical scale chain (max/7 -> fp16 -> fp32), identical
+//   quantize_one, identical sum reduction order.  The only difference
+//   from sp is HOW token_max is aggregated (atomicMax vs reduce loop),
+//   which on non-negative fp32 produces the same bit pattern.
+
+__global__ void act_quant_phase_a_max_v2(
+    const __half* __restrict__ X,
+    const int* __restrict__ perm,
+    float* __restrict__ workspace,            // (T, n_groups) fp32
+    int T, int D,
+    int64_t stride_xt, int64_t stride_xd,
+    int64_t stride_wt, int64_t stride_wg
+) {
+    const int g = blockIdx.x;
+    const int t = blockIdx.y;
+    const int lane_x = threadIdx.x;
+    const int lane_in_warp = lane_x & (kWarpSize - 1);
+    const int warp_id_x = lane_x / kWarpSize;
+
+    const int d = g * BCOL + lane_x;
+    int pidx = __ldg(perm + d);
+    __half h = __ldg(X + (int64_t)t * stride_xt + (int64_t)pidx * stride_xd);
+    float v = fabsf(__half2float(h));
+
+    // 128-wide max: warp reduce then 4-warp combine via shmem.
+    #pragma unroll
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+        v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, offset));
+    }
+    __shared__ float s_part[4];
+    if (lane_in_warp == 0) s_part[warp_id_x] = v;
+    __syncthreads();
+    if (lane_x == 0) {
+        float m = fmaxf(fmaxf(s_part[0], s_part[1]),
+                        fmaxf(s_part[2], s_part[3]));
+        workspace[(int64_t)t * stride_wt + (int64_t)g * stride_wg] = m;
+    }
+}
+
+__global__ void act_quant_phase_b_pack_v2(
+    const __half* __restrict__ X,
+    const int* __restrict__ perm,
+    const float* __restrict__ workspace,      // (T, n_groups) fp32
+    int8_t* __restrict__ X_s4,
+    __half* __restrict__ scale_x,
+    int* __restrict__ sum_X,
+    int T, int D, int n_groups,
+    int64_t stride_xt, int64_t stride_xd,
+    int64_t stride_qt, int64_t stride_qd,
+    int64_t stride_st, int64_t stride_sg,
+    int64_t stride_wt, int64_t stride_wg
+) {
+    const int g = blockIdx.x;
+    const int t = blockIdx.y;
+    const int lane_x = threadIdx.x;
+    const int lane_in_warp = lane_x & (kWarpSize - 1);
+    const int warp_id_x = lane_x / kWarpSize;
+
+    // Reduce workspace[t, :] -> token_max, spread across 128 lanes.
+    // Each lane handles lanes_per_group strides through n_groups, then
+    // 128-wide reduction finalises.
+    float local_max = 0.0f;
+    for (int gi = lane_x; gi < n_groups; gi += kLanesPerGroup) {
+        float v = workspace[(int64_t)t * stride_wt + (int64_t)gi * stride_wg];
+        local_max = fmaxf(local_max, v);
+    }
+    // warp reduce
+    #pragma unroll
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+        local_max = fmaxf(local_max, __shfl_xor_sync(0xffffffff, local_max, offset));
+    }
+    __shared__ float s_tokmax[4];
+    if (lane_in_warp == 0) s_tokmax[warp_id_x] = local_max;
+    __syncthreads();
+    float token_max = fmaxf(fmaxf(s_tokmax[0], s_tokmax[1]),
+                            fmaxf(s_tokmax[2], s_tokmax[3]));
+
+    // Bit-exact scale chain.
+    float scale_fp32 = token_max / 7.0f;
+    __half scale_h = __float2half(scale_fp32);
+    float scale_math = __half2float(scale_h);
+    bool is_zero = !(scale_math > 0.0f);
+    float scale_safe = is_zero ? 1.0f : scale_math;
+
+    // Only the g=0 CTA writes scale_x[t] (all CTAs compute the same
+    // value, but we must avoid redundant HBM writes).
+    if (g == 0 && lane_x == 0) {
+        scale_x[t] = scale_h;
+    }
+
+    // Gather and quantise the 128 elements for this group.
+    const int d = g * BCOL + lane_x;
+    int pidx = __ldg(perm + d);
+    __half h = __ldg(X + (int64_t)t * stride_xt + (int64_t)pidx * stride_xd);
+    float x = __half2float(h);
+    int q = quantize_one(x, scale_safe, is_zero);
+
+    // Per-group sum: 128-wide reduction.
+    int wsum = q;
+    #pragma unroll
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+        wsum += __shfl_xor_sync(0xffffffff, wsum, offset);
+    }
+    __shared__ int s_part_int[4];
+    if (lane_in_warp == 0) s_part_int[warp_id_x] = wsum;
+    __syncthreads();
+    if (lane_x == 0) {
+        int total = s_part_int[0] + s_part_int[1] + s_part_int[2] + s_part_int[3];
+        sum_X[(int64_t)t * stride_st + (int64_t)g * stride_sg] = total;
+    }
+
+    // Pack LE: even lane low nibble, odd lane high nibble.
+    int q_neighbour = __shfl_xor_sync(0xffffffff, q, 1);
+    if ((lane_x & 1) == 0) {
+        int low = q & 0x0F;
+        int high = q_neighbour & 0x0F;
+        int packed = (high << 4) | low;
+        int64_t byte_off = (int64_t)t * stride_qt
+                         + (int64_t)(d >> 1) * stride_qd;
+        X_s4[byte_off] = static_cast<int8_t>(
+            packed >= 128 ? packed - 256 : packed
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Host-side launcher
 // ---------------------------------------------------------------------------
 
@@ -637,13 +789,67 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
         );
     };
 
-    if (sp_ok) {
-        // R33 attempted multi-CTA mp kernels (act_quant_phase_a_max +
-        //   act_quant_phase_b_pack) to spread gather across SMs for
-        //   T<=4.  Measured regression: T=1 4k jumped 20 -> 42 us
-        //   because 2x launch overhead (~5us) + 2x gather (no shmem
-        //   reuse) + atomicMax serialization exceeded savings.
-        //   mp code kept in-tree for reference; dispatcher DISABLED.
+    auto dispatch_mp2 = [&]() {
+        // Phase A/B: grid=(n_groups, T, 1), block=(128, 1, 1).
+        //   Each CTA handles one (token, group).
+        //   Workspace: (T, n_groups) fp32, allocated on the current device.
+        const int n_groups = D / BCOL;
+        auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(X_fp16.device());
+        auto workspace = torch::empty({T, n_groups}, opts);
+
+        dim3 block(kLanesPerGroup, 1, 1);
+        dim3 grid(n_groups, T, 1);
+
+        act_quant_phase_a_max_v2<<<grid, block, 0, stream>>>(
+            reinterpret_cast<const __half*>(X_fp16.data_ptr<at::Half>()),
+            perm.data_ptr<int>(),
+            workspace.data_ptr<float>(),
+            T, D,
+            X_fp16.stride(0), X_fp16.stride(1),
+            workspace.stride(0), workspace.stride(1)
+        );
+        act_quant_phase_b_pack_v2<<<grid, block, 0, stream>>>(
+            reinterpret_cast<const __half*>(X_fp16.data_ptr<at::Half>()),
+            perm.data_ptr<int>(),
+            workspace.data_ptr<float>(),
+            X_s4.data_ptr<int8_t>(),
+            reinterpret_cast<__half*>(scale_x.data_ptr<at::Half>()),
+            sum_X.data_ptr<int>(),
+            T, D, n_groups,
+            X_fp16.stride(0), X_fp16.stride(1),
+            X_s4.stride(0),    X_s4.stride(1),
+            sum_X.stride(0),   sum_X.stride(1),
+            workspace.stride(0), workspace.stride(1)
+        );
+    };
+
+    // r62 P0: mp2 dispatch gate.  Enabled by default for T <= 256 where
+    //   SM under-utilisation by the sp path dominates measured latency.
+    //   Above T=256 the sp kernel already saturates both gather BW and
+    //   SM count (grid ~= 64 CTAs for T=256 kBt=4), so mp2 loses to sp
+    //   due to an extra pass over X.
+    //
+    //   The gate is overridable at runtime via HKUST_V9_ACTQUANT_PATH:
+    //       "mp2"     -> always mp2
+    //       "sp"      -> always sp (legacy)
+    //       "auto"    -> heuristic (default)
+    const char* path_env = std::getenv("HKUST_V9_ACTQUANT_PATH");
+    std::string path = path_env ? std::string(path_env) : std::string("auto");
+    bool use_mp2;
+    if (path == "mp2") {
+        use_mp2 = true;
+    } else if (path == "sp") {
+        use_mp2 = false;
+    } else {
+        // Heuristic: mp2 is a win when sp's SM count < ~32 (i.e. T/4 < 32).
+        // On RTX 4090 (128 SMs) this means T <= 128.  Bump to 256 for
+        // conservative rollout; will retune after bench data.
+        use_mp2 = sp_ok && (T <= 256);
+    }
+
+    if (use_mp2) {
+        dispatch_mp2();
+    } else if (sp_ok) {
         // Round 20: use sp for all T.  sp_kBt already chosen to fit shmem.
         if      (sp_kBt == 1) dispatch_sp(std::integral_constant<int, 1>{});
         else if (sp_kBt == 2) dispatch_sp(std::integral_constant<int, 2>{});
