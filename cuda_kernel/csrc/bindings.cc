@@ -6,6 +6,8 @@
 
 #include <torch/extension.h>
 
+#include <cstdlib>  // std::getenv — L3.7 CUTLASS dispatch gate
+
 namespace hkust_v9 {
 namespace activation_quant {
 void launch(torch::Tensor X_fp16, torch::Tensor perm,
@@ -37,6 +39,22 @@ void launch(torch::Tensor W_high_blocks,
 }
 
 namespace fused_dense_sparse_mma_int4 {
+void launch(torch::Tensor W_low, torch::Tensor W_high_blocks,
+            torch::Tensor hp_row_offsets, torch::Tensor hp_col_indices,
+            torch::Tensor X_s4,
+            torch::Tensor scale_u4, torch::Tensor zero_u4,
+            torch::Tensor sum_X, torch::Tensor scale_x,
+            torch::Tensor Y_total,
+            int d_out, int d_in);
+}
+
+namespace fused_dense_sparse_mma_int4_cutlass {
+// L3.6 CUTLASS INT4 launcher. ABI-identical to
+// `fused_dense_sparse_mma_int4::launch`. At L3 this is a compile-only
+// stub (`TORCH_CHECK(false,...)`); the runtime dispatcher in
+// `fused_dense_sparse_mma_int4_launch_dispatch` below only routes here
+// when `HKUST_V9_USE_CUTLASS=1` is exported, so default runs are
+// unaffected.
 void launch(torch::Tensor W_low, torch::Tensor W_high_blocks,
             torch::Tensor hp_row_offsets, torch::Tensor hp_col_indices,
             torch::Tensor X_s4,
@@ -119,10 +137,45 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("d_out"), py::arg("d_in")
     );
 
+    // ---------------------------------------------------------------
+    // Dispatcher thunk for fused_dense_sparse_mma_int4_launch.
+    //
+    // Reads `HKUST_V9_USE_CUTLASS` at call time (NOT at module import,
+    // NOT cached) so A/B bench scripts can toggle it per measurement
+    // round without reloading the extension.
+    //   unset / "0" / anything else : legacy hand-rolled mma kernel.
+    //   "1"                          : CUTLASS INT4 launcher (L3.6 stub).
+    // See .codebuddy/plan/r50_cutlass_int4/task-item.md L3.7.
+    // ---------------------------------------------------------------
+    auto fused_dense_sparse_mma_int4_dispatch = [](
+        torch::Tensor W_low, torch::Tensor W_high_blocks,
+        torch::Tensor hp_row_offsets, torch::Tensor hp_col_indices,
+        torch::Tensor X_s4,
+        torch::Tensor scale_u4, torch::Tensor zero_u4,
+        torch::Tensor sum_X, torch::Tensor scale_x,
+        torch::Tensor Y_total,
+        int d_out, int d_in
+    ) {
+        const char* env = std::getenv("HKUST_V9_USE_CUTLASS");
+        const bool use_cutlass = (env != nullptr && env[0] == '1' && env[1] == '\0');
+        if (use_cutlass) {
+            hkust_v9::fused_dense_sparse_mma_int4_cutlass::launch(
+                W_low, W_high_blocks, hp_row_offsets, hp_col_indices,
+                X_s4, scale_u4, zero_u4, sum_X, scale_x,
+                Y_total, d_out, d_in);
+        } else {
+            hkust_v9::fused_dense_sparse_mma_int4::launch(
+                W_low, W_high_blocks, hp_row_offsets, hp_col_indices,
+                X_s4, scale_u4, zero_u4, sum_X, scale_x,
+                Y_total, d_out, d_in);
+        }
+    };
+
     m.def(
         "fused_dense_sparse_mma_int4_launch",
-        &hkust_v9::fused_dense_sparse_mma_int4::launch,
-        "Fused dense + sparse GEMM via mma.m16n8k64.s4 (CUDA)",
+        fused_dense_sparse_mma_int4_dispatch,
+        "Fused dense + sparse GEMM via mma.m16n8k64.s4 (CUDA); "
+        "dispatches to CUTLASS path when HKUST_V9_USE_CUTLASS=1",
         py::arg("W_low"), py::arg("W_high_blocks"),
         py::arg("hp_row_offsets"), py::arg("hp_col_indices"),
         py::arg("X_s4"),

@@ -68,6 +68,11 @@ _SOURCES = [
     str(_CSRC / "dense_gemm"         / "dense_gemv_decode.cu"),
     str(_CSRC / "sparse_gemm"        / "sparse_gemm_mma_int4.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int4.cu"),
+    # L3.6 (plan r50_cutlass_int4): CUTLASS INT4 launcher. At L3 the
+    # function body is `TORCH_CHECK(false,...)` — it exists only so the
+    # build-system path is proven; runtime dispatch gated on
+    # HKUST_V9_USE_CUTLASS=1 via bindings.cc thunk.
+    str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int4_cutlass.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_gemv_decode.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_gemv_smallT.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_quant_gemv.cu"),
@@ -103,6 +108,24 @@ def _build_extension():
     from torch.utils.cpp_extension import load
 
     include_dirs = [str(_CSRC)]
+
+    # L3.9 (plan r50_cutlass_int4): pull CUTLASS v2.11 headers. The
+    # `cutlass` submodule at kernel/cuda_kernel/extern/cutlass must be
+    # initialised (`git submodule update --init --recursive`). If it is
+    # missing we skip silently so callers of non-CUTLASS kernels are not
+    # blocked — the CUTLASS TU will then fail to compile with a clear
+    # "file not found" diagnostic, which is the intended contract.
+    _cutlass_root = _HERE / "extern" / "cutlass"
+    if (_cutlass_root / "include" / "cutlass" / "cutlass.h").is_file():
+        include_dirs.append(str(_cutlass_root / "include"))
+        include_dirs.append(str(_cutlass_root / "tools" / "util" / "include"))
+    else:
+        logger.warning(
+            "CUTLASS submodule not found at %s; CUTLASS INT4 path will "
+            "fail to compile. Run `git submodule update --init --recursive`.",
+            _cutlass_root,
+        )
+
     build_dir = os.environ.get(
         "HKUST_V9_CUDA_BUILD_DIR",
         str(Path.home() / ".cache" / "hkust_v9_cuda"),
