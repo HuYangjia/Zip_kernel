@@ -34,6 +34,32 @@ from __future__ import annotations
 # The dp4a (SIMT) implementations that preceded this phase have been
 # retired -- on SM89 the INT8 Tensor Core path supersedes them by
 # ~4x peak throughput.
-from . import ops  # noqa: F401
+#
+# R50 L3.0: soft-fail when the JIT toolchain is absent (no ninja /
+# no nvcc, e.g. on the Mac development host). This lets pure-Python
+# sub-modules under ``kernel.cuda_kernel.tools.*`` stay importable
+# for CPU-only unit tests without pulling in the compiled extension.
+# Any downstream caller that actually touches ``ops`` will still get
+# the original ``RuntimeError`` at first attribute access, so real
+# GPU code paths are unaffected.
+try:
+    from . import ops  # noqa: F401
+
+    _OPS_AVAILABLE = True
+    _OPS_IMPORT_ERROR: Exception | None = None
+except Exception as _exc:  # pragma: no cover - exercised only on CPU hosts
+    import warnings
+
+    ops = None  # type: ignore[assignment]
+    _OPS_AVAILABLE = False
+    _OPS_IMPORT_ERROR = _exc
+    warnings.warn(
+        "kernel.cuda_kernel.ops JIT build failed "
+        f"({type(_exc).__name__}: {_exc}); CPU-only pure-Python modules "
+        "under kernel.cuda_kernel.tools.* remain importable, GPU code "
+        "paths will raise on first use.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 
 __all__ = ["ops"]
