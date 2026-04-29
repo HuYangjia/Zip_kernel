@@ -180,12 +180,16 @@ fused_dense_sparse_mma_int4_kernel(
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
                 uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
-                *reinterpret_cast<uint4*>(dst + i * 16) = v;
+                // Stage H: use 4-byte stores to support 36-byte padded stride.
+                *reinterpret_cast<uint32_t*>(dst + i * 16 + 0) = v.x;
+                *reinterpret_cast<uint32_t*>(dst + i * 16 + 4) = v.y;
+                *reinterpret_cast<uint32_t*>(dst + i * 16 + 8) = v.z;
+                *reinterpret_cast<uint32_t*>(dst + i * 16 + 12) = v.w;
             }
         } else {
             #pragma unroll
-            for (int i = 0; i < 4; ++i) {
-                *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
+            for (int i = 0; i < 8; ++i) {
+                *reinterpret_cast<uint32_t*>(dst + i * 4) = 0u;
             }
         }
     };
@@ -219,15 +223,21 @@ fused_dense_sparse_mma_int4_kernel(
             int row = q >> 2;
             int quad = q & 3;
             int n = n_tile + row;
-            uint4 v;
             if (n < T) {
                 int64_t off = (int64_t)n * stride_x_n
                             + (int64_t)(g_or_bc * bytes_per_group + quad * 16) * stride_x_k;
-                v = *reinterpret_cast<const uint4*>(X + off);
+                uint4 v = *reinterpret_cast<const uint4*>(X + off);
+                // Stage H: use 4-byte stores to support 36-byte padded stride.
+                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 0]) = v.x;
+                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 4]) = v.y;
+                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 8]) = v.z;
+                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 12]) = v.w;
             } else {
-                v = make_uint4(0, 0, 0, 0);
+                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 0]) = 0u;
+                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 4]) = 0u;
+                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 8]) = 0u;
+                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 12]) = 0u;
             }
-            *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = v;
         }
     };
 
