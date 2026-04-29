@@ -823,16 +823,18 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
         );
     };
 
-    // r62 P0: mp2 dispatch gate.  Enabled by default for T <= 256 where
-    //   SM under-utilisation by the sp path dominates measured latency.
-    //   Above T=256 the sp kernel already saturates both gather BW and
-    //   SM count (grid ~= 64 CTAs for T=256 kBt=4), so mp2 loses to sp
-    //   due to an extra pass over X.
+    // r62 P0: mp2 dispatch gate.  Initial plan was to enable for T<=256
+    //   to spread work across SMs, but measured launch overhead on the
+    //   target box is ~7us per kernel (see launch_overhead_probe).  mp2's
+    //   two-launch structure hits 2x7us + workspace alloc = ~15us floor,
+    //   which is WORSE than sp's 1-launch 9us floor.  So mp2 is kept
+    //   available via HKUST_V9_ACTQUANT_PATH=mp2 for future re-use
+    //   (once we fuse it into fused_dense_sparse), but default is sp.
     //
     //   The gate is overridable at runtime via HKUST_V9_ACTQUANT_PATH:
-    //       "mp2"     -> always mp2
-    //       "sp"      -> always sp (legacy)
-    //       "auto"    -> heuristic (default)
+    //       "mp2"     -> force mp2 (debug / future fusion)
+    //       "sp"      -> force sp (legacy)
+    //       "auto"    -> heuristic (default = sp for all T)
     const char* path_env = std::getenv("HKUST_V9_ACTQUANT_PATH");
     std::string path = path_env ? std::string(path_env) : std::string("auto");
     bool use_mp2;
@@ -841,10 +843,8 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
     } else if (path == "sp") {
         use_mp2 = false;
     } else {
-        // Heuristic: mp2 is a win when sp's SM count < ~32 (i.e. T/4 < 32).
-        // On RTX 4090 (128 SMs) this means T <= 128.  Bump to 256 for
-        // conservative rollout; will retune after bench data.
-        use_mp2 = sp_ok && (T <= 256);
+        // Default: sp (lower launch overhead).
+        use_mp2 = false;
     }
 
     if (use_mp2) {
