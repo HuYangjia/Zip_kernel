@@ -221,4 +221,82 @@ __device__ __forceinline__ void mma_m16n8k64_s4s4s32(
     );
 }
 
+// ---------------------------------------------------------------------------
+// cp.async helpers (SM80+).
+//
+// These wrap the PTX `cp.async` instruction family which copies data
+// directly from global memory to shared memory without going through
+// the register file.  On SM89 (Ada) this is the preferred path for
+// staging GEMM operand tiles because it:
+//   1. Frees the load-store unit for other work while the copy is in
+//      flight (async DMA path).
+//   2. Allows the warp scheduler to issue MMA instructions while the
+//      copy is pending, fully overlapping HBM latency with compute.
+//
+// Usage pattern (3-stage pipeline):
+//   // Stage 0: issue loads for group g into buf 0
+//   cp_async_16b(dst_smem, src_global);
+//   cp_async_commit_group();
+//   // Stage 1: issue loads for group g+1 into buf 1
+//   cp_async_16b(dst_smem, src_global);
+//   cp_async_commit_group();
+//   // Main loop:
+//   for (int g = 0; g < n_groups; ++g) {
+//       // Issue loads for g+2 into buf (g+2)%3
+//       cp_async_16b(dst_smem, src_global);
+//       cp_async_commit_group();
+//       // Wait for group g (oldest) to complete
+//       cp_async_wait_group<1>();  // wait until <=1 group is pending
+//       __syncthreads();
+//       // Use buf g%3 for MMA
+//   }
+//   cp_async_wait_all();
+//   __syncthreads();
+// ---------------------------------------------------------------------------
+
+// Copy 16 bytes from global to shared memory asynchronously.
+// ``dst`` must be a shared memory pointer; ``src`` must be a global
+// memory pointer aligned to 16 bytes.
+__device__ __forceinline__ void cp_async_16b(void* dst, const void* src) {
+    uint32_t smem_addr = static_cast<uint32_t>(__cvta_generic_to_shared(dst));
+    asm volatile(
+        "cp.async.cg.shared.global [%0], [%1], 16;\n"
+        :
+        : "r"(smem_addr), "l"(src)
+    );
+}
+
+// Copy 16 bytes with a predicate (zero-fills when pred==false).
+__device__ __forceinline__ void cp_async_16b_pred(
+    void* dst, const void* src, bool pred
+) {
+    uint32_t smem_addr = static_cast<uint32_t>(__cvta_generic_to_shared(dst));
+    asm volatile(
+        "{\n"
+        "  .reg .pred p;\n"
+        "  setp.ne.b32 p, %2, 0;\n"
+        "  cp.async.cg.shared.global [%0], [%1], 16, p;\n"
+        "}\n"
+        :
+        : "r"(smem_addr), "l"(src), "r"((int)pred)
+    );
+}
+
+// Commit the current group of cp.async operations.
+__device__ __forceinline__ void cp_async_commit_group() {
+    asm volatile("cp.async.commit_group;\n" ::);
+}
+
+// Wait until at most N groups are still pending.
+// N=0 means wait for all; N=1 means the oldest group is done.
+template <int N>
+__device__ __forceinline__ void cp_async_wait_group() {
+    asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
+}
+
+// Wait for all pending cp.async groups to complete.
+__device__ __forceinline__ void cp_async_wait_all() {
+    asm volatile("cp.async.wait_all;\n" ::);
+}
+
 }  // namespace hkust_v9
