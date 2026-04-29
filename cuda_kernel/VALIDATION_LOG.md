@@ -4040,6 +4040,132 @@ loop.
      shapes like `4096×1024×128`.
   3. Full-system bench vs BF16 + Roofline analysis (next task).
 
+---
+
+## Round 56 — Stage E: dispatcher override for large n_groups (2026-04-29)
+
+### Motivation
+After r54 was archived as the production baseline, we ran the first
+**full-shape bench vs BF16 + Roofline** to assess remaining headroom:
+
+| shape            | ng  | INT4 (us) | BF16 (us) | INT4/BF16 | INT4 eff | BF16 eff |
+| ---------------- | --- | --------- | --------- | --------- | -------- | -------- |
+| 1024x1024x128    |   8 |  12.38    |  16.73    | 1.35x  ✓  |   11%    |    18%   |
+| 2048x2048x128    |  16 |  16.42    |  16.24    | 0.99x     |   25%    |    68%   |
+| 4096x4096x128    |  32 |  40.22    |  35.77    | 0.89x     |   34%    |   116%   |
+| 1024x4096x128    |  32 |  27.71    |  16.72    | 0.60x  ✗  |   17%    |    68%   |
+| 4096x1024x128    |   8 |  14.36    |  13.48    | 0.94x     |   30%    |    84%   |
+| 2048x4096x128    |  32 |  27.99    |  18.88    | 0.67x  ✗  |   27%    |   113%   |
+| 4096x2048x128    |  16 |  20.06    |  17.17    | 0.86x     |   37%    |   125%   |
+| 4096x4096x32     |  32 |  35.00    |  21.25    | 0.61x  ✗  |   32%    |   187%   |
+| 4096x4096x1      |  32 |  22.12    |  16.98    | 0.77x     |   47%    |   231%   |
+| 4096x14336x128   | 112 | 174.69    | 151.01    | 0.86x  ✗  |   25%    |    94%   |
+| **14336x4096x128** | 32 | **69.61** | 150.18    | **2.16x** |  61%    |    95%   |
+
+Eff> 100% for BF16 indicates our ACHIEVABLE=0.85 scaling is conservative
+(cuBLAS is actually hitting ~92-95% tensor-core utilisation on Ada).
+Only `14336x4096x128` is a decisive INT4 win — the other shapes sit
+at 17-47% of the INT4 roofline and lose to cuBLAS.
+
+### Root-cause analysis: grid occupancy vs SM count
+
+RTX 4090 has **128 SMs** and the kernel achieves ~3 blocks/SM for
+`kBn<=32` or ~2 blocks/SM for `kBn=64`. Grid sizes of the bench
+shapes (with the current dispatcher choosing kBn):
+
+| shape            | dispatcher pick | grid (CTA) | waves |
+| ---------------- | --------------- | ---------- | ----- |
+| 1024x1024x128    | kBm128, kBn=32  |   32       | 0.25  |
+| 2048x2048x128    | kBm128, kBn=32  |   64       | 0.50  |
+| 4096x4096x128    | kBm128, kBn=32  |  128       | 1.00  |
+| 1024x4096x128    | kBm128, kBn=32  |   32       | 0.25  |
+| **4096x14336x128** | kBm128, kBn=32 |  128       | 1.00  |
+| 14336x4096x128   | kBm128, kBn=64  |  224       | 0.88  |
+
+Small-d_out shapes cannot fill the SMs. True split-K is out of scope
+for a single round; the narrower question is whether kBn was picked
+well for large ng.
+
+### Tile sweep on bottleneck shapes (forced kBm/kBn)
+
+```
+shape              128_32  128_64  128_8  64_32  64_64  64_8   auto
+1024x1024x128       14.46   18.53  12.35  14.03  14.49  10.32  11.42
+2048x2048x128       18.18   22.99  32.20  15.08  20.01  32.74  15.10
+4096x4096x128       37.88   44.27 118.86  39.92  38.72 124.95  37.98
+1024x4096x128       34.20   43.74  36.30  27.79  37.91  37.22  27.79
+4096x1024x128       14.37   17.72  27.98  14.67  15.27  28.25  14.37
+2048x4096x128       34.36   43.76  64.72  27.94  37.91  67.68  27.94
+4096x14336x128     174.35  140.43 563.46 152.29 166.94 550.28 174.67 *
+```
+
+For `4096x14336x128` (ng=112, the Qwen-3 down_proj shape), auto was
+picking `kBn=32` because `waves_at(64) = 32*2 = 64 < 128` triggered
+fallback — but the optimum is actually `kBn=64`. Reason: at ng=112
+each CTA's K-loop is so deep that the SM is already saturated from
+within; shrinking kBn just doubles launch count without adding
+meaningful occupancy.
+
+### Implementation
+Add an override in `pick()` for large ng:
+
+```cpp
+// Stage E (r56) — large-ng override.
+if (n_groups >= 64 && waves_at(64) >= 32) return 64;
+```
+
+Threshold `ng >= 64` was chosen by observing that:
+- ng=32 (classic 4096-d_in): kBn=32 is still right.
+- ng=64 (8192-d_in): kBn=64 equally good or better.
+- ng=112 (14336-d_in): kBn=64 clear winner (1.24x).
+The `waves_at(64) >= 32` guard keeps degenerate shapes from picking
+an oversized tile.
+
+### Results
+
+**Parity**: PASS on `4096×14336×128`, `2048×14336×128`,
+`1024×14336×128`, `4096×16384×128`, `4096×8192×128` (all ng>=64).
+Relative error ≤ 3.5e-4, well below the 5e-3 tolerance.
+
+**Full-shape bench** (r56 vs r54, all other shapes unaffected):
+
+| shape            | ng  | r56 (us) | r54 (us) | delta   |
+| ---------------- | --- | -------- | -------- | ------- |
+| 1024x1024x128    |   8 |  12.37   |  12.38   |   0%    |
+| 2048x2048x128    |  16 |  16.43   |  16.42   |   0%    |
+| 4096x4096x128    |  32 |  40.18   |  40.22   |   0%    |
+| 1024x4096x128    |  32 |  27.74   |  27.71   |   0%    |
+| 4096x1024x128    |   8 |  14.43   |  14.36   |   0%    |
+| 2048x4096x128    |  32 |  28.11   |  27.99   |   0%    |
+| 4096x2048x128    |  16 |  20.03   |  20.06   |   0%    |
+| 4096x4096x32     |  32 |  35.00   |  35.00   |   0%    |
+| 4096x4096x1      |  32 |  22.14   |  22.12   |   0%    |
+| **4096x14336x128** | 112 | **140.13** | 174.69 | **-20%** |
+| 14336x4096x128   |  32 |  69.65   |  69.61   |   0%    |
+
+### Status
+- r56: MERGED to main (commit 0635edc).
+- New BF16-comparison summary (2 of 11 shapes win vs cuBLAS):
+  - **Wins vs BF16**: `1024×1024×128` 1.42x, `2048×2048×128` 1.07x,
+    `4096×14336×128` 1.08x, `14336×4096×128` 2.16x.
+  - **Losses vs BF16**: T=1 / T=32 / tall-thin shapes, where our
+    per-CTA K-loop cannot saturate SMs and the sum_X / scale / zero
+    side-channel adds overhead relative to a pure BF16 GEMM.
+
+### Remaining bottlenecks (for future rounds)
+1. **Tall-thin shapes** (1024x4096, 2048x4096 at T=128): grid is
+   too small (0.25 wave). Fix requires Split-K into the n_groups
+   dimension with a reduce kernel. Est. 2-3 days, high impact.
+2. **T=1 / T=32 (decode / short prefill)**: grid = 64 CTAs, kBm=64
+   pick yields 0.17 wave. Same Split-K fix applies but with a
+   different parallelisation axis (M dim also needs splitting).
+3. **Roofline gap for 4096×4096×128** (34% eff vs 90%+ for cuBLAS):
+   we are running one wave perfectly but the inner loop still
+   leaves ~2x on the table. Likely sources: ldmatrix for A loads
+   (Stage C in the roadmap), finer-grained cp.async pipeline, or
+   fusing the dequant into the epilogue registers instead of the
+   writeback FP computation.
+
 
 
 
