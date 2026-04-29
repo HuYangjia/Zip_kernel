@@ -4420,5 +4420,130 @@ Stage C (ldmatrix for A/B loads):
 - r59: REVERTED on main (commit 1787989).
 - Next: Split-K on n_groups dimension (highest ROI, est. 2-3 days).
 
+---
+
+## Round 60 — Stage I: Split-K on n_groups dimension (2026-04-29)
+
+### Motivation
+Roofline analysis from the r57 baseline showed that tall-thin shapes
+like `1024×4096×128` (ng=32) hit only 17% compute efficiency because
+the grid has just 32 CTAs (≈ 0.25 wave on RTX 4090's 128 SMs) — most
+SMs sit idle while a handful of CTAs serially grind through all 32
+K-groups.  Splitting the K (n_groups) dimension multiplies the grid
+size and exposes more parallelism.
+
+### Design
+Kernel-level Split-K with `gridDim.z = split_k`:
+1. Main kernel: each CTA (identified by `blockIdx.z`) processes groups
+   `[g_start, g_end)` where `g_start = split_k_idx * ng/split_k`.
+2. When `split_k > 1`, writeback goes to a `float Y_partial[split_k][d_out][T]`
+   staging buffer (fp32) instead of the final fp16 `Y`.
+3. A tiny `split_k_reduce_kernel` sums the partials along `split_k_idx`
+   and writes the final fp16 `Y`.
+4. When `split_k == 1`, writeback goes directly to `Y` (fp16) with the
+   existing `__half2` vectorized path — zero extra cost in the common
+   non-split path.
+
+### Heuristic
+Calibration bench (probing sk ∈ {1,2,4} per shape) revealed that
+Split-K benefits correlate with the ratio `n_groups / n_cta_m_at_128`:
+
+```
+shape              ng  n_cta_m  ratio  auto   sk=2   sk=4   winner
+1024x4096x128      32    8        4.0  30.88  21.87  19.74  sk=4 (1.56x)
+2048x4096x128      32   16        2.0  28.63  25.97  28.32  sk=2 (1.10x)
+4096x14336x128    112   32        3.5 145.24  85.18  90.42  sk=2 (1.70x)
+4096x4096x128      32   32        1.0  37.38  42.95  52.38  sk=1
+14336x4096x128     32  112        0.28 68.36  87.69 110.33  sk=1
+4096x1024x128       8   32        0.25 15.35  20.45  25.22  sk=1
+```
+
+Final rule (hp_nnz == 0 dense-only, n_groups >= 16):
+- `ng / n_cta_m_at_128 >= 4` and `ng % 4 == 0` → `split_k = 4`
+- `ng / n_cta_m_at_128 >= 2` and `ng % 2 == 0` → `split_k = 2`
+- else `split_k = 1`
+
+We use `n_cta_m_at_128` (not `n_cta_m`) so the ratio is independent
+of the kBm=64 R52 gate.
+
+### Bugs found & fixed during development
+
+**Bug 1** (r60 WIP → parity FAIL rel≈0.5-1.3):
+The cp.async initial load `issue_w_dense_load_async(0, 0)` hard-coded
+group 0, while the MMA loop starts at `g_start` (>0 for split_k>1,
+split_k_idx>0).  Result: first group's MMA consumed stale/wrong
+W,X data.  Fix: pass `g_start` to all three initial loaders.
+
+**Bug 2** (same symptom):
+`issue_sz_window_load(0)` hard-coded 0; must round `g_start` down
+to the nearest `kGrpBuf` boundary so the window indexing `g_cache =
+g - g_window_base` stays in [0, kGrpBuf).  Fix: pass
+`g_start - (g_start % kGrpBuf)` and initialize
+`g_window_base = g_start - (g_start % kGrpBuf)`.
+
+**Bug 3** (r60 "kbn override" misdesign):
+Initial design up-shifted kbn 8→64 whenever Split-K engaged, on the
+assumption that kbn=64 gave bigger per-CTA work.  But measurement
+on `1024x4096x128` showed kbn=8+sk=4 (18.10us) beats kbn=64+sk=4
+(19.63us).  Keeping the wave-based kbn pick and only toggling
+split_k is optimal.  Override removed.
+
+### Final bench (r60 vs r54 baseline on RTX 4090)
+
+| Shape              | ng  | r54 (μs) | r60 (μs) |  Δ   | vs BF16 |
+|--------------------|-----|----------|----------|------|---------|
+| 1024×1024×128      |   8 |   11.49  |   11.78  |  -3% |  x1.07  |
+| 2048×2048×128      |  16 |   16.33  |   16.79  |  -3% |  x0.82  |
+| 4096×4096×128      |  32 |   38.49  |   36.71  |  +5% |  x0.90  |
+| **1024×4096×128**  |  32 |   27.53  | **18.17**| **+34% ↑↑** | x0.70 |
+| 4096×1024×128      |   8 |   14.37  |   14.25  |  +1% |  x0.73  |
+| **2048×4096×128**  |  32 |   27.90  |   26.21  |  +6% |  x0.72  |
+| 4096×2048×128      |  16 |   19.92  |   20.06  |  -1% |  x0.85  |
+| 4096×4096×32       |  32 |   32.02  |   34.73  |  -8% |  x0.61  |
+| 4096×4096×1        |  32 |   21.50  |   20.96  |  +3% |  x0.81  |
+| **4096×14336×128** | 112 |  140.43  | **84.82**| **+40% ↑↑** | **x1.78** |
+| 14336×4096×128     |  32 |   68.68  |   69.93  |  -2% |  x2.15  |
+
+Three shapes with deep-K tall-thin profiles get major speedups.
+All other shapes stay within ±6%.
+
+### Parity
+All 12 tested shapes PASS with rel < 5e-4 after Bug1/Bug2 fixes.
+Verified:
+- 128×128×128 (no split)
+- 1024×1024×128 (no split)
+- 1024×4096×128 (sk=4, cp.async path)
+- 2048×4096×128 (sk=2, cp.async path)
+- 4096×14336×128 (sk=4, cp.async + window cache path)
+
+### Remaining gap vs BF16 cuBLAS
+Even after Stage I, most shapes are below 1x vs BF16 (efficiency
+≈ 25-40%).  Root causes (documented in Stage H post-mortem):
+- 4-way sW/sX smem bank conflict on MMA A/B loads (would need ldmatrix)
+- No register blocking beyond 32×8×16 MMA tile per warp
+- Writeback is the main overhead only for `T=1` (tail-warp workload)
+
+### Files touched
+- `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu` — Split-K
+  infrastructure (kernel signature, g_start/g_end gating, writeback
+  dispatch, reduce kernel, launcher heuristic)
+- No API change; existing callers continue to work.
+
+### Commits
+- `452c570` r60 Stage I: Split-K on n_groups dimension (WIP)
+- `23e0278` r60 fix: forward-declare split_k/Y_partial_ptr
+- `bcf13f4`* tools: full-shape bench vs BF16 + Roofline reporter
+- `9158c4f` r60 heuristic: Split-K-aware kbn override (reverted)
+- `b9a49cc` r60 fix: remove kbm_pick==128 constraint
+- `d57c53c` r60 Stage I v3: ng/n_cta_m ratio-based heuristic
+- `4d853ac` r60 tune: use n_cta_m_at_128 for Split-K ratio
+- `ee1e314` r60 fix: cp.async/window-cache must start at g_start (Bug1/Bug2)
+
+### Status
+- r60: MERGED on main (commit ee1e314).
+- Next candidates: (a) Stage C (ldmatrix + XOR swizzle for sW/sX
+  bank conflict, 1-2 days), (b) larger register tile / 2× warp count,
+  (c) T=1 writeback fast-path (small shape regression fix).
+
 
 
