@@ -691,10 +691,10 @@ void launch(
      || ( (T <= 32)  && (d_out <= 3072) )
      || ( (T >= 48 && T <= 64)  && (d_out <= 4096) )
      || ( (T == 96)  && (d_out <= 2048) )
-     // R52: T=128 with 512<=d_out<=2048 benefits from kBm=64 (1.11-1.20x).
-     //   d_out<512 at T=128 is too small (overhead > benefit).
-     //   d_out=4096 at T=128 is 0.95x with kBm=64, so excluded.
-     || ( (T == 128) && (d_out >= 512) && (d_out <= 2048) );
+     // R52: T=128 with 512<=d_out<=2048 and d_in>=2048 benefits from kBm=64.
+     //   d_out<512 or d_in<2048 (ng<16): overhead > benefit.
+     //   d_out=4096 at T=128: 0.95x with kBm=64, excluded.
+     || ( (T == 128) && (d_out >= 512) && (d_out <= 2048) && (d_in >= 2048) );
     // R45: the `< 64` threshold was too strict.  Probe data for T=48
     // d=4096 (n_cta_m_at_128=32, ceil(T/32)=2 → product = 64) showed:
     //     kBm=64 kBn=8 : 40.94us  (best)
