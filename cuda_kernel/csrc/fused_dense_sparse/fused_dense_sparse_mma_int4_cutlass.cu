@@ -196,10 +196,6 @@ void launch(
         torch::TensorOptions().dtype(torch::kInt32).device(Y_total.device())
     );
 
-    auto* w_base = reinterpret_cast<cutlass::int4b_t*>(
-        W_low.data_ptr<int8_t>());
-    auto* x_base = reinterpret_cast<cutlass::int4b_t*>(
-        X_s4.data_ptr<int8_t>());
     auto* c_base = workspace_int32.data_ptr<int32_t>();
 
     // LayoutA (RowMajor, M=d_out, K=BCOL): leading dim = d_in (row stride of W_low).
@@ -217,9 +213,15 @@ void launch(
 
     for (int g = 0; g < n_groups; ++g) {
         // Slice g covers K-range [g*BCOL, (g+1)*BCOL) of both operands.
-        // Pointer offset in int4 element count is (g * BCOL).
-        auto* w_g = w_base + static_cast<int64_t>(g) * BCOL;
-        auto* x_g = x_base + static_cast<int64_t>(g) * BCOL;
+        // CAUTION: `int4b_t` has sizeof==1 byte (it holds a uint8_t
+        // storage field), so `int4b_t* + BCOL` would step BCOL BYTES
+        // (= 2*BCOL int4 elements), which is wrong.  Do the arithmetic
+        // on byte pointers and reinterpret back.
+        const int byte_off = (g * BCOL) / 2;   // int4 elements -> bytes
+        auto* w_g = reinterpret_cast<cutlass::int4b_t*>(
+            W_low.data_ptr<int8_t>() + byte_off);
+        auto* x_g = reinterpret_cast<cutlass::int4b_t*>(
+            X_s4.data_ptr<int8_t>()  + byte_off);
         auto* c_g = c_base + static_cast<int64_t>(g) * d_out * T;
 
         typename Int4Gemm::Arguments args{
