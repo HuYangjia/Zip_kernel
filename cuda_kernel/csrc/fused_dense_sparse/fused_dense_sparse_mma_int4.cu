@@ -49,6 +49,39 @@ __global__ void split_k_reduce_kernel(
 constexpr int kGrpBuf = 32;
 constexpr int kMaxWindowedGroups = 64;
 
+// Stage C.1b — XOR swizzle for sW / sX to eliminate bank conflicts on
+// ldmatrix A/B loads.
+//
+// Layout per row: 64 bytes (= kBk/2 int4 bytes).
+// Each ldmatrix.x4 expects 8 base addresses (one per lane in a group of
+// 8), one 16-byte fragment per address.  Without swizzle, the 8 addresses
+// lie at row_i * 64 (+col), with only 2 distinct bank sets → 16-way
+// conflict.
+//
+// XOR swizzle (row & 7) << 3 toggles bits [5:3] of the byte offset:
+//   phys_col_bytes = logical_col_bytes XOR ((row & 7) * 8)
+//
+// Verified bank distribution for 8 consecutive rows:
+//   row 0 @col=0  → bank  0
+//   row 1 @col=0  → bank 18
+//   row 2 @col=0  → bank  4
+//   row 3 @col=0  → bank 22
+//   row 4 @col=0  → bank  8
+//   row 5 @col=0  → bank 26
+//   row 6 @col=0  → bank 12
+//   row 7 @col=0  → bank 30
+// → all distinct (conflict-free).
+//
+// Writes must be at ≤8-byte granularity because the swizzle toggles
+// bit 3.  We therefore issue the smem stores/cp.async as 4× 8-byte
+// (uint2) per 16-byte region instead of 1× 16-byte (uint4).  For
+// ldmatrix reads the base address is still 16-byte aligned because
+// `col` base ∈ {0, 16, 32, 48} has bit 3 = 0 and the swizzle preserves
+// bits [2:0].
+__device__ __forceinline__ int swizzle_row_col(int row, int col_bytes) {
+    return col_bytes ^ ((row & 7) << 3);
+}
+
 // Round 41-P1: kBm templated (default = BROW = 128).
 //   kBm=64 is opt-in via a narrow gate in the host launcher aimed at the
 //   wave-starvation regime (T in [16,64] && d_out<=2048 && hp==0).  This
@@ -222,15 +255,33 @@ fused_dense_sparse_mma_int4_kernel(
         if (m < d_out) {
             const uint8_t* src = W_low + (int64_t)m * stride_w_m
                                        + (int64_t)(g * bytes_per_group) * stride_w_k;
-            #pragma unroll
-            for (int i = 0; i < 4; ++i) {
-                uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
-                *reinterpret_cast<uint4*>(dst + i * 16) = v;
+            if constexpr (kUseLdmatrix) {
+                // Stage C.1b: write 8× uint2 (8B) with XOR swizzle.
+                #pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                    uint2 v = *reinterpret_cast<const uint2*>(src + i * 8);
+                    int phys = swizzle_row_col(tid, i * 8);
+                    *reinterpret_cast<uint2*>(dst + phys) = v;
+                }
+            } else {
+                #pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
+                    *reinterpret_cast<uint4*>(dst + i * 16) = v;
+                }
             }
         } else {
-            #pragma unroll
-            for (int i = 0; i < 4; ++i) {
-                *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
+            if constexpr (kUseLdmatrix) {
+                #pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                    int phys = swizzle_row_col(tid, i * 8);
+                    *reinterpret_cast<uint2*>(dst + phys) = make_uint2(0, 0);
+                }
+            } else {
+                #pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
+                }
             }
         }
     };
@@ -245,40 +296,105 @@ fused_dense_sparse_mma_int4_kernel(
         if (m < d_out) {
             const uint8_t* src = W_low + (int64_t)m * stride_w_m
                                        + (int64_t)(g * bytes_per_group) * stride_w_k;
-            #pragma unroll
-            for (int i = 0; i < 4; ++i) {
-                cp_async_cg_16(dst + i * 16, src + i * 16);
+            if constexpr (kUseLdmatrix) {
+                // Stage C.1b: swizzled cp.async.  We issue two 16-byte
+                // chunks per 32-byte aligned pair (swap for odd swizzle
+                // parity).  Since the 8-byte word swizzle toggles bit 3,
+                // a 16-byte-aligned write only works when (row&7)∈{0,2,
+                // 4,6} — but cp.async requires 16B src/dst alignment.
+                // Workaround: do 8× 8-byte synchronous writes instead.
+                #pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                    uint2 v = *reinterpret_cast<const uint2*>(src + i * 8);
+                    int phys = swizzle_row_col(tid, i * 8);
+                    *reinterpret_cast<uint2*>(dst + phys) = v;
+                }
+            } else {
+                #pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    cp_async_cg_16(dst + i * 16, src + i * 16);
+                }
             }
         } else {
             // Synchronous zero-fill for out-of-bounds rows.
-            #pragma unroll
-            for (int i = 0; i < 4; ++i) {
-                *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
+            if constexpr (kUseLdmatrix) {
+                #pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                    int phys = swizzle_row_col(tid, i * 8);
+                    *reinterpret_cast<uint2*>(dst + phys) = make_uint2(0, 0);
+                }
+            } else {
+                #pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
+                }
             }
         }
     };
 
     auto issue_x_load = [&](int g_or_bc, int buf) {
-        const int total_quads = kBn * 4;
-        for (int q = tid; q < total_quads; q += kBm) {
-            int row = q >> 2;
-            int quad = q & 3;
-            int n = n_tile + row;
-            uint4 v;
-            if (n < T) {
-                int64_t off = (int64_t)n * stride_x_n
-                            + (int64_t)(g_or_bc * bytes_per_group + quad * 16) * stride_x_k;
-                v = *reinterpret_cast<const uint4*>(X + off);
-            } else {
-                v = make_uint4(0, 0, 0, 0);
+        if constexpr (kUseLdmatrix) {
+            // Stage C.1b: iterate at 8-byte (uint2) granularity so the
+            // XOR swizzle can toggle bit 3 of the column offset.
+            const int total_octs = kBn * 8;  // 64 bytes / 8 bytes per oct
+            for (int q = tid; q < total_octs; q += kBm) {
+                int row = q >> 3;
+                int oct = q & 7;
+                int n = n_tile + row;
+                uint2 v;
+                if (n < T) {
+                    int64_t off = (int64_t)n * stride_x_n
+                                + (int64_t)(g_or_bc * bytes_per_group + oct * 8) * stride_x_k;
+                    v = *reinterpret_cast<const uint2*>(X + off);
+                } else {
+                    v = make_uint2(0, 0);
+                }
+                int phys = swizzle_row_col(row, oct * 8);
+                *reinterpret_cast<uint2*>(&sX[buf][row][phys]) = v;
             }
-            *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = v;
+        } else {
+            const int total_quads = kBn * 4;
+            for (int q = tid; q < total_quads; q += kBm) {
+                int row = q >> 2;
+                int quad = q & 3;
+                int n = n_tile + row;
+                uint4 v;
+                if (n < T) {
+                    int64_t off = (int64_t)n * stride_x_n
+                                + (int64_t)(g_or_bc * bytes_per_group + quad * 16) * stride_x_k;
+                    v = *reinterpret_cast<const uint4*>(X + off);
+                } else {
+                    v = make_uint4(0, 0, 0, 0);
+                }
+                *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = v;
+            }
         }
     };
 
     // Stage A2: cp.async variant of issue_x_load.
     // Out-of-bounds rows are zero-filled synchronously (same reason as W).
     auto issue_x_load_async = [&](int g_or_bc, int buf) {
+        if constexpr (kUseLdmatrix) {
+            // Stage C.1b: swizzled path uses synchronous uint2 writes
+            // (cp.async can't toggle bit 3 cleanly at 8B granularity).
+            const int total_octs = kBn * 8;
+            for (int q = tid; q < total_octs; q += kBm) {
+                int row = q >> 3;
+                int oct = q & 7;
+                int n = n_tile + row;
+                uint2 v;
+                if (n < T) {
+                    int64_t off = (int64_t)n * stride_x_n
+                                + (int64_t)(g_or_bc * bytes_per_group + oct * 8) * stride_x_k;
+                    v = *reinterpret_cast<const uint2*>(X + off);
+                } else {
+                    v = make_uint2(0, 0);
+                }
+                int phys = swizzle_row_col(row, oct * 8);
+                *reinterpret_cast<uint2*>(&sX[buf][row][phys]) = v;
+            }
+            return;
+        }
         const int total_quads = kBn * 4;
         for (int q = tid; q < total_quads; q += kBm) {
             int row = q >> 2;
@@ -310,10 +426,19 @@ fused_dense_sparse_mma_int4_kernel(
                            + (int64_t)block_idx * stride_wb_blk
                            + (int64_t)(half_row_off + tid) * stride_wb_r;
         uint8_t* dst = &sW[buf][tid][0];
-        #pragma unroll
-        for (int i = 0; i < 4; ++i) {
-            uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
-            *reinterpret_cast<uint4*>(dst + i * 16) = v;
+        if constexpr (kUseLdmatrix) {
+            #pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                uint2 v = *reinterpret_cast<const uint2*>(src + i * 8);
+                int phys = swizzle_row_col(tid, i * 8);
+                *reinterpret_cast<uint2*>(dst + phys) = v;
+            }
+        } else {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
+                *reinterpret_cast<uint4*>(dst + i * 16) = v;
+            }
         }
     };
 
@@ -325,9 +450,19 @@ fused_dense_sparse_mma_int4_kernel(
                            + (int64_t)block_idx * stride_wb_blk
                            + (int64_t)(half_row_off + tid) * stride_wb_r;
         uint8_t* dst = &sW[buf][tid][0];
-        #pragma unroll
-        for (int i = 0; i < 4; ++i) {
-            cp_async_cg_16(dst + i * 16, src + i * 16);
+        if constexpr (kUseLdmatrix) {
+            // Stage C.1b: swizzled synchronous uint2 writes.
+            #pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                uint2 v = *reinterpret_cast<const uint2*>(src + i * 8);
+                int phys = swizzle_row_col(tid, i * 8);
+                *reinterpret_cast<uint2*>(dst + phys) = v;
+            }
+        } else {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                cp_async_cg_16(dst + i * 16, src + i * 16);
+            }
         }
     };
 
@@ -356,7 +491,7 @@ fused_dense_sparse_mma_int4_kernel(
             for (int im = 0; im < kMsubPerWarp; ++im) {
                 int msub_base = warp_id * 32 + im * 16;
                 if constexpr (kUseLdmatrix) {
-                    // Stage C.1a: use ldmatrix.x4 for A operand.
+                    // Stage C.1a+b: use ldmatrix.x4 for A operand with XOR swizzle.
                     //
                     // MMA m16n8k64.s4 A operand layout (per warp):
                     //   a0 = A[msub_base + 0..7,  ks*32..ks*32+15]  (tile 0)
@@ -372,6 +507,12 @@ fused_dense_sparse_mma_int4_kernel(
                     //
                     // The returned 4 registers per lane hold (tile0, tile1, tile2, tile3)
                     // at position (lane % 8) row, (lane / 8) column-pair — matching MMA.
+                    //
+                    // Stage C.1b: apply XOR swizzle to eliminate bank conflicts.
+                    //   phys_col = logical_col XOR ((row & 7) * 8)
+                    //   — preserves 16-byte alignment required by ldmatrix because
+                    //     logical_col ∈ {0,16,32,48} has bit 3 = 0 and XOR only
+                    //     toggles bits [5:3].
                     int lane_in_tile = lane & 7;           // 0..7
                     int tile_idx     = lane >> 3;          // 0..3
                     int row_off      = (tile_idx & 1) * 8; // tiles 1,3 → row+8
@@ -381,8 +522,9 @@ fused_dense_sparse_mma_int4_kernel(
                     // Clamp OOB rows to a safe in-range address (row 0) and
                     //  rely on issue_*_load's zero-fill for the semantic zero.
                     if (row >= kBm) row = 0;
+                    int phys_col = swizzle_row_col(row, col);
                     uint32_t r0, r1, r2, r3;
-                    ldmatrix_x4_b16(&sW[buf][row][col], r0, r1, r2, r3);
+                    ldmatrix_x4_b16(&sW[buf][row][phys_col], r0, r1, r2, r3);
                     a_regs[im][0] = r0;
                     a_regs[im][1] = r1;
                     a_regs[im][2] = r2;
@@ -412,7 +554,7 @@ fused_dense_sparse_mma_int4_kernel(
             #pragma unroll
             for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
                 if constexpr (kUseLdmatrix) {
-                    // Stage C.1a: ldmatrix.x2 for B operand.
+                    // Stage C.1a+b: ldmatrix.x2 for B operand with XOR swizzle.
                     //
                     // MMA m16n8k64.s4 B operand layout (per warp):
                     //   b0 = B[in_sub*8 + 0..7, ks*32..ks*32+15]  (tile 0)
@@ -430,8 +572,9 @@ fused_dense_sparse_mma_int4_kernel(
                     int col          = kpb_base + col_off;
                     // Clamp OOB rows (n_row >= kBn) and lane>=16 to row 0.
                     if (n_row >= kBn || lane >= 16) n_row = 0;
+                    int phys_col = swizzle_row_col(n_row, col);
                     uint32_t r0, r1;
-                    ldmatrix_x2_b16(&sX[buf][n_row][col], r0, r1);
+                    ldmatrix_x2_b16(&sX[buf][n_row][phys_col], r0, r1);
                     b_regs[in_sub][0] = r0;
                     b_regs[in_sub][1] = r1;
                 } else {
