@@ -147,13 +147,22 @@ def bench_us(
     warmup: int = 50,
     outer: int = 3,
     inner: int = 100,
+    flush_l2: bool = False,
 ) -> float:
     return time_ms(
         fn,
         n_warmup=warmup,
         n_iter=inner,
         n_repeat=outer,
+        flush_l2=flush_l2,
     ) * 1000.0
+
+
+# r62 P2: module-level flag, flipped by CLI.  When True, the FP16 cuBLAS
+# baseline (and only the baseline) is measured with cold-cache HBM to
+# remove the L2-reuse artefact.  INT4/Triton paths keep their original
+# tight-loop timing so downstream numbers stay comparable to prior runs.
+_FLUSH_L2_FP16 = True
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +230,10 @@ def make_inputs(
 # Per-sub-kernel benches.  Each returns dict with three entries when applicable.
 # ---------------------------------------------------------------------------
 def bench_fp16_matmul(inp: dict) -> float:
-    return bench_us(lambda: torch.matmul(inp["W_fp"], inp["X_fp_t"]))
+    return bench_us(
+        lambda: torch.matmul(inp["W_fp"], inp["X_fp_t"]),
+        flush_l2=_FLUSH_L2_FP16,
+    )
 
 
 def bench_activation_quant(T: int, d_in: int, log: logging.Logger):
@@ -344,7 +356,7 @@ def bench_end_to_end(inp: dict, T: int, d_out: int, d_in: int):
             d_out, d_in,
         )
 
-    t_fp16 = bench_us(run_fp16)
+    t_fp16 = bench_us(run_fp16, flush_l2=_FLUSH_L2_FP16)
     t_triton = bench_us(run_triton)
     t_cuda = bench_us(run_cuda)
     return {
@@ -609,7 +621,21 @@ def main():
                         help="Block-sparse density.")
     parser.add_argument("--out-root", type=Path, default=None,
                         help="Override output root directory.")
+    parser.add_argument("--flush-l2-fp16", dest="flush_l2_fp16",
+                        action="store_true", default=True,
+                        help="Flush L2 before every FP16 baseline launch "
+                             "(cold-cache HBM, default, matches real LLM "
+                             "inference).")
+    parser.add_argument("--no-flush-l2-fp16", dest="flush_l2_fp16",
+                        action="store_false",
+                        help="Legacy tight-loop FP16 baseline (inflates "
+                             "cuBLAS by up to 2x on <72 MB problems).")
     args = parser.parse_args()
+
+    # r62 P2: propagate the CLI flag into the module-level switch used by
+    # bench_fp16_matmul / bench_end_to_end.
+    global _FLUSH_L2_FP16
+    _FLUSH_L2_FP16 = bool(args.flush_l2_fp16)
 
     # Resolve model list.
     if args.models is not None:
@@ -642,10 +668,12 @@ def main():
         "hp_ratio": args.hp_ratio,
         "ts_swept": args.ts,
         "models": [m.name for m in models],
+        "flush_l2_fp16": _FLUSH_L2_FP16,
     }
     log.info("device: %s", device_name)
     log.info("pytorch %s  triton %s", torch.__version__, triton.__version__)
     log.info("hp_ratio: %.3f", args.hp_ratio)
+    log.info("flush_l2_fp16: %s", _FLUSH_L2_FP16)
 
     all_records: list[dict] = []
     total = 0
