@@ -153,7 +153,7 @@ using Int4GemmBatched = cutlass::gemm::device::GemmBatched<
     /*WarpShape_          */ WarpShape,
     /*InstructionShape_   */ InstructionShape,
     /*EpilogueOutputOp_   */ EpilogueOutputOp,
-    /*ThreadblockSwizzle_ */ ThreadblockSwizzle,
+    /*ThreadblockSwizzle_ */ cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
     /*Stages              */ kStages,
     /*AlignmentA          */ kAlignmentW,
     /*AlignmentB          */ kAlignmentX
