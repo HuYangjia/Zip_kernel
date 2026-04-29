@@ -1039,17 +1039,25 @@ void launch(
     (void)hp_empty;  // R42-P1: retained for debug/future gates.
     const int kbm_pick = kbm64_gate ? 64 : 128;
     const int n_cta_m = ceil_div(d_out, kbm_pick);
+    // Stage F (r61) — occupancy-aware cache gate (F.1 experiment-driven).
+    //
+    // The empirical bw_cache_experiment.py sweep at r61 showed that for
+    // ng >= 16 shapes, smem-hungry group-cache (17 KB of scale/zero)
+    // caps SM occupancy at 2 CTAs/SM → HBM BW stuck at 22-30 %. Disabling
+    // the cache lifts BW to 28-55 % on those shapes (1.05–1.25×).
+    //
+    // But for ng ≤ 8 the full scale/zero set fits in cache exactly once,
+    // eliminating ng identical HBM trips per CTA; disabling cache there
+    // regressed 5-9 %. We therefore tighten the gate:
+    //   * ng ≤ 8            : always cache (pure reuse win).
+    //   * ng ≤ kGrpBuf (32)  +  T ≤ 32    : cache (compute-heavy, low T).
+    //   * everything else   : no cache  (occupancy wins over reuse).
+    //
+    // The env switch HKUST_V9_FUSED_FORCE_CACHE still overrides this for
+    // debug / A-B benching.
     bool use_group_cache =
-        (n_groups <= kGrpBuf) ||
-        (n_groups <= kMaxWindowedGroups && n_cta_m <= 64);
-
-    // Stage F (r61) — occupancy experiment hook.
-    // HKUST_V9_FUSED_FORCE_CACHE:
-    //   "0" : force cache OFF (minimises smem -> higher occupancy).
-    //   "1" : force cache ON  (reference path).
-    //   unset: use the shape-driven default above.
-    // Used to validate the hypothesis that smem-induced low occupancy
-    // caps HBM bandwidth utilisation below 30% for most shapes.
+        (n_groups <= 8) ||
+        (n_groups <= kGrpBuf && T <= 32);
     {
         const char* env = std::getenv("HKUST_V9_FUSED_FORCE_CACHE");
         if (env != nullptr) {
