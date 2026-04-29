@@ -93,18 +93,25 @@ fused_dense_sparse_mma_int4_kernel(
     const int half_row_off = (br & (kBsrPerCta - 1)) * kBm;  // 0 or 64
 
     // Stage G (r58) REVERTED — sW/sX smem bank-conflict padding.
-    // Stage H (r59) FIX: switch to cp_async_ca_4 (4-byte granularity).
+    // Stage H (r59) REVERTED — cp_async_ca_4 + 4-byte padding.
     //
-    // Root cause: sW[2][kBm][32] uint8 has row stride 32 bytes = 8 bank
-    // slots. Period = 32/8 = 4 → 4-way bank conflict on MMA A/B loads.
+    // Both attempts failed:
+    //   r58: 36-byte stride not 16-byte aligned → cp.async.cg misaligned trap
+    //   r59: cp.async.ca 4-byte granularity causes parity failures (rel>0.4)
+    //        for ng>=16 shapes. Root cause: cp.async.ca.shared.global with
+    //        4-byte size requires the global src to be 4-byte aligned AND
+    //        the shared dst to be 4-byte aligned. While both conditions are
+    //        met, the parity failure suggests a subtle issue with the
+    //        cp.async.ca L1 cache coherence model vs cp.async.cg.
     //
-    // Fix: pad each row by 4 bytes (stride 36 = 9 bank slots, gcd(9,32)=1
-    // → no conflict). Use cp_async_ca_4 (4-byte granularity, only 4-byte
-    // alignment required) instead of cp_async_cg_16 (16-byte alignment).
-    // We issue 8 × 4-byte cp.async per row (vs 2 × 16-byte before).
-    static constexpr int kWXPad = 4;
-    __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group + kWXPad];
-    __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group + kWXPad];
+    // Resolution: revert to 32-byte stride. The 4-way bank conflict on
+    // sW/sX MMA loads remains a known limitation.
+    //
+    // Correct fix path: Stage C (ldmatrix for A/B loads). ldmatrix uses
+    // a different smem addressing model that allows XOR-swizzled layouts,
+    // which can be made conflict-free without alignment constraints.
+    __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
+    __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
     // Stage F (r57) — smem bank-conflict fix for scale/zero cache.
     //
     // s_scale_u4[kBm][kGrpBuf] is __half (2 bytes/element).  With
@@ -180,24 +187,20 @@ fused_dense_sparse_mma_int4_kernel(
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
                 uint4 v = *reinterpret_cast<const uint4*>(src + i * 16);
-                // Stage H: use 4-byte stores to support 36-byte padded stride.
-                *reinterpret_cast<uint32_t*>(dst + i * 16 + 0) = v.x;
-                *reinterpret_cast<uint32_t*>(dst + i * 16 + 4) = v.y;
-                *reinterpret_cast<uint32_t*>(dst + i * 16 + 8) = v.z;
-                *reinterpret_cast<uint32_t*>(dst + i * 16 + 12) = v.w;
+                *reinterpret_cast<uint4*>(dst + i * 16) = v;
             }
         } else {
             #pragma unroll
-            for (int i = 0; i < 8; ++i) {
-                *reinterpret_cast<uint32_t*>(dst + i * 4) = 0u;
+            for (int i = 0; i < 4; ++i) {
+                *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
             }
         }
     };
 
     // Stage A2: cp.async variant of issue_w_dense_load.
-    // Stage H (r59): switched from 4×16-byte to 8×4-byte cp.async so that
-    // the 36-byte padded row stride (kWXPad=4) is 4-byte aligned (not 16).
-    // Out-of-bounds rows are zero-filled synchronously.
+    // Each thread issues 4 × 16-byte cp.async for its row.
+    // Out-of-bounds rows are zero-filled synchronously (cp.async with
+    // pred=false does NOT zero-fill; it leaves dst unchanged).
     auto issue_w_dense_load_async = [&](int g, int buf) {
         int m = m_tile + tid;
         uint8_t* dst = &sW[buf][tid][0];
@@ -205,13 +208,13 @@ fused_dense_sparse_mma_int4_kernel(
             const uint8_t* src = W_low + (int64_t)m * stride_w_m
                                        + (int64_t)(g * bytes_per_group) * stride_w_k;
             #pragma unroll
-            for (int i = 0; i < 8; ++i) {
-                cp_async_ca_4(dst + i * 4, src + i * 4);
+            for (int i = 0; i < 4; ++i) {
+                cp_async_cg_16(dst + i * 16, src + i * 16);
             }
         } else {
             // Synchronous zero-fill for out-of-bounds rows.
             #pragma unroll
-            for (int i = 0; i < 2; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
             }
         }
@@ -223,28 +226,20 @@ fused_dense_sparse_mma_int4_kernel(
             int row = q >> 2;
             int quad = q & 3;
             int n = n_tile + row;
+            uint4 v;
             if (n < T) {
                 int64_t off = (int64_t)n * stride_x_n
                             + (int64_t)(g_or_bc * bytes_per_group + quad * 16) * stride_x_k;
-                uint4 v = *reinterpret_cast<const uint4*>(X + off);
-                // Stage H: use 4-byte stores to support 36-byte padded stride.
-                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 0]) = v.x;
-                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 4]) = v.y;
-                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 8]) = v.z;
-                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 12]) = v.w;
+                v = *reinterpret_cast<const uint4*>(X + off);
             } else {
-                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 0]) = 0u;
-                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 4]) = 0u;
-                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 8]) = 0u;
-                *reinterpret_cast<uint32_t*>(&sX[buf][row][quad * 16 + 12]) = 0u;
+                v = make_uint4(0, 0, 0, 0);
             }
+            *reinterpret_cast<uint4*>(&sX[buf][row][quad * 16]) = v;
         }
     };
 
     // Stage A2: cp.async variant of issue_x_load.
-    // Stage H (r59): switched from 1×16-byte to 4×4-byte cp.async per quad
-    // to support the 36-byte padded row stride (kWXPad=4).
-    // Out-of-bounds rows are zero-filled synchronously.
+    // Out-of-bounds rows are zero-filled synchronously (same reason as W).
     auto issue_x_load_async = [&](int g_or_bc, int buf) {
         const int total_quads = kBn * 4;
         for (int q = tid; q < total_quads; q += kBm) {
@@ -255,10 +250,7 @@ fused_dense_sparse_mma_int4_kernel(
             if (n < T) {
                 int64_t off = (int64_t)n * stride_x_n
                             + (int64_t)(g_or_bc * bytes_per_group + quad * 16) * stride_x_k;
-                #pragma unroll
-                for (int i = 0; i < 4; ++i) {
-                    cp_async_ca_4(dst + i * 4, X + off + i * 4);
-                }
+                cp_async_cg_16(dst, X + off);
             } else {
                 *reinterpret_cast<uint4*>(dst) = make_uint4(0, 0, 0, 0);
             }
@@ -295,10 +287,9 @@ fused_dense_sparse_mma_int4_kernel(
                            + (int64_t)block_idx * stride_wb_blk
                            + (int64_t)(half_row_off + tid) * stride_wb_r;
         uint8_t* dst = &sW[buf][tid][0];
-        // Stage H (r59): 8×4-byte cp.async to support 36-byte padded stride.
         #pragma unroll
-        for (int i = 0; i < 8; ++i) {
-            cp_async_ca_4(dst + i * 4, src + i * 4);
+        for (int i = 0; i < 4; ++i) {
+            cp_async_cg_16(dst + i * 16, src + i * 16);
         }
     };
 
