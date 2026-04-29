@@ -4348,13 +4348,77 @@ pipeline depth.
 1. **Split-K on n_groups** (est. 2-3 days): would bring tall-thin
    shapes (1024×4096, 2048×4096) from 0.25-0.50 wave to 1.0 wave,
    potentially 2-3× speedup on those shapes.
-2. **sW/sX bank-conflict fix via cp.async 4-byte granularity**
+3. **sW/sX bank-conflict fix via cp.async 4-byte granularity**
    (est. 0.5 days): switch load to `cp.async.ca.shared.4` + 4-byte
    padding → eliminate 4-way conflict in MMA inner loop.
-3. **ldmatrix for A/B loads** (Stage C, est. 1-2 days): replace
+4. **ldmatrix for A/B loads** (Stage C, est. 1-2 days): replace
    4 LDS.32 per step with 1 ldmatrix.x4, also enables conflict-free
    swizzled layout.
 
+---
+
+## Round 59 — Stage H: sW/sX bank-conflict fix via cp_async_ca_4 (REVERTED) (2026-04-29)
+
+### Motivation
+r58 failed because cp.async.cg requires 16-byte aligned dst, and
+36-byte row stride is not 16-byte aligned for odd thread indices.
+Stage H attempted to fix this by switching to cp.async.ca (cache all)
+with 4-byte granularity, which only requires 4-byte alignment.
+
+### Implementation
+- Added `cp_async_ca_4()` to `arch.cuh` using PTX
+  `cp.async.ca.shared.global [dst], [src], 4`
+- Padded sW/sX rows by 4 bytes (32 → 36, stride/4=9 odd, no conflict)
+- Switched all async load functions to 8×4-byte cp.async per row
+- Switched sync load functions to 4×uint32_t stores per 16-byte chunk
+
+### Failure: parity errors for ng>=16
+
+After fixing the misaligned-address trap (by also switching sync paths
+to 4-byte stores), parity tests showed:
+- ng=1 (128×128×128): PASS
+- ng=8 (1024×1024×128): PASS
+- ng=16 (2048×2048×128): FAIL (rel=0.47)
+- ng=32 (4096×4096×128): FAIL (rel=0.58)
+
+The ng>=16 shapes use the cp.async path (kUseCpAsync=true). The ng<16
+shapes use the sync path and pass correctly.
+
+### Root cause analysis
+
+`cp.async.ca.shared.global` with 4-byte size appears to cause data
+corruption in the async pipeline for this kernel. Possible causes:
+1. **L1 cache coherence**: `cp.async.ca` writes to L1 cache, while
+   `cp.async.cg` bypasses L1. The existing `cp_async_commit()` /
+   `cp_async_wait_group()` fence may not be sufficient to ensure
+   coherence when mixing ca and cg semantics.
+2. **PTX alignment constraint**: The PTX ISA spec states that for
+   `cp.async.ca` with size=4, the global src must be 4-byte aligned.
+   While this appears to be satisfied, there may be an undocumented
+   constraint on the shared dst alignment relative to the async group.
+3. **Hardware limitation**: SM89 may have a restriction on mixing
+   4-byte and 16-byte cp.async operations within the same async group.
+
+### Resolution
+- Revert all Stage H changes (commit 1787989).
+- `cp_async_ca_4()` helper retained in `arch.cuh` for future use.
+- Per failed-experiment policy: source preserved (commented), rationale
+  documented here.
+
+### Correct fix path
+Stage C (ldmatrix for A/B loads):
+- ldmatrix.sync.aligned.m8n8.x4.shared.b16 loads 4×8×8 b16 tiles
+  cooperatively from shared memory.
+- With an XOR-swizzled smem layout, the 32 lanes of a warp access
+  32 different banks simultaneously → zero bank conflict.
+- The swizzle is applied at load time (smem write), not at MMA time,
+  so the MMA register layout is unchanged.
+- Estimated effort: 1-2 days. Risk: medium (INT4 MMA register layout
+  mapping for ldmatrix is non-trivial).
+
+### Status
+- r59: REVERTED on main (commit 1787989).
+- Next: Split-K on n_groups dimension (highest ROI, est. 2-3 days).
 
 
 
