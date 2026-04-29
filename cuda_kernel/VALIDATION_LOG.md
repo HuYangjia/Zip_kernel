@@ -4805,10 +4805,12 @@ the same register budget.
 - `logs/r61_stage_f/bench_report.md`
 - `logs/r61_stage_f/bench_raw.json`
 - `logs/r61_stage_f/bench.log`
+- `logs/r61_stage_f/qwen3_e2e/bench.{md,json,log}` — Qwen3-8B T=128 end-to-end (+21 % gate_up, +20 % down_proj vs r60)
 
 ### Status
 - r61 Stage F.2: **LANDED** (+2..+6 pp INT4 eff on 3 LLM-projection shapes, 1 noise-level regression).
 - r61 Stage F.3-F.5: **DIAGNOSTIC ONLY** (register ceiling confirmed; no code change).
+- **End-to-end win**: Qwen3-8B T=128 gate_up 1.45× → **1.75×** (+21 %), down_proj 0.69× → **0.83×** (+20 %) cuda/fp16 speedup.
 - Next pivot: Stage L3.6 (CUTLASS 2.11 INT4 Gemm full instantiation) to
   escape the manual-MMA register ceiling.
 
