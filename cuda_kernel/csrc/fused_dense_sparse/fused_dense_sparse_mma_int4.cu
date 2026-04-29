@@ -92,24 +92,29 @@ fused_dense_sparse_mma_int4_kernel(
     const int bsr_br = br / kBsrPerCta;
     const int half_row_off = (br & (kBsrPerCta - 1)) * kBm;  // 0 or 64
 
-    // Stage G (r58) — sW/sX smem bank-conflict fix.
+    // Stage G (r58) REVERTED — sW/sX smem bank-conflict padding.
     //
-    // sW[2][kBm][bytes_per_group=32] uint8: row stride = 32 bytes = 8
-    // 4-byte bank slots. With 32 banks, rows 0 and 4 map to the same
-    // bank set (period = 32/8 = 4), causing a 4-way bank conflict on
-    // every MMA A-operand load (sW[buf][row0][col_low]).
+    // Attempt: pad sW/sX rows by 4 bytes (32 -> 36) to break the 4-way
+    // bank conflict on MMA A/B operand loads.
     //
-    // Fix: pad each row by 4 bytes so row stride = 36 bytes = 9 bank
-    // slots. gcd(9, 32) = 1, so consecutive rows land on consecutive
-    // banks — no conflict for any access pattern.
+    // Problem: cp.async requires 16-byte aligned destination addresses.
+    // With row stride = 36 bytes, sX[buf][tid] address = base + tid*36,
+    // which is NOT 16-byte aligned for odd tid values. This causes a
+    // CUDA misaligned-address trap at runtime.
     //
-    // Same analysis applies to sX (B operand).
+    // Root cause: there is no row stride that is simultaneously:
+    //   (a) 16-byte aligned (cp.async requirement), AND
+    //   (b) stride/4 is odd (bank-conflict-free condition for 32-byte data).
+    // Proof: stride = 16m requires stride/4 = 4m (even), but we need odd.
     //
-    // smem overhead: +4 bytes × kBm × 2 buffers × 2 arrays
-    //   = +4 × 128 × 2 × 2 = +2 KB total. Acceptable.
-    static constexpr int kWXPad = 4;
-    __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group + kWXPad];
-    __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group + kWXPad];
+    // Resolution: revert to the original 32-byte stride. The bank conflict
+    // remains but is a known limitation. Future fix options:
+    //   1. Switch cp.async to 4-byte granularity (cp.async.ca.shared.4)
+    //      so only 4-byte alignment is required, then pad to 36 bytes.
+    //   2. Use ldmatrix for A/B loads (Stage C), which has different
+    //      alignment requirements and can be made conflict-free.
+    __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
+    __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
     // Stage F (r57) — smem bank-conflict fix for scale/zero cache.
     //
     // s_scale_u4[kBm][kGrpBuf] is __half (2 bytes/element).  With
