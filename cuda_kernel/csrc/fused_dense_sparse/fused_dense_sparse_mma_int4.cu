@@ -1004,9 +1004,18 @@ void launch(
     // simultaneously unlocks d=3072/4096 at T in [48,64].  A new
     // cliff appears at T=96 d_out>=3072 (0.524x at d=4096 is the
     // worst cell yet!) — gate must strictly exclude it.
+    //
+    // r61 Stage G fix (hp=0 dense probe, 2026-04-29 bottleneck_sweep):
+    //   In the historical R44 hp=0.05 sweep, kBm=64 at T=32 d_out=4096
+    //   scored 1.029x but rounded down to `d_out <= 3072`.  In the
+    //   hp=0 dense LLM-inference regime used by bench_qwen3_shapes,
+    //   (4096,4096,T∈{32,48,64,96}) shows kBm=64 ⨁ kBn=32 winning by
+    //   +22%..+136% over the current DEF (kBm=128).  Widen the gate:
+    //     T <= 32:  d_out <= 4096 (was 3072)
+    //     T == 96:  keep d_out <= 2048 (the 0.524x cliff is real).
     const bool r44_shape_ok =
         ( (T <= 8)   && (d_out <= 4096) )
-     || ( (T <= 32)  && (d_out <= 3072) )
+     || ( (T <= 32)  && (d_out <= 4096) )
      || ( (T >= 48 && T <= 64)  && (d_out <= 4096) )
      || ( (T == 96)  && (d_out <= 2048) )
      // R52: T=128 with 512<=d_out<=2048 and d_in>=2048 benefits from kBm=64.
@@ -1183,7 +1192,15 @@ void launch(
     //   lands in the [32, 96] "awkward mid-T" band so kBn=8 is used.
     //   Guarded so T<=8 (already kBn=8) and T>=128 (kBn=64 healthy) are
     //   unaffected.
-    if (kbm_pick == 64 && T >= 32 && T <= 96 && kbn_pick >= 32) {
+    //
+    // r61 Stage G refinement: the demote was originally calibrated on
+    // d_out=2048 where `kBm=64 kBn=8` cleared the "bad zone".  Fresh
+    // dense-mode probe (4096,4096,T∈{48,64}) shows the opposite for
+    // large d_out: kBn=32 is 1.8x–2.4x faster than kBn=8 there (the
+    // column tail-warp cost is dominated by the extra waves_at(8)
+    // launches when d_out is large).  Restrict the demote to the
+    // originally-justified d_out <= 2048 band.
+    if (kbm_pick == 64 && T >= 32 && T <= 96 && kbn_pick >= 32 && d_out <= 2048) {
         kbn_pick = 8;
     }
     // R44 bench hook: HKUST_V9_FUSED_FORCE_KBN overrides the pick.
