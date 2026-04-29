@@ -237,6 +237,20 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
         }
     };
 
+    // Stage A2.5: cp.async variant of issue_w_sparse_load.
+    // W_high_blocks rows are always in-bounds (block_idx is a valid BSR block),
+    // so no OOB guard needed here.
+    auto issue_w_sparse_load_async = [&](int block_idx, int buf) {
+        const uint8_t* src = W_high_blocks
+                           + (int64_t)block_idx * stride_wb_blk
+                           + (int64_t)(half_row_off + tid) * stride_wb_r;
+        uint8_t* dst = &sW[buf][tid][0];
+        #pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            cp_async_cg_16(dst + i * 16, src + i * 16);
+        }
+    };
+
     auto issue_scale_block_load = [&](int bc) {
         int m = m_tile + tid;
         s_scale_block[tid] = (m < d_out)
@@ -499,8 +513,15 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
 
         if (blk_start < blk_end) {
             int bc0 = __ldg(&hp_col_indices[blk_start]);
-            issue_w_sparse_load(blk_start, 0);
-            issue_x_load(bc0, 0);
+            if constexpr (kUseCpAsync) {
+                issue_w_sparse_load_async(blk_start, 0);
+                issue_x_load_async(bc0, 0);
+                cp_async_commit();
+                cp_async_wait_group<0>();
+            } else {
+                issue_w_sparse_load(blk_start, 0);
+                issue_x_load(bc0, 0);
+            }
             __syncthreads();
 
             for (int block_idx = blk_start; block_idx < blk_end; ++block_idx) {
@@ -508,8 +529,15 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                 const int buf = (block_idx - blk_start) & 1;
                 if (block_idx + 1 < blk_end) {
                     int bc_next = __ldg(&hp_col_indices[block_idx + 1]);
-                    issue_w_sparse_load(block_idx + 1, buf ^ 1);
-                    issue_x_load(bc_next, buf ^ 1);
+                    if constexpr (kUseCpAsync) {
+                        // Stage A2.5: overlap next block's HBM load with MMA.
+                        issue_w_sparse_load_async(block_idx + 1, buf ^ 1);
+                        issue_x_load_async(bc_next, buf ^ 1);
+                        cp_async_commit();
+                    } else {
+                        issue_w_sparse_load(block_idx + 1, buf ^ 1);
+                        issue_x_load(bc_next, buf ^ 1);
+                    }
                 }
                 issue_scale_block_load(bc);
 
@@ -527,6 +555,11 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                 };
                 run_mma_pass(buf, fold_sparse, prefetch_sparse, bc);
 
+                if constexpr (kUseCpAsync) {
+                    if (block_idx + 1 < blk_end) {
+                        cp_async_wait_group<0>();
+                    }
+                }
                 __syncthreads();
             }
         }
