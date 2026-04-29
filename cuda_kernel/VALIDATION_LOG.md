@@ -3696,4 +3696,88 @@ baseline is FP16:
   the only way to beat FP16 at T=8..128 narrow shapes — that is a
   multi-week effort, not a round.
 
+---
+
+## Round 50 — Stage A2: cp.async 2-stage pipeline + dispatcher (2026-04-29)
+
+### Motivation
+After r49 Stage A1.5 (CUTLASS GemmBatched) was shown to regress on large-M
+shapes (4096×4096×128: 120.5us vs legacy 49.5us, 2.43× worse) due to CTA
+wave explosion (1024 CTAs vs legacy 32 CTAs), the decision was taken to
+abandon CUTLASS-batched for large-M and instead improve the legacy kernel
+itself by overlapping HBM loads with MMA via `cp.async`.
+
+### Implementation
+1. `arch.cuh` — added `cp_async_cg_16_pred(dst, src, pred)` as the
+   predicated variant (although it turned out NOT to zero-fill when
+   `pred=false`, see parity note below).
+2. `fused_dense_sparse_mma_int4.cu`:
+   - Added two async-loading lambdas `issue_w_dense_load_async` and
+     `issue_x_load_async` mirroring the synchronous versions.
+   - Added `kUseCpAsync` bool template parameter to the kernel.
+   - Dense-branch outer-K loop now branches on `if constexpr (kUseCpAsync)`:
+     - cp.async path: pre-load g=0 -> cp_async_commit -> cp_async_wait_group<0>
+       -> __syncthreads; inside the loop, issue g+1 loads asynchronously
+       and commit them, run MMA for g, then wait + sync before next iter.
+     - sync path: identical to the pre-A2 legacy behavior.
+   - `sum_X` stays on the synchronous path (tiny, kBn int32s).
+3. Launcher dispatcher: `use_cp_async = (n_groups >= 16)`; `do_launch`
+   now takes an additional `kCpAsync_c` constant; `launch_for_kbn`
+   branches on `use_cp_async` and instantiates the matching template.
+
+### Parity bug (landmine)
+First implementation used `cp_async_cg_16_pred(..., in_bounds)` for
+out-of-bounds rows, expecting zero-fill. Result: rel_err 0.58..0.89 on
+ALL shapes.
+
+Root cause: PTX `cp.async.cg.shared.global [dst], [src], 16, p` with
+`p=false` does NOT zero-fill `dst` — it leaves it unchanged, so stale
+bytes from the previous group persist.
+
+Fix: use unconditional `cp_async_cg_16` for in-bounds rows, and explicit
+synchronous `*reinterpret_cast<uint4*>(dst) = make_uint4(0,0,0,0)` for
+out-of-bounds rows. rel_err drops to < 3e-4 on every shape.
+
+### Final performance (A100, ng = d_in/128)
+Re-measured in a single Python session:
+
+| shape            | ng | A2d (us) | legacy (us) | speedup |
+| ---------------- | -- | -------- | ----------- | ------- |
+| 128x128x128      |  1 |   5.95   |    6.1      |  1.03x  |
+| 256x256x128      |  2 |   5.99   |    6.1      |  1.02x  |
+| 512x512x128      |  4 |   6.99   |    7.1      |  1.02x  |
+| 1024x1024x128    |  8 |  10.98   |   12.0      |  1.09x  |
+| 2048x2048x128    | 16 |  18.91   |   27.2      |  1.44x  |
+| 4096x4096x128    | 32 |  39.37   |   49.5      |  1.26x  |
+| 1024x4096x128    | 32 |  36.35   |   37.6      |  1.03x  |
+| 4096x1024x128    |  8 |  15.98   |   16.0      |  1.00x  |
+
+- Parity: PASS on all shapes (rel_err < 3e-4).
+- Regression: NONE. ng<=8 uses sync path (bit-identical codegen to r49);
+  ng>=16 uses cp.async path (1.26-1.44x speedup).
+- vs A1.5 (GemmBatched) on 4096x4096: A2 is 3.06x faster (39.4 vs 120.5us).
+
+### Lessons / landmines
+- `cp.async.cg` with a false predicate does NOT zero the destination.
+  Either zero-fill smem synchronously for OOB rows (what we did), or
+  clamp the src pointer (would pollute `sumxn_cache` here, so not viable).
+- The earlier broken variant (f12b9cc) is preserved in git history only
+  for reference; it is NOT in the final main.
+- Earlier "small-shape regression" (0.74-0.87x on 128-512) was a FALSE
+  ALARM: cross-session bench using stale reference values. In-session
+  re-bench shows 1.02-1.03x (noise). Always bench both arms in the same
+  Python session.
+
+### Status
+- A2 dispatcher: MERGED to main.
+- Next candidates (effort * impact):
+  1. Stage A2.5 — apply the same cp.async overlap to the sparse branch
+     (currently still synchronous). Helps T<=8 narrow shapes.
+  2. Stage B — fused dequant epilogue visitor. Cuts FP16 writeback
+     round-trip. Mostly benefits ng<=8, d_out small.
+  3. Stage C — ldmatrix replacement in MMA inner loop (currently manual
+     LDS.128 + SMMA). ~15% instruction count reduction in the hot loop,
+     needs careful swizzle verification.
+
+
 
