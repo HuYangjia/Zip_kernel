@@ -619,10 +619,18 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                 int64_t y_off = (int64_t)m_global * stride_y_m
                               + (int64_t)n_global0 * stride_y_n;
 
+                // __half2 store requires 4-byte alignment of the base address.
+                // That means the *byte offset* y_off (in fp16 units) must be even:
+                //   y_off = m_global * stride_y_m + n_global0
+                // We need BOTH terms to be of even parity. Sufficient conditions:
+                //   stride_y_n == 1  (contiguous pair)
+                //   n_global0 is even
+                //   stride_y_m is even  (otherwise m_global*stride_y_m flips parity)
                 bool pair_ok =
                     (n_local1 < kBn) && (n_global0 + 1 < T)
                     && (stride_y_n == 1)
-                    && ((n_global0 & 1) == 0);   // __half2 needs 4B alignment
+                    && ((n_global0 & 1) == 0)
+                    && ((stride_y_m & 1) == 0);
                 if (pair_ok) {
                     __half2 packed = __floats2half2_rn(v0, v1);
                     *reinterpret_cast<__half2*>(&Y[y_off]) = packed;
