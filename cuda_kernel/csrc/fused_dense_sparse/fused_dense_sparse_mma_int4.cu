@@ -620,7 +620,9 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
                               + (int64_t)n_global0 * stride_y_n;
 
                 bool pair_ok =
-                    (n_local1 < kBn) && (n_global0 + 1 < T) && (stride_y_n == 1);
+                    (n_local1 < kBn) && (n_global0 + 1 < T)
+                    && (stride_y_n == 1)
+                    && ((n_global0 & 1) == 0);   // __half2 needs 4B alignment
                 if (pair_ok) {
                     __half2 packed = __floats2half2_rn(v0, v1);
                     *reinterpret_cast<__half2*>(&Y[y_off]) = packed;
