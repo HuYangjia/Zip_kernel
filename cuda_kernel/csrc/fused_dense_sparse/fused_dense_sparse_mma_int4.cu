@@ -22,6 +22,25 @@
 namespace hkust_v9 {
 namespace fused_dense_sparse_mma_int4 {
 
+// Stage I: Split-K reduce kernel.
+// Sums split_k fp32 partial buffers and writes fp16 to Y.
+// Y_partial: [split_k, d_out, T] fp32
+// Y:         [d_out, T] fp16
+__global__ void split_k_reduce_kernel(
+    const float* __restrict__ Y_partial,
+    __half* __restrict__ Y,
+    int d_out, int T, int split_k
+) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= d_out * T) return;
+    float acc = 0.0f;
+    const int stride = d_out * T;
+    for (int sk = 0; sk < split_k; ++sk) {
+        acc += Y_partial[sk * stride + idx];
+    }
+    Y[idx] = __float2half(acc);
+}
+
 // Round 38: keep the bank-friendly 32-group row stride in shared memory,
 // but allow n_groups up to 64 by reloading scale/zero in 32-group windows.
 // This specifically targets Qwen3-14B hidden=5120 shapes (n_groups=40)
@@ -58,8 +77,10 @@ fused_dense_sparse_mma_int4_kernel(
     const int* __restrict__ hp_row_offsets,
     const int* __restrict__ hp_col_indices,
     __half* __restrict__ Y,
+    float* __restrict__ Y_partial,   // Stage I: Split-K fp32 partial buffer (nullptr if split_k==1)
     int d_out, int d_in, int T,
     int n_groups,
+    int split_k,                     // Stage I: number of K-splits (1 = no split)
     int64_t stride_w_m,   int64_t stride_w_k,
     int64_t stride_x_n,   int64_t stride_x_k,
     int64_t stride_su_m,  int64_t stride_su_g,
@@ -83,6 +104,14 @@ fused_dense_sparse_mma_int4_kernel(
     const int n_tile = blockIdx.y * kBn;
     const int bytes_per_group = BCOL >> 1;
     const int n_cta_m = (d_out + kBm - 1) / kBm;
+
+    // Stage I: Split-K. blockIdx.z is the split index (0..split_k-1).
+    // Each CTA processes groups [g_start, g_end).
+    const int split_k_idx = blockIdx.z;
+    const int ng_per_split = (n_groups + split_k - 1) / split_k;
+    const int g_start = split_k_idx * ng_per_split;
+    const int g_end   = min(g_start + ng_per_split, n_groups);
+    // When split_k==1, g_start=0, g_end=n_groups (no change).
 
     // R42-P1: when kBm<BROW two consecutive CTAs cover one BSR row.
     //   Each CTA consumes only the upper-half (br&1==0) or lower-half
@@ -418,9 +447,9 @@ fused_dense_sparse_mma_int4_kernel(
         cp_async_wait_group<0>();   // wait for g=0 before first MMA
         __syncthreads();
     } else {
-        issue_w_dense_load(0, 0);
-        issue_x_load(0, 0);
-        issue_sum_X_load(0, 0);
+        issue_w_dense_load(g_start, 0);
+        issue_x_load(g_start, 0);
+        issue_sum_X_load(g_start, 0);
         __syncthreads();
     }
 
@@ -443,10 +472,10 @@ fused_dense_sparse_mma_int4_kernel(
         }
     }
 
-    int g_window_base = 0;
-    for (int g = 0; g < n_groups; ++g) {
+    int g_window_base = g_start;
+    for (int g = g_start; g < g_end; ++g) {
         if constexpr (kUseGroupCache) {
-            if (cache_sz && g != 0 && (g % kGrpBuf) == 0) {
+            if (cache_sz && g != g_start && (g % kGrpBuf) == 0) {
                 issue_sz_window_load(g);
                 __syncthreads();
                 g_window_base = g;
@@ -454,7 +483,7 @@ fused_dense_sparse_mma_int4_kernel(
         }
 
         const int buf = g & 1;
-        if (g + 1 < n_groups) {
+        if (g + 1 < g_end) {
             if constexpr (kUseCpAsync) {
                 // Stage A2: issue g+1 loads asynchronously so they overlap
                 // with the MMA computation for group g below.
@@ -623,19 +652,10 @@ fused_dense_sparse_mma_int4_kernel(
 
     // Writeback.
     // Stage B.1 — vectorized writeback.
-    //
-    // Layout (per thread in a warp):
-    //   r=0: (row = lane>>2,     col = (lane&3)*2    )
-    //   r=1: (row = lane>>2,     col = (lane&3)*2 + 1)  <- adjacent
-    //   r=2: (row = lane>>2 + 8, col = (lane&3)*2    )
-    //   r=3: (row = lane>>2 + 8, col = (lane&3)*2 + 1)  <- adjacent
-    //
-    // Y is (d_out, T) row-major with stride_y_n == 1, so the (r=0,r=1)
-    // and (r=2,r=3) pairs are contiguous 2-element spans in memory.
-    // We pack each pair into an __half2 and issue a single 32-bit store,
-    // cutting the global-store instruction count in half, provided both
-    // lanes of the pair are in-bounds. Otherwise we fall back to
-    // per-element writeback (rare: only on the right/bottom tile edges).
+    // Stage I — Split-K: when split_k > 1, write fp32 partial sums to
+    //   Y_partial[split_k_idx * d_out * T + m * T + n] instead of Y.
+    //   The reduce kernel will sum the partials and write fp16 to Y.
+    //   When split_k == 1, write directly to Y (fp16) as before.
     #pragma unroll
     for (int im = 0; im < kMsubPerWarp; ++im) {
         int msub_base = warp_id * 32 + im * 16;
@@ -658,29 +678,32 @@ fused_dense_sparse_mma_int4_kernel(
 
                 float v0 = y_fp[im][in_sub][r0];
                 float v1 = y_fp[im][in_sub][r1];
-                int64_t y_off = (int64_t)m_global * stride_y_m
-                              + (int64_t)n_global0 * stride_y_n;
 
-                // __half2 store requires 4-byte alignment of the base address.
-                // That means the *byte offset* y_off (in fp16 units) must be even:
-                //   y_off = m_global * stride_y_m + n_global0
-                // We need BOTH terms to be of even parity. Sufficient conditions:
-                //   stride_y_n == 1  (contiguous pair)
-                //   n_global0 is even
-                //   stride_y_m is even  (otherwise m_global*stride_y_m flips parity)
-                bool pair_ok =
-                    (n_local1 < kBn) && (n_global0 + 1 < T)
-                    && (stride_y_n == 1)
-                    && ((n_global0 & 1) == 0)
-                    && ((stride_y_m & 1) == 0);
-                if (pair_ok) {
-                    __half2 packed = __floats2half2_rn(v0, v1);
-                    *reinterpret_cast<__half2*>(&Y[y_off]) = packed;
-                } else {
-                    // Scalar fallback for tile/row edges.
-                    Y[y_off] = __float2half(v0);
+                if (split_k > 1) {
+                    // Stage I: write fp32 partial to Y_partial.
+                    int64_t base = (int64_t)split_k_idx * d_out * T;
+                    int64_t off0 = base + (int64_t)m_global * T + n_global0;
+                    Y_partial[off0] = v0;
                     if ((n_local1 < kBn) && (n_global0 + 1 < T)) {
-                        Y[y_off + stride_y_n] = __float2half(v1);
+                        Y_partial[off0 + 1] = v1;
+                    }
+                } else {
+                    int64_t y_off = (int64_t)m_global * stride_y_m
+                                  + (int64_t)n_global0 * stride_y_n;
+                    bool pair_ok =
+                        (n_local1 < kBn) && (n_global0 + 1 < T)
+                        && (stride_y_n == 1)
+                        && ((n_global0 & 1) == 0)
+                        && ((stride_y_m & 1) == 0);
+                    if (pair_ok) {
+                        __half2 packed = __floats2half2_rn(v0, v1);
+                        *reinterpret_cast<__half2*>(&Y[y_off]) = packed;
+                    } else {
+                        // Scalar fallback for tile/row edges.
+                        Y[y_off] = __float2half(v0);
+                        if ((n_local1 < kBn) && (n_global0 + 1 < T)) {
+                            Y[y_off + stride_y_n] = __float2half(v1);
+                        }
                     }
                 }
             }
@@ -815,7 +838,7 @@ void launch(
         constexpr int kBmLocal = decltype(kBm_c)::value;
         constexpr bool kUseCpAsync = decltype(kCpAsync_c)::value;
         dim3 block(kBmLocal, 1, 1);
-        dim3 grid(ceil_div(d_out, kBmLocal), ceil_div(T, kBn), 1);
+        dim3 grid(ceil_div(d_out, kBmLocal), ceil_div(T, kBn), split_k);
         fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync><<<grid, block, 0, stream>>>(
             reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
             reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
@@ -827,7 +850,8 @@ void launch(
             hp_row_offsets.data_ptr<int>(),
             hp_col_indices.data_ptr<int>(),
             reinterpret_cast<__half*>(Y_total.data_ptr<at::Half>()),
-            d_out, d_in, T, n_groups,
+            (split_k > 1) ? Y_partial_ptr : nullptr,
+            d_out, d_in, T, n_groups, split_k,
             W_low.stride(0), W_low.stride(1),
             X_s4.stride(0), X_s4.stride(1),
             scale_u4.stride(0), scale_u4.stride(1),
@@ -906,6 +930,59 @@ void launch(
     // exceeds the latency hiding benefit for short K-loops).
     const bool use_cp_async = (n_groups >= 16);
 
+    // Stage I: Split-K on n_groups dimension.
+    // When the grid (n_cta_m * n_cta_n) is small (< kSplitKThreshold CTAs),
+    // split n_groups into split_k slices so that gridDim.z = split_k and
+    // total CTAs = n_cta_m * n_cta_n * split_k >= kSplitKThreshold.
+    // Each CTA writes fp32 partial sums to Y_partial; a reduce kernel
+    // then sums the partials and writes fp16 to Y.
+    //
+    // Gate: only for dense-only shapes (hp_nnz == 0) to avoid BSR
+    // block-index misalignment in the sparse branch.
+    // Also only when n_groups is divisible by split_k (for simplicity).
+    constexpr int kSplitKThreshold = 64;  // target: at least 0.5 wave
+    constexpr int kSplitKMax = 8;
+    const int n_cta_mn = n_cta_m * ceil_div(T, kbn_pick);
+    int split_k = 1;
+    if (hp_nnz == 0 && n_cta_mn < kSplitKThreshold && n_groups >= 4) {
+        // Find smallest split_k such that n_cta_mn * split_k >= kSplitKThreshold
+        // and n_groups % split_k == 0.
+        for (int sk = 2; sk <= kSplitKMax; sk *= 2) {
+            if (n_groups % sk == 0 && n_cta_mn * sk >= kSplitKThreshold) {
+                split_k = sk;
+                break;
+            }
+        }
+        // If no exact divisor found, try any split_k up to kSplitKMax.
+        if (split_k == 1) {
+            for (int sk = 2; sk <= kSplitKMax; ++sk) {
+                if (n_cta_mn * sk >= kSplitKThreshold) {
+                    split_k = sk;
+                    break;
+                }
+            }
+        }
+    }
+    // Override via env var for testing.
+    {
+        const char* env_sk = std::getenv("HKUST_V9_FUSED_FORCE_SPLITK");
+        if (env_sk != nullptr) {
+            int sk = atoi(env_sk);
+            if (sk >= 1 && sk <= 32) split_k = sk;
+        }
+    }
+
+    // Allocate Y_partial buffer for split_k > 1.
+    float* Y_partial_ptr = nullptr;
+    torch::Tensor Y_partial_tensor;
+    if (split_k > 1) {
+        Y_partial_tensor = torch::empty(
+            {split_k, d_out, T},
+            torch::TensorOptions().dtype(torch::kFloat32).device(Y_total.device())
+        );
+        Y_partial_ptr = Y_partial_tensor.data_ptr<float>();
+    }
+
     auto launch_for_kbn = [&](auto kBn_c, auto kBm_c) {
         auto cp_true  = std::true_type{};
         auto cp_false = std::false_type{};
@@ -927,6 +1004,20 @@ void launch(
         if      (kbn_pick == 64) launch_for_kbn(std::integral_constant<int, 64>{}, kbm_c);
         else if (kbn_pick == 32) launch_for_kbn(std::integral_constant<int, 32>{}, kbm_c);
         else                     launch_for_kbn(std::integral_constant<int, 8>{},  kbm_c);
+    }
+
+    // Stage I: reduce Y_partial -> Y (fp16) when split_k > 1.
+    if (split_k > 1) {
+        // Simple reduce: each thread handles one (m, n) element.
+        // Grid: (d_out * T + 255) / 256 blocks of 256 threads.
+        const int total_elems = d_out * T;
+        const int reduce_threads = 256;
+        const int reduce_blocks = (total_elems + reduce_threads - 1) / reduce_threads;
+        split_k_reduce_kernel<<<reduce_blocks, reduce_threads, 0, stream>>>(
+            Y_partial_ptr,
+            reinterpret_cast<__half*>(Y_total.data_ptr<at::Half>()),
+            d_out, T, split_k
+        );
     }
 
     C10_CUDA_CHECK(cudaGetLastError());
