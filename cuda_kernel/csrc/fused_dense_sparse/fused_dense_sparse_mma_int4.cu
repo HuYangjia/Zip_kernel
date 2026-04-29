@@ -94,8 +94,23 @@ fused_dense_sparse_mma_int4_kernel(
 
     __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
     __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
-    __shared__ alignas(16) __half s_scale_u4[kBm][kUseGroupCache ? kGrpBuf : 1];
-    __shared__ alignas(16) __half s_zero_u4 [kBm][kUseGroupCache ? kGrpBuf : 1];
+    // Stage F (r57) — smem bank-conflict fix for scale/zero cache.
+    //
+    // s_scale_u4[kBm][kGrpBuf] is __half (2 bytes/element).  With
+    // kGrpBuf=32 each row is 64 bytes = 16 bank slots (4 bytes/bank).
+    // Rows 0 and 2 map to the same bank set (stride 64 = 16 banks, and
+    // 32 banks total → period 2), causing a 4-way bank conflict on every
+    // scale/zero read in the MMA inner loop.
+    //
+    // Fix: pad each row by 1 fp16 (2 bytes) so the row stride becomes
+    // 33 fp16 = 66 bytes.  66/4 = 16.5 → not a multiple of 32, so
+    // consecutive rows land on consecutive banks (no conflict).
+    //
+    // smem overhead: +1 fp16 × kBm × 2 arrays = +512 bytes total.
+    // This is negligible vs the 17-34 KB already used.
+    static constexpr int kScalePad = kUseGroupCache ? 1 : 0;
+    __shared__ alignas(16) __half s_scale_u4[kBm][kUseGroupCache ? kGrpBuf + kScalePad : 1];
+    __shared__ alignas(16) __half s_zero_u4 [kBm][kUseGroupCache ? kGrpBuf + kScalePad : 1];
     __shared__ __half s_scale_x[kBn];
     __shared__ __half s_scale_block[kBm];               // per BSR block
     __shared__ int s_sum_X[2][kBn];
