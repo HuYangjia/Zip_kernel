@@ -49,37 +49,34 @@ __global__ void split_k_reduce_kernel(
 constexpr int kGrpBuf = 32;
 constexpr int kMaxWindowedGroups = 64;
 
-// Stage C.1b — XOR swizzle for sW / sX to eliminate bank conflicts on
+// Stage C.1b — XOR swizzle for sW / sX to mitigate bank conflicts on
 // ldmatrix A/B loads.
 //
-// Layout per row: 64 bytes (= kBk/2 int4 bytes).
+// Layout per row: 64 bytes (= kBk/2 int4 bytes), stride = 64B unchanged.
 // Each ldmatrix.x4 expects 8 base addresses (one per lane in a group of
-// 8), one 16-byte fragment per address.  Without swizzle, the 8 addresses
-// lie at row_i * 64 (+col), with only 2 distinct bank sets → 16-way
-// conflict.
+// 8), one 16-byte fragment per address.  Each base address must be
+// **16-byte aligned** (PTX ldmatrix requirement).  Without swizzle, the
+// 8 addresses lie at row_i * 64 (+col), landing on 2 distinct bank sets
+// → 16-way conflict.
 //
-// XOR swizzle (row & 7) << 3 toggles bits [5:3] of the byte offset:
-//   phys_col_bytes = logical_col_bytes XOR ((row & 7) * 8)
+// Swizzle constraint: the XOR mask may only toggle bits [5:4] (the bits
+// above bit 3), because toggling bit 3 would violate ldmatrix's 16-byte
+// alignment.  That gives us only 1 usable bit (bit 4, since bit 5 is
+// already used by the row stride of 64 bytes).  The best we can do with
+// a 64B row stride is 2-way conflict reduction (16-way → 4-way).
 //
-// Verified bank distribution for 8 consecutive rows:
-//   row 0 @col=0  → bank  0
-//   row 1 @col=0  → bank 18
-//   row 2 @col=0  → bank  4
-//   row 3 @col=0  → bank 22
-//   row 4 @col=0  → bank  8
-//   row 5 @col=0  → bank 26
-//   row 6 @col=0  → bank 12
-//   row 7 @col=0  → bank 30
-// → all distinct (conflict-free).
+// XOR = (row & 1) * 16   — toggles bit 4 only.
+//   row 0: offset 0,   bank 0
+//   row 1: offset 80,  bank 20
+//   row 2: offset 128, bank 0
+//   row 3: offset 208, bank 20
+//   ... 2 distinct bank sets across 8 rows → 4-way conflict (was 16-way).
 //
-// Writes must be at ≤8-byte granularity because the swizzle toggles
-// bit 3.  We therefore issue the smem stores/cp.async as 4× 8-byte
-// (uint2) per 16-byte region instead of 1× 16-byte (uint4).  For
-// ldmatrix reads the base address is still 16-byte aligned because
-// `col` base ∈ {0, 16, 32, 48} has bit 3 = 0 and the swizzle preserves
-// bits [2:0].
+// Write alignment: the swizzle preserves 16-byte alignment because
+// ((row & 1) * 16) has bit 3 = 0.  So uint4 writes remain valid —
+// no need to degrade to uint2 granularity.
 __device__ __forceinline__ int swizzle_row_col(int row, int col_bytes) {
-    return col_bytes ^ ((row & 7) << 3);
+    return col_bytes ^ ((row & 1) << 4);
 }
 
 // Round 41-P1: kBm templated (default = BROW = 128).
