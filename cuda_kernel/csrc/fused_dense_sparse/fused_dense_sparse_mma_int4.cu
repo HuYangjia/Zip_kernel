@@ -27,7 +27,7 @@ namespace fused_dense_sparse_mma_int4 {
 // This specifically targets Qwen3-14B hidden=5120 shapes (n_groups=40)
 // without reintroducing the regression seen from a monolithic 40-group
 // static cache.
-constexpr int kGrpBuf = 32;
+constexpr int kGrpBuf = 16;  // R53: reduced from 32 to cut smem 8KB, +1 CTA/SM
 constexpr int kMaxWindowedGroups = 64;
 
 // Round 41-P1: kBm templated (default = BROW = 128).
