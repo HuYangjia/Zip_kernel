@@ -930,6 +930,35 @@ void launch(
             else if (env_n[0] == '8' && env_n[1] == '\0') kbn_pick = 8;
         }
     }
+    // Stage I: Split-K-aware kBn override.
+    //   When the wave-based pick chose kbn=8 (grid too small at kbn=64),
+    //   check if switching to kbn=64 + Split-K yields a larger, better
+    //   utilized grid.  For tall-thin shapes (d_out small, d_in large)
+    //   like 1024x4096x128 the wave-pick falls to kbn=8 which then runs
+    //   ng groups × (T/8) N-tiles sequentially per CTA; switching to
+    //   kbn=64 + sk=4 gives 4x more CTAs and 2x shorter K per CTA,
+    //   measured 1.68x speedup (30.86->18.42 us).
+    //
+    // Condition: kbn_pick==8, hp_nnz==0 (dense only), n_groups>=8
+    //   (enough to split into sk=4), and kbn=64 grid too small but
+    //   kbn=64 × split_k >= 64 CTAs after splitting.
+    if (hp_nnz == 0 && kbn_pick == 8 && n_groups >= 8 && kbm_pick == 128) {
+        const int n_cta_mn_64 = n_cta_m * ceil_div(T, 64);
+        if (n_cta_mn_64 < 64) {
+            // How many splits needed to reach 64 CTAs at kbn=64?
+            int sk_needed = 1;
+            for (int sk = 2; sk <= 8; sk *= 2) {
+                if (n_groups % sk == 0 && n_cta_mn_64 * sk >= 64) {
+                    sk_needed = sk;
+                    break;
+                }
+            }
+            if (sk_needed >= 2) {
+                kbn_pick = 64;
+                // split_k will be computed below based on the new kbn_pick.
+            }
+        }
+    }
     // Stage A2 dispatcher: use cp.async when n_groups >= 16 (large-K shapes
     // where HBM load latency dominates and overlap benefit > overhead).
     // For n_groups <= 8 the synchronous path is faster (cp.async overhead
@@ -950,7 +979,20 @@ void launch(
     constexpr int kSplitKMax = 8;
     const int n_cta_mn = n_cta_m * ceil_div(T, kbn_pick);
     // split_k was forward-declared above (=1). Compute actual value here.
-    if (hp_nnz == 0 && n_cta_mn < kSplitKThreshold && n_groups >= 4) {
+    //
+    // Gate: Split-K is only beneficial when
+    //   (a) grid is small (n_cta_mn < kSplitKThreshold), AND
+    //   (b) per-CTA work is large (kbn_pick >= 32), AND
+    //   (c) n_groups is large enough to split (>= 4).
+    //
+    // For kbn_pick == 8 the grid is already tall (T-dim has ceil(T/8)
+    // CTAs) so n_cta_mn is rarely small, and per-CTA work is low; splitting
+    // only adds reduce overhead with no SM-occupancy benefit.
+    //
+    // Dense-only gate (hp_nnz == 0) avoids the BSR path where partial
+    // accumulation semantics differ (sparse rows need high-precision fixup
+    // that is only applied once per (m, n) output).
+    if (hp_nnz == 0 && kbn_pick >= 32 && n_cta_mn < kSplitKThreshold && n_groups >= 4) {
         // Find smallest split_k such that n_cta_mn * split_k >= kSplitKThreshold
         // and n_groups % split_k == 0.
         for (int sk = 2; sk <= kSplitKMax; sk *= 2) {
