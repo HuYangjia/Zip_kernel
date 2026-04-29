@@ -166,7 +166,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
         bool in_bounds = (m < d_out);
         #pragma unroll
         for (int i = 0; i < 4; ++i) {
-            hkust_v9::cp_async_16b_pred(dst + i * 16, src + i * 16, in_bounds);
+            cp_async_cg_16_pred(dst + i * 16, src + i * 16, in_bounds);
         }
     };
 
@@ -198,7 +198,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             bool in_bounds = (n < T);
             int64_t off = (int64_t)n * stride_x_n
                         + (int64_t)(g_or_bc * bytes_per_group + quad * 16) * stride_x_k;
-            hkust_v9::cp_async_16b_pred(
+            cp_async_cg_16_pred(
                 &sX[buf][row][quad * 16],
                 X + off,
                 in_bounds
@@ -348,8 +348,8 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
     issue_w_dense_load_async(0, 0);
     issue_x_load_async(0, 0);
     issue_sum_X_load(0, 0);
-    hkust_v9::cp_async_commit_group();
-    hkust_v9::cp_async_wait_group<0>();   // wait for g=0 before first MMA
+    cp_async_commit();
+    cp_async_wait_group<0>();   // wait for g=0 before first MMA
     __syncthreads();
 
     // Round 23: pre-convert s_scale_x[n_local] (fp16 -> fp32) once per CTA.
@@ -388,7 +388,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
             issue_w_dense_load_async(g + 1, buf ^ 1);
             issue_x_load_async(g + 1, buf ^ 1);
             issue_sum_X_load(g + 1, buf ^ 1);   // sum_X stays sync (small)
-            hkust_v9::cp_async_commit_group();
+            cp_async_commit();
         }
 
         const int g_cache = cache_sz ? (g - g_window_base) : g;
@@ -455,7 +455,7 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
         // Stage A2: wait for the g+1 cp.async loads (issued above) to
         // complete before the next iteration uses buf^1.
         if (g + 1 < n_groups) {
-            hkust_v9::cp_async_wait_group<0>();
+            cp_async_wait_group<0>();
         }
         __syncthreads();
     }
