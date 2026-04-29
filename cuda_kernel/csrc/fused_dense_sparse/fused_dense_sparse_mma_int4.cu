@@ -1009,20 +1009,22 @@ void launch(
     //   In the historical R44 hp=0.05 sweep, kBm=64 at T=32 d_out=4096
     //   scored 1.029x but rounded down to `d_out <= 3072`.  In the
     //   hp=0 dense LLM-inference regime used by bench_qwen3_shapes,
-    //   (4096,4096,T∈{32,48,64,96}) shows kBm=64 ⨁ kBn=32 winning by
+    //   (4096,4096,T∈{32,48,64,96}) shows kBm=64 ⊕ kBn=32 winning by
     //   +22%..+136% over the current DEF (kBm=128).  Widen the gate:
-    //     T <= 32:  d_out <= 4096 (was 3072)
-    //     T == 96:  keep d_out <= 2048 (the 0.524x cliff is real).
+    //     T ∈ (16, 32] : d_out <= 4096  *and*  d_in <= 4096
+    //         (T=16 and tall d_in=14336 prefer kBm=128 / kBn=8, so
+    //          tighten rather than include them.)
+    //     T == 96      : keep d_out <= 2048 (the 0.524x cliff is real).
     const bool r44_shape_ok =
         ( (T <= 8)   && (d_out <= 4096) )
-     || ( (T <= 32)  && (d_out <= 4096) )
+     || ( (T <= 16)  && (d_out <= 3072) )
+     || ( (T > 16 && T <= 32)  && (d_out <= 4096) && (d_in <= 4096) )
      || ( (T >= 48 && T <= 64)  && (d_out <= 4096) )
      || ( (T == 96)  && (d_out <= 2048) )
      // R52: T=128 with 512<=d_out<=2048 and d_in>=2048 benefits from kBm=64.
      //   d_out<512 or d_in<2048 (ng<16): overhead > benefit.
      //   d_out=4096 at T=128: 0.95x with kBm=64, excluded.
-     || ( (T == 128) && (d_out >= 512) && (d_out <= 2048) && (d_in >= 2048) );
-    // R45: the `< 64` threshold was too strict.  Probe data for T=48
+     || ( (T == 128) && (d_out >= 512) && (d_out <= 2048) && (d_in >= 2048) );    // R45: the `< 64` threshold was too strict.  Probe data for T=48
     // d=4096 (n_cta_m_at_128=32, ceil(T/32)=2 → product = 64) showed:
     //     kBm=64 kBn=8 : 40.94us  (best)
     //     R44 auto     : 47.25us  (took kBm=128 because 64 not <64)
