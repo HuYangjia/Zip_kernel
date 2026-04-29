@@ -3981,6 +3981,65 @@ Parity: PASS on `128/256/1024/2048/4096` (aligned) AND on
   3. Stage D — 3-stage cp.async pipeline (more aggressive latency hiding
      for large ng; needs extra smem buffer).
 
+---
+
+## Round 55 — Stage D: `__launch_bounds__` hint (REVERTED) (2026-04-29)
+
+### Motivation
+`cuobjdump --dump-resource-usage` showed that with `kBn=32, kBm=128`
+the kernel uses **167 registers / thread** (no spill). 65536 regs/SM
+÷ (167 × 128) = 3.07, so theoretically 3 blocks/SM are achievable.
+The default NVCC register-allocation heuristic may or may not find
+this point; an explicit `__launch_bounds__(kBm, 3)` hint should make
+NVCC prioritise register allocation to hit 3 blocks/SM.
+
+### Attempt
+```cpp
+template <int kBn, bool kUseGroupCache, int kBm = BROW, bool kUseCpAsync = false>
+__global__ void
+__launch_bounds__(kBm, 3)
+fused_dense_sparse_mma_int4_kernel(...)
+```
+
+### Result: MIXED — reverted
+
+Parity PASS on all shapes. Performance on 200-iter × 15-round bench:
+
+| shape            | ng | r55 (us) | r54 (us) | delta    |
+| ---------------- | -- | -------- | -------- | -------- |
+| 2048x2048x128    | 16 |  16.01   |  16.33   | +2%  ✓   |
+| **4096x4096x128**| 32 |  40.45   |  38.49   | **-5%** ✗ |
+| 1024x4096x128    | 32 |  26.90   |  27.53   | +2%  ✓   |
+| 4096x1024x128    |  8 |  14.15   |  14.37   | +2%  ✓   |
+| 2048x4096x128    | 32 |  27.08   |  27.90   | +3%  ✓   |
+| 4096x2048x128    | 16 |  19.94   |  19.92   |  0%      |
+| 1024x1024x128    |  8 |  11.09   |  11.49   | +4%  ✓   |
+| 512x512x128      |  4 |   6.43   |   7.14   | +11% ✓   |
+
+Most shapes gain 2-11%, but 4096x4096 (flagship shape) regressed 5%.
+For 4096x4096: grid = 32×1 CTA, already 32 waves of 1 CTA. Forcing
+3 blocks/SM shrinks register per block to 170 regs (vs 187 default
+that NVCC chose), pushing live values into spill slots for the
+sparse/dense branch logic — visible as reduced ILP in the MMA inner
+loop.
+
+### Decision
+- Revert: comment out `__launch_bounds__` attribute.
+- Preserve source (commented) per the failed-experiment policy.
+- Document rationale here so we don't re-try the same knob.
+
+### Status
+- r55: REVERTED on main (commit 9dcab90).
+- Net effect: r54 remains the production baseline.
+- Next candidates (updated):
+  1. Stage C (ldmatrix in MMA inner loop) — largest potential but
+     highest risk (INT4 MMA → ldmatrix register layout mapping is
+     non-trivial).
+  2. Per-shape tile dispatcher refinement — kBm=64 gate already exists
+     for small T; could extend to (kBm=128, kBn=16) for tall-thin
+     shapes like `4096×1024×128`.
+  3. Full-system bench vs BF16 + Roofline analysis (next task).
+
 
 
 
