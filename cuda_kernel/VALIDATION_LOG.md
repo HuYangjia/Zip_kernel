@@ -3828,5 +3828,65 @@ A2.5 vs original legacy:
 - Next: Stage B (3-stage pipeline or vectorized writeback) or Stage C
   (ldmatrix in MMA inner loop).
 
+---
+
+## Round 52 — kBm=64 gate extension to T=128 (2026-04-29)
+
+### Motivation
+Bench showed kBm=64 is 1.17-1.28x faster than kBm=128 for T=128 shapes
+with d_out<=2048 and d_in>=2048:
+  2048x2048x128: 16.19 vs 18.97us (1.17x)
+  1024x4096x128: 28.60 vs 36.54us (1.28x)
+  2048x4096x128: 29.06 vs 34.75us (1.20x)
+d_out=4096 at T=128 is 0.95x with kBm=64 (excluded).
+
+### Implementation
+Extended r44_shape_ok with:
+  || ( (T == 128) && (d_out >= 512) && (d_out <= 2048) && (d_in >= 2048) )
+
+Iterated through r52, r52b, r52c to refine the gate:
+- r52: T=128 && d_out<=2048 → regressed 128x128x128 (0.75x, d_out too small)
+- r52b: added d_out>=512 → still regressed 1024x1024x128 (0.89x, d_in too small)
+- r52c: added d_in>=2048 → all shapes clean
+
+### Final performance (r52c vs original legacy)
+Measured in same-shape isolated bench (see bench methodology note below):
+
+| shape            | ng | r52c (us) | legacy (us) | speedup |
+| ---------------- | -- | --------- | ----------- | ------- |
+| 128x128x128      |  1 |   ~6.0    |    6.1      |  1.02x  |
+| 256x256x128      |  2 |   ~6.0    |    6.1      |  1.02x  |
+| 512x512x128      |  4 |   ~7.0    |    7.1      |  1.01x  |
+| 1024x1024x128    |  8 |  10.98    |   12.0      |  1.09x  |
+| 2048x2048x128    | 16 |  17.26    |   27.2      |  1.58x  |
+| 4096x4096x128    | 32 |  39.38    |   49.5      |  1.26x  |
+| 1024x4096x128    | 32 |  30.16    |   37.6      |  1.25x  |
+| 4096x1024x128    |  8 |  15.99    |   16.0      |  1.00x  |
+| 2048x4096x128    | 32 |  30.71    |   47.5      |  1.55x  |
+| 4096x2048x128    | 16 |  21.60    |   26.7      |  1.24x  |
+
+Parity: PASS all shapes.
+
+### Bench methodology landmine (IMPORTANT)
+When benching multiple shapes in sequence, the GPU clock state from a
+large-shape kernel (high power, high freq) bleeds into the subsequent
+small-shape measurement, making small shapes appear slower than they are.
+
+Symptom: 128x128x128 measured 7.87-8.19us in a multi-shape bench loop,
+but 5.97-6.05us when benched in isolation (matching the legacy reference).
+
+Fix: always bench each shape in isolation (separate warmup per shape),
+or bench shapes from small to large (not large to small).
+
+### Status
+- r52c: MERGED to main (commit d19e5da).
+- Cumulative speedup vs original legacy (r50+r51+r52c combined):
+  - 2048x2048x128: 27.2 -> 17.26us = 1.58x
+  - 4096x4096x128: 49.5 -> 39.38us = 1.26x
+  - 1024x4096x128: 37.6 -> 30.16us = 1.25x
+  - 2048x4096x128: 47.5 -> 30.71us = 1.55x
+  - 4096x2048x128: 26.7 -> 21.60us = 1.24x
+
+
 
 
