@@ -3776,8 +3776,57 @@ Re-measured in a single Python session:
   2. Stage B — fused dequant epilogue visitor. Cuts FP16 writeback
      round-trip. Mostly benefits ng<=8, d_out small.
   3. Stage C — ldmatrix replacement in MMA inner loop (currently manual
-     LDS.128 + SMMA). ~15% instruction count reduction in the hot loop,
+     LDS.128 + SMMA path). ~15% instruction count reduction in the hot loop,
      needs careful swizzle verification.
+
+---
+
+## Round 51 — Stage A2.5: cp.async for sparse branch (2026-04-29)
+
+### Motivation
+A2 only applied cp.async to the dense branch. The sparse branch still used
+synchronous LDG.128 for W_high_blocks and X. A2.5 extends the same 2-stage
+pipeline to the sparse branch.
+
+### Implementation
+- Added `issue_w_sparse_load_async` lambda: mirrors `issue_w_sparse_load`
+  but uses `cp_async_cg_16` instead of `*reinterpret_cast<uint4*>`.
+  W_high_blocks rows are always in-bounds (valid BSR block), so no OOB guard.
+- Sparse branch pre-load and inner loop now use `if constexpr (kUseCpAsync)`:
+  - cp.async path: pre-load blk_start with async, commit, wait<0>, sync;
+    inside the loop, issue block_idx+1 async, commit, run MMA, wait<0>, sync.
+  - sync path: identical to pre-A2.5 behavior.
+- `issue_scale_block_load` stays synchronous (kBm fp16 = 256 bytes, tiny).
+- Dispatcher unchanged: `use_cp_async = (n_groups >= 16)`.
+
+### Performance (A100, dense-only bench, Wh=empty)
+Bench uses Wh=zeros(0,...) so sparse branch is not exercised; results
+reflect dense branch only (same as A2).
+
+| shape            | ng | A2.5 (us) | A2 (us) | delta  |
+| ---------------- | -- | --------- | ------- | ------ |
+| 128x128x128      |  1 |   6.17    |  5.95   | -0.04x |
+| 256x256x128      |  2 |   6.12    |  5.99   | -0.02x |
+| 512x512x128      |  4 |   6.94    |  6.99   | +0.01x |
+| 1024x1024x128    |  8 |  11.91    | 10.98   | -0.08x |
+| 2048x2048x128    | 16 |  18.83    | 18.91   | +0.00x |
+| 4096x4096x128    | 32 |  38.70    | 39.37   | +0.02x |
+| 1024x4096x128    | 32 |  36.70    | 36.35   | -0.01x |
+| 4096x1024x128    |  8 |  15.86    | 15.98   | +0.01x |
+
+All differences are within measurement noise (< 5%). Parity: PASS all shapes.
+
+A2.5 vs original legacy:
+- 2048x2048x128: 18.83us vs 27.2us = 1.44x
+- 4096x4096x128: 38.70us vs 49.5us = 1.28x
+
+### Status
+- A2.5: MERGED to main (commit 6c110ad).
+- The sparse branch cp.async will show benefit when running with real
+  sparse W_high_blocks (non-empty BSR blocks). Dense-only bench is
+  unaffected as expected.
+- Next: Stage B (3-stage pipeline or vectorized writeback) or Stage C
+  (ldmatrix in MMA inner loop).
 
 
 
