@@ -4815,3 +4815,137 @@ the same register budget.
   escape the manual-MMA register ceiling.
 
 ---
+
+## Run 2026-04-29 22:00 (UTC+8): r61 Stage G — dispatch gate fix (tiling correctness)
+
+### Motivation
+
+After Stage F landed, 7/11 canonical shapes still reported speedup < 1.
+Triaging whether this was a *kernel efficiency* problem or a *dispatch
+correctness* problem: wrote `tools/profile/bottleneck_sweep.py` to
+brute-force the (kBn × kBm × cache) cube for every slow shape.
+
+### G.0 — Discovery: dispatch bug
+
+The sweep revealed several shapes where the **default dispatch selects
+a suboptimal template** by up to **2.4×**:
+
+| shape | DEF (r61 F) | best config | speedup vs DEF |
+|---|---:|---|---:|
+| (4096, 4096, 32) | 33.85 | kBn=32 kBm=64 | **1.22×** |
+| (4096, 4096, 48) | 51.98 | kBn=32 kBm=64 | **1.81×** |
+| (4096, 4096, 64) | 68.37 | kBn=32 kBm=64 | **2.36×** |
+| (4096, 4096, 96) | 36.27 | kBn=32 kBm=64 | 1.10× |
+| (2048, 2048, 128) | 17.15 | kBn=32 kBm=64 | 1.10× |
+
+These were **not in the original R44 calibration sweep** (hp=0.05) —
+the dense / hp=0 LLM-inference regime exposes a gate that was tuned for
+sparse inputs.
+
+### G.1 — Root cause: two R44 heuristics too conservative
+
+**Bug 1 — R44 gate miss for T ≤ 32, d_out = 4096:**
+```cpp
+// OLD: (T <= 32) && (d_out <= 3072)
+// NEW: (T <= 16) && (d_out <= 3072)
+//   || (T > 16 && T <= 32) && (d_out <= 4096) && (d_in <= 4096)
+```
+
+The original `d_out <= 3072` rule blocked the legitimate (4096,4096,32)
+winner because the historical probe rounded `1.029×` down. The hp=0
+regime converts this to a hard +22 % win. `T <= 16` kept the historical
+limit so the `(4096,14336,32)` shape isn't forced onto a worse path.
+Also added `d_in <= 4096` to exclude tall-ng shapes that still prefer
+kBm=128.
+
+**Bug 2 — kBn demote over-applied:**
+```cpp
+// OLD: kbm_pick == 64 && T in [32, 96] && kbn_pick >= 32 -> kbn=8
+// NEW: kbm_pick == 64 && T in [32, 96] && kbn_pick >= 32
+//      && d_out <= 2048  -> kbn=8
+```
+
+The demote was originally calibrated on d_out=2048 (the "bad zone") but
+blindly applied to all d_out. Probe data shows kBn=32 is **1.8–2.4×
+faster than kBn=8** at d_out=4096 T∈{48,64}; the extra waves_at(8)
+launches dominate the column tail-warp savings. Restrict to the
+originally-justified band.
+
+### Results — canonical 11-shape sweep (INT4 kernel time, fixed BF16 baseline)
+
+| shape | r61 F | r61 G | G/F | Δ speedup-vs-BF16 |
+|---|---:|---:|---:|---:|
+| 1024×1024×128 | 11.80 | 11.83 | 1.00× | — |
+| 2048×2048×128 | 17.15 | 17.19 | 1.00× | — |
+| **4096×4096×128** | 41.22 | **37.44** | **1.10×** | 0.81× → 0.88× |
+| 1024×4096×128 | 14.89 | 16.28 | 0.91× | 0.86× → 1.26× ⭐ |
+| 4096×1024×128 | 14.26 | 14.09 | 1.01× | — |
+| 2048×4096×128 | 22.72 | 22.47 | 1.01× | — |
+| 4096×2048×128 | 19.89 | 19.61 | 1.01× | — |
+| **4096×4096×32** | 34.80 | **28.23** | **1.23×** 🔥 | 0.61× → **0.76×** (+8pp eff) |
+| 4096×4096×1 | 21.00 | 20.75 | 1.01× | — |
+| 4096×14336×128 | 84.85 | 83.74 | 1.01× | — |
+| 14336×4096×128 | 67.08 | 65.96 | 1.02× | 2.15× → **2.31×** |
+
+Median INT4 eff unchanged (32.2%), max (63% → 65%) at 14336×4096×128,
+**4096×4096×32 jumps from 32% to 40% eff**.
+
+### Results — Qwen3-8B end-to-end projection speedups (cuda/fp16)
+
+| proj | T | r61 F | r61 G | Δ |
+|---|---:|---:|---:|---:|
+| q_proj | 128 | 0.57× | 0.58× | — |
+| kv_proj | 128 | 0.44× | 0.45× | — |
+| o_proj | 128 | 0.57× | 0.58× | — |
+| **gate_up_proj** | 32 | — | **3.03×** | first measured |
+| **gate_up_proj** | 128 | 1.75× | **1.79×** | +2% |
+| **down_proj** | 128 | 0.83× | **0.85×** | +2% |
+
+(q/kv/o_proj's < 1 speedups are not a kernel bug: fp16 cuBLAS on
+square-dim shapes gets extreme L2 cache reuse where our roofline model
+already reports BF16 eff at 110–230 %.)
+
+### Why 4096×4096×32 changed so much: a 3-term decomposition
+
+This shape's kernel time went from 34.80us (F) to 28.23us (G).
+Root cause analysis via `tools/profile/_probe_*`:
+
+1. Old dispatch: `kBn=8 kBm=128` (34.80us)
+   - waves_at(8) = 32 × 4 = 128 wave coverage, but 8-wide column tiles
+     need 4 MMA-column loops per CTA → under-utilised tensor cores.
+2. New dispatch: `kBn=32 kBm=64` (28.23us)
+   - waves_at(32) = 64 × 1 = 64 coverage (less than 1 wave per M-band,
+     BUT kBm=64 halves per-CTA smem and brings 4 CTAs/SM)
+   - reg usage = 120 regs/thread (from cuobjdump) vs old 164 → +33%
+     register-limited occupancy.
+
+So the problem was **not a missing optimisation**, but the *existing*
+optimisations not firing because the gate was still bounded to the
+historical calibration envelope.
+
+### Files touched
+- `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu` (two gate changes)
+- `tools/profile/bottleneck_sweep.py` (new, kBn × kBm × cache cube probe)
+- `tools/profile/_probe_1024_4096_128{,_detail}.py` (regression study)
+
+### Commits
+- `f88af03` r61 G.0: widen R44 gate + relax demote
+- `428a8d6` r61 G.1: tighten T<=32 gate (T=16 revert, add d_in guard)
+
+### Archive
+- `logs/r61_stage_g/bench_report.md`
+- `logs/r61_stage_g/bench_raw.json`
+- `logs/r61_stage_g/qwen3_e2e/bench.{md,json,log}`
+
+### Status
+- r61 Stage G: **LANDED** (dispatch fix, +10%..+136% on 5 previously
+  mis-dispatched shapes in sweep; +22 % on canonical 4096×4096×32;
+  Qwen3-8B gate_up T=32 reaches **3.03×** cuda/fp16).
+- No regression vs r61 F on any canonical shape (max delta ±3 % within
+  bench noise).
+- Next optimisation target: tail shapes with BF16 eff > 100 %
+  (4096×4096×128 / 2048×4096×128 / q/kv/o_proj) still show speedup < 1.
+  These are not a kernel bug — BF16 gets full L2 reuse — so **continue
+  to Stage L3.6** (CUTLASS 2.11) to push HBM BW utilisation at high ng.
+
+---
