@@ -157,7 +157,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         int d_out, int d_in
     ) {
         const char* env = std::getenv("HKUST_V9_USE_CUTLASS");
-        const bool use_cutlass = (env != nullptr && env[0] == '1' && env[1] == '\0');
+        const bool env_on = (env != nullptr && env[0] == '1' && env[1] == '\0');
+        // F4.1: CUTLASS backend currently covers dense-only shapes.  If
+        // the caller supplied a non-empty sparse contribution we must
+        // route to legacy, regardless of the env flag, so the high-
+        // precision term is not silently dropped.  This keeps the
+        // "HKUST_V9_USE_CUTLASS=1" bench switch safe to flip globally.
+        const bool has_sparse = (hp_col_indices.numel() > 0);
+        const bool use_cutlass = env_on && !has_sparse;
         if (use_cutlass) {
             hkust_v9::fused_dense_sparse_mma_int4_cutlass::launch(
                 W_low, W_high_blocks, hp_row_offsets, hp_col_indices,

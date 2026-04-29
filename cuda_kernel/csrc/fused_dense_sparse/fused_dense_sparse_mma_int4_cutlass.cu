@@ -164,18 +164,31 @@ void launch(
     TORCH_CHECK(X_s4.stride(1) == 1 && W_low.stride(1) == 1,
                 "[r50_cutlass_int4] inner-dim stride must be 1.");
 
-    // Stage A1 alignment. M=d_out must be %128 to fit
-    // ThreadblockShape<128,128,128>. K-per-slice is BCOL=128 (the V9
-    // group size); N=T can be anything >=1 because CUTLASS handles
-    // ragged N via partial tiles, but for now the tc_underutil
-    // cluster always has T==128 so we keep the check strict.
+    // F4.1: relax constraints so CUTLASS path can cover real LLM shapes
+    // instead of only T%128==0 synthetic cases.
+    //   * d_out must still be %128 (ThreadblockShape::kM).
+    //   * T is unconstrained for the GEMM itself -- CUTLASS handles
+    //     ragged N-tile via partial tiles. The dequant kernel writes
+    //     one fp16 per (m,t) so any T>=1 is fine there too.
+    //   * d_in must be %BCOL=128 (group structure of scale/zero).
+    //   * Sparse (hp) path is deliberately NOT supported in F4 yet;
+    //     when the caller passes a non-empty hp_col_indices we fail
+    //     loudly so the dispatcher can fall back to the legacy kernel
+    //     instead of silently dropping the high-precision contribution.
     constexpr int BCOL = 128;
     const int n_groups = d_in / BCOL;
     TORCH_CHECK(d_in % BCOL == 0,
                 "[r50_cutlass_int4] d_in must be multiple of BCOL=128.");
-    TORCH_CHECK(d_out % 128 == 0 && T % 128 == 0,
-                "[r50_cutlass_int4] d_out and T must each be multiples "
-                "of 128 (d_out=", d_out, ", T=", T, ").");
+    TORCH_CHECK(d_out % 128 == 0,
+                "[r50_cutlass_int4] d_out must be a multiple of 128 "
+                "(ThreadblockShape::kM); got d_out=", d_out, ".");
+    TORCH_CHECK(T >= 1,
+                "[r50_cutlass_int4] T must be >=1; got T=", T, ".");
+    TORCH_CHECK(hp_col_indices.numel() == 0,
+                "[r50_cutlass_int4] sparse high-precision path is not "
+                "implemented on the CUTLASS backend yet; dispatcher "
+                "should have routed hp>0 cases to the legacy kernel. "
+                "Got hp_col_indices.numel()=", hp_col_indices.numel(), ".");
     TORCH_CHECK(scale_u4.size(0) == d_out && scale_u4.size(1) == n_groups,
                 "[r50_cutlass_int4] scale_u4 shape must be (d_out, n_groups).");
     TORCH_CHECK(zero_u4.size(0)  == d_out && zero_u4.size(1)  == n_groups,
