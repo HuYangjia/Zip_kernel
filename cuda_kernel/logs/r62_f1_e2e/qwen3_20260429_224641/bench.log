@@ -1,0 +1,48 @@
+22:46:41 INFO bench_qwen3 output dir: /root/logs/qwen3_bench/qwen3_20260429_224641
+22:46:41 INFO bench_qwen3 device: NVIDIA GeForce RTX 4090
+22:46:41 INFO bench_qwen3 pytorch 2.8.0+cu126  triton 3.4.0
+22:46:41 INFO bench_qwen3 hp_ratio: 0.050
+22:46:41 INFO bench_qwen3 flush_l2_fp16: True
+22:46:41 DEBUG bench_qwen3 [1/20] Qwen3-8B q_proj T=1
+22:46:45 INFO bench_qwen3 Qwen3-8B    q_proj       T=1    [ 4096-> 4096] e2e: fp16=  40.3  triton= 137.4  cuda=  18.5  cuda/fp16=2.18x  cuda/triton=7.43x
+22:46:45 DEBUG bench_qwen3 [2/20] Qwen3-8B q_proj T=32
+22:46:49 INFO bench_qwen3 Qwen3-8B    q_proj       T=32   [ 4096-> 4096] e2e: fp16=  40.1  triton= 136.3  cuda=  41.3  cuda/fp16=0.97x  cuda/triton=3.30x
+22:46:49 DEBUG bench_qwen3 [3/20] Qwen3-8B q_proj T=128
+22:46:52 INFO bench_qwen3 Qwen3-8B    q_proj       T=128  [ 4096-> 4096] e2e: fp16=  42.2  triton= 138.2  cuda=  51.9  cuda/fp16=0.81x  cuda/triton=2.66x
+22:46:52 DEBUG bench_qwen3 [4/20] Qwen3-8B q_proj T=512
+22:46:56 INFO bench_qwen3 Qwen3-8B    q_proj       T=512  [ 4096-> 4096] e2e: fp16= 117.1  triton= 219.9  cuda=  86.4  cuda/fp16=1.36x  cuda/triton=2.55x
+22:46:56 DEBUG bench_qwen3 [5/20] Qwen3-8B kv_proj T=1
+22:47:00 INFO bench_qwen3 Qwen3-8B    kv_proj      T=1    [ 4096-> 2048] e2e: fp16=  20.5  triton= 136.8  cuda=  13.5  cuda/fp16=1.52x  cuda/triton=10.13x
+22:47:00 DEBUG bench_qwen3 [6/20] Qwen3-8B kv_proj T=32
+22:47:03 INFO bench_qwen3 Qwen3-8B    kv_proj      T=32   [ 4096-> 2048] e2e: fp16=  21.3  triton= 138.1  cuda=  34.5  cuda/fp16=0.62x  cuda/triton=4.00x
+22:47:03 DEBUG bench_qwen3 [7/20] Qwen3-8B kv_proj T=128
+22:47:07 INFO bench_qwen3 Qwen3-8B    kv_proj      T=128  [ 4096-> 2048] e2e: fp16=  23.1  triton= 137.1  cuda=  42.5  cuda/fp16=0.54x  cuda/triton=3.22x
+22:47:07 DEBUG bench_qwen3 [8/20] Qwen3-8B kv_proj T=512
+22:47:10 INFO bench_qwen3 Qwen3-8B    kv_proj      T=512  [ 4096-> 2048] e2e: fp16=  46.9  triton= 154.7  cuda=  60.1  cuda/fp16=0.78x  cuda/triton=2.57x
+22:47:10 DEBUG bench_qwen3 [9/20] Qwen3-8B o_proj T=1
+22:47:11 INFO bench_qwen3 Qwen3-8B    o_proj       T=1    [ 4096-> 4096] e2e: fp16=  40.0  triton= 137.3  cuda=  18.5  cuda/fp16=2.16x  cuda/triton=7.41x
+22:47:11 DEBUG bench_qwen3 [10/20] Qwen3-8B o_proj T=32
+22:47:11 INFO bench_qwen3 Qwen3-8B    o_proj       T=32   [ 4096-> 4096] e2e: fp16=  40.1  triton= 136.8  cuda=  41.5  cuda/fp16=0.97x  cuda/triton=3.30x
+22:47:11 DEBUG bench_qwen3 [11/20] Qwen3-8B o_proj T=128
+22:47:12 INFO bench_qwen3 Qwen3-8B    o_proj       T=128  [ 4096-> 4096] e2e: fp16=  42.0  triton= 137.6  cuda=  51.9  cuda/fp16=0.81x  cuda/triton=2.65x
+22:47:12 DEBUG bench_qwen3 [12/20] Qwen3-8B o_proj T=512
+22:47:12 INFO bench_qwen3 Qwen3-8B    o_proj       T=512  [ 4096-> 4096] e2e: fp16= 117.5  triton= 219.7  cuda=  86.7  cuda/fp16=1.36x  cuda/triton=2.54x
+22:47:12 DEBUG bench_qwen3 [13/20] Qwen3-8B gate_up_proj T=1
+22:47:16 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=1    [ 4096->24576] e2e: fp16= 216.2  triton= 136.9  cuda=  96.1  cuda/fp16=2.25x  cuda/triton=1.42x
+22:47:16 DEBUG bench_qwen3 [14/20] Qwen3-8B gate_up_proj T=32
+22:47:21 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=32   [ 4096->24576] e2e: fp16= 238.0  triton= 182.0  cuda=  73.3  cuda/fp16=3.25x  cuda/triton=2.48x
+22:47:21 DEBUG bench_qwen3 [15/20] Qwen3-8B gate_up_proj T=128
+22:47:25 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=128  [ 4096->24576] e2e: fp16= 274.3  triton= 306.7  cuda= 147.0  cuda/fp16=1.87x  cuda/triton=2.09x
+22:47:25 DEBUG bench_qwen3 [16/20] Qwen3-8B gate_up_proj T=512
+22:47:31 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=512  [ 4096->24576] e2e: fp16= 712.9  triton= 996.2  cuda= 462.8  cuda/fp16=1.54x  cuda/triton=2.15x
+22:47:31 DEBUG bench_qwen3 [17/20] Qwen3-8B down_proj T=1
+22:47:35 INFO bench_qwen3 Qwen3-8B    down_proj    T=1    [12288-> 4096] e2e: fp16= 112.4  triton= 270.7  cuda=  53.4  cuda/fp16=2.10x  cuda/triton=5.07x
+22:47:35 DEBUG bench_qwen3 [18/20] Qwen3-8B down_proj T=32
+22:47:40 INFO bench_qwen3 Qwen3-8B    down_proj    T=32   [12288-> 4096] e2e: fp16= 123.4  triton= 317.0  cuda= 153.4  cuda/fp16=0.80x  cuda/triton=2.07x
+22:47:40 DEBUG bench_qwen3 [19/20] Qwen3-8B down_proj T=128
+22:47:44 INFO bench_qwen3 Qwen3-8B    down_proj    T=128  [12288-> 4096] e2e: fp16= 135.9  triton= 348.8  cuda= 157.8  cuda/fp16=0.86x  cuda/triton=2.21x
+22:47:44 DEBUG bench_qwen3 [20/20] Qwen3-8B down_proj T=512
+22:47:49 INFO bench_qwen3 Qwen3-8B    down_proj    T=512  [12288-> 4096] e2e: fp16= 328.9  triton= 640.8  cuda= 308.1  cuda/fp16=1.07x  cuda/triton=2.08x
+22:47:49 INFO bench_qwen3 wrote /root/logs/qwen3_bench/qwen3_20260429_224641/bench.json
+22:47:49 INFO bench_qwen3 wrote /root/logs/qwen3_bench/qwen3_20260429_224641/bench.md
+22:47:49 INFO bench_qwen3 done.  100 records across 20 shapes.
