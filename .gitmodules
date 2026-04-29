@@ -1,0 +1,4 @@
+[submodule "cuda_kernel/extern/cutlass"]
+	path = cuda_kernel/extern/cutlass
+	url = https://github.com/NVIDIA/cutlass.git
+	branch = v2.11.0
