@@ -832,6 +832,12 @@ void launch(
         (n_groups <= kGrpBuf) ||
         (n_groups <= kMaxWindowedGroups && n_cta_m <= 64);
 
+    // Stage I: forward-declare split_k and Y_partial_ptr so do_launch can
+    // capture them. Values are computed after kbn_pick is known (below).
+    int split_k = 1;
+    float* Y_partial_ptr = nullptr;
+    torch::Tensor Y_partial_tensor;  // keeps the buffer alive until after launch
+
     auto do_launch = [&](auto kBn_c, auto kCache_c, auto kBm_c, auto kCpAsync_c) {
         constexpr int kBn = decltype(kBn_c)::value;
         constexpr bool kUseGroupCache = decltype(kCache_c)::value;
@@ -943,7 +949,7 @@ void launch(
     constexpr int kSplitKThreshold = 64;  // target: at least 0.5 wave
     constexpr int kSplitKMax = 8;
     const int n_cta_mn = n_cta_m * ceil_div(T, kbn_pick);
-    int split_k = 1;
+    // split_k was forward-declared above (=1). Compute actual value here.
     if (hp_nnz == 0 && n_cta_mn < kSplitKThreshold && n_groups >= 4) {
         // Find smallest split_k such that n_cta_mn * split_k >= kSplitKThreshold
         // and n_groups % split_k == 0.
@@ -973,8 +979,7 @@ void launch(
     }
 
     // Allocate Y_partial buffer for split_k > 1.
-    float* Y_partial_ptr = nullptr;
-    torch::Tensor Y_partial_tensor;
+    // Y_partial_ptr and Y_partial_tensor were forward-declared above.
     if (split_k > 1) {
         Y_partial_tensor = torch::empty(
             {split_k, d_out, T},
