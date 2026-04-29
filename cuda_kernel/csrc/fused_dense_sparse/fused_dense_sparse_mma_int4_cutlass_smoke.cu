@@ -103,7 +103,27 @@ using GemmS2 = cutlass::gemm::device::Gemm<
 }  // namespace hkust_r50
 
 // ---------------------------------------------------------------------------
-// Host entry — forces instantiation of both Gemm types. Returns a
+// (S3) L3.3-L3.5 helpers integration — pulls in the cutlass_helpers/*.hpp
+//      tree in smoke-only mode (no custom dequant visitor, falls back to
+//      LinearCombinationClamp via the HKUST_R50_CUTLASS_SMOKE_ONLY macro).
+//      Proves that the header-only alias chain instantiates cleanly.
+// ---------------------------------------------------------------------------
+#define HKUST_R50_CUTLASS_SMOKE_ONLY 1
+#include "../cutlass_helpers/int4_mma_builder.hpp"
+
+namespace hkust_r50 {
+namespace cutlass_smoke {
+
+using GemmS3 = hkust_r50::cutlass_int4::Int4Gemm;
+
+static_assert(GemmS3::kStages == 3,
+              "L3.4 contract: Stages must be 3 (B3 fix).");
+static_assert(hkust_r50::cutlass_int4::ThreadblockShape::kK == 128,
+              "L3.4 contract: tile_k == BCOL == 128.");
+
+}  // namespace cutlass_smoke
+}  // namespace hkust_r50
+
 // composite sentinel (sum of sizes) so DCE cannot elide the templates.
 // Called from a Python ctypes/pybind dispatch path in L3.9 if needed;
 // otherwise simply linking this object file is sufficient to confirm
@@ -131,5 +151,17 @@ extern "C" std::size_t hkust_r50_cutlass_smoke_probe() {
         {ElementCompute(1), ElementCompute(0)}};
     (void)args_s1;
     (void)args_s2;
-    return sizeof(GemmS1) + sizeof(GemmS2);
+    // S3 — ensure the cutlass_helpers template tree also instantiates.
+    using GemmS3Local = hkust_r50::cutlass_smoke::GemmS3;
+    typename GemmS3Local::Arguments args_s3{
+        {1, 1, 128},
+        {nullptr, 0},
+        {nullptr, 0},
+        {nullptr, 0},
+        {nullptr, 0},
+        // S3 epilogue (LinearCombinationClamp, see int4_mma_builder.hpp
+        // smoke-only branch) takes (alpha, beta) with ElementCompute=float.
+        {1.f, 0.f}};
+    (void)args_s3;
+    return sizeof(GemmS1) + sizeof(GemmS2) + sizeof(GemmS3Local);
 }
