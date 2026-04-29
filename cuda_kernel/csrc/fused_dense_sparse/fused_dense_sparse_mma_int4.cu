@@ -1039,9 +1039,24 @@ void launch(
     (void)hp_empty;  // R42-P1: retained for debug/future gates.
     const int kbm_pick = kbm64_gate ? 64 : 128;
     const int n_cta_m = ceil_div(d_out, kbm_pick);
-    const bool use_group_cache =
+    bool use_group_cache =
         (n_groups <= kGrpBuf) ||
         (n_groups <= kMaxWindowedGroups && n_cta_m <= 64);
+
+    // Stage F (r61) — occupancy experiment hook.
+    // HKUST_V9_FUSED_FORCE_CACHE:
+    //   "0" : force cache OFF (minimises smem -> higher occupancy).
+    //   "1" : force cache ON  (reference path).
+    //   unset: use the shape-driven default above.
+    // Used to validate the hypothesis that smem-induced low occupancy
+    // caps HBM bandwidth utilisation below 30% for most shapes.
+    {
+        const char* env = std::getenv("HKUST_V9_FUSED_FORCE_CACHE");
+        if (env != nullptr) {
+            if (env[0] == '0') use_group_cache = false;
+            else if (env[0] == '1') use_group_cache = true;
+        }
+    }
 
     // Stage I: forward-declare split_k and Y_partial_ptr so do_launch can
     // capture them. Values are computed after kbn_pick is known (below).

@@ -4547,3 +4547,111 @@ Even after Stage I, most shapes are below 1x vs BF16 (efficiency
 
 
 
+
+---
+
+## Round 61 — Stage C: ldmatrix + XOR swizzle (FAILED, kept behind HKUST_V9_LDMATRIX env) (2026-04-29)
+
+### Motivation
+r60 roofline analysis showed square shapes (2048x2048, 4096x4096) at
+only 25-37% INT4 efficiency vs 80-125% BF16 efficiency, with the gap
+attributed to smem bank conflict on the manual A/B loads for MMA.
+Planned two sub-stages:
+  - C.1a: replace 32 manual uint32 smem loads per ks-step with
+          ldmatrix.x4 (A) + ldmatrix.x2 (B).
+  - C.1b: add XOR swizzle to eliminate residual bank conflicts.
+
+### Implementation
+Added template param `kUseLdmatrix` (default false) and a runtime
+`HKUST_V9_LDMATRIX=1` env switch in the host launcher.  Also added a
+`swizzle_row_col(row, col)` inline device helper and rewrote the 5
+smem-write lambdas (dense sync/async, sparse sync/async, x sync/async)
+to emit swizzled uint2 writes in the opt-in path.  All 39 parity tests
+PASS with LDMATRIX=1 (bit-exact).
+
+### Results (all negative)
+
+**C.1a** (ldmatrix only, no swizzle):
+| shape             | r60 (μs) | C.1a (μs) | delta   |
+| ----------------- | -------- | --------- | ------- |
+| 2048x2048x128     |  16.79   |  18.88    | -12% ❌ |
+| 4096x4096x128     |  36.71   |  42.60    | -16% ❌ |
+| 1024x1024x128     |  11.78   |  12.50    |  -6%    |
+| 4096x14336x128    |  84.82   |  88.66    |  -5%    |
+| median            |   —      |    —      |  -5%    |
+
+**C.1b first design** (swizzle = (row&7)<<3, broke 16B alignment):
+CUDA misaligned-address trap at runtime — ldmatrix requires base
+address to be 16-byte aligned, but toggling bit 3 of the byte offset
+violates this.  Design error.
+
+**C.1b fixed design** (swizzle = (row&1)<<4, preserves 16B align but
+only 2-phase = 4-way → 2-way conflict reduction):
+| shape             | r60 (μs) | C.1b (μs) | delta    |
+| ----------------- | -------- | --------- | -------- |
+| 2048x2048x128     |  16.79   |  27.00    | -61% ❌❌ |
+| 4096x4096x128     |  36.71   |  60.81    | -66% ❌❌ |
+| 4096x14336x128    |  84.82   | 141.85    | -67% ❌❌ |
+
+### Root cause analysis
+
+1. **ldmatrix 16B alignment forces swizzle mask to touch only bits ≥4**.
+   In a 64-byte row stride, bits 5,6,... are already consumed by the
+   row index.  Only bit 4 is freely available → at most 2 phases for 8
+   rows → 4-way conflict (down from original 16-way on read, but
+   insufficient).
+
+2. **Swizzle forces writes to ≤8B granularity** because toggling any
+   bit below 4 breaks 16B alignment for uint4 stores.  uint2 writes
+   double the store instruction count (4→8 per row).
+
+3. **cp.async incompatible with sub-16B swizzle** because cp_async_cg_16
+   requires both src and dst 16B aligned.  The C.1b swizzle forces the
+   fast dense path to fall back to synchronous uint2 stores, erasing
+   the Stage A2 (cp.async pipeline) win.
+
+The 2x write-path cost dominates the ≤2x read-path conflict reduction
+→ net regression of -60% on compute-bound shapes.
+
+### Correct fix path (not pursued in r61)
+
+To make ldmatrix viable would require **layout-level changes**, not a
+drop-in swizzle:
+  - Option A: double the smem per row to 128B (zero-pad) so bit 6 is
+    available for swizzle → 8-way conflict elimination.  Cost: smem
+    doubles from ~20KB to ~40KB (still within 100KB limit on sm89).
+  - Option B: row-stride = 72B (16B-misaligned padding) breaks bank
+    period naturally, no swizzle needed.  Cost: write path has to handle
+    non-16B aligned smem writes (complicated for cp.async).
+  - Option C: swap to an interleaved layout (CuTe-style XOR mode 3)
+    that uses different lane patterns for load vs store.
+
+All three options require ≥2-3 days of re-layout + re-verification and
+are deferred to a future round.
+
+### Decision
+- r61 kept the ldmatrix + swizzle code behind `HKUST_V9_LDMATRIX=1`
+  opt-in (parity-verified but always slower).  Default path unchanged.
+- Value preserved: the infrastructure (template param, swizzle helper,
+  ldmatrix wrappers already in mma_utils.cuh) can be reused for a
+  future Stage C' (Option A/B/C above) without writing from scratch.
+
+### Files touched
+- `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu` — added
+  `swizzle_row_col`, `kUseLdmatrix` template param, ldmatrix branch in
+  run_mma_pass, and swizzled write variants in 5 smem-write lambdas.
+
+### Commits
+- `26b1e59` r61 Stage C.1a: ldmatrix.x4/x2 opt-in (no swizzle)
+- `416197f` r61 Stage C.1b: XOR swizzle (first design: misaligned trap)
+- `b7b6a03` r61 Stage C.1b fix: swizzle mask = (row&1)*16
+
+### Archive
+- `logs/r61_stage_c_1a/bench_ldm1.{md,json,log}`
+- `logs/r61_stage_c_1b/bench_ldm1.{md,json,log}`
+
+### Status
+- r61 Stage C: **FAILED**, kept opt-in for future reference.
+- Next step pivot to Stage I.2 / Stage J (cheaper, smaller-scope wins).
+
+---

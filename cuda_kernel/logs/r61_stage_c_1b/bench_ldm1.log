@@ -1,0 +1,13 @@
+W0429 18:51:42.259000 30451 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0429 18:51:42.259000 30451 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+1024x1024x128 ng=8: int4=  13.96us  bf16=  12.80us  x0.92  int4_eff=10%  bf16_eff=24%
+2048x2048x128 ng=16: int4=  27.00us  bf16=  13.75us  x0.51  int4_eff=15%  bf16_eff=80%
+4096x4096x128 ng=32: int4=  60.81us  bf16=  33.23us  x0.55  int4_eff=22%  bf16_eff=125%
+1024x4096x128 ng=32: int4=  21.64us  bf16=  12.84us  x0.59  int4_eff=22%  bf16_eff=88%
+4096x1024x128 ng=8: int4=  17.16us  bf16=  10.36us  x0.60  int4_eff=25%  bf16_eff=109%
+2048x4096x128 ng=32: int4=  33.16us  bf16=  18.96us  x0.57  int4_eff=23%  bf16_eff=113%
+4096x2048x128 ng=16: int4=  31.77us  bf16=  17.20us  x0.54  int4_eff=23%  bf16_eff=125%
+4096x4096x32 ng=32: int4=  47.41us  bf16=  21.32us  x0.45  int4_eff=24%  bf16_eff=187%
+4096x4096x1 ng=32: int4=  35.22us  bf16=  17.02us  x0.48  int4_eff=30%  bf16_eff=230%
+4096x14336x128 ng=112: int4= 141.85us  bf16= 151.19us  x1.07  int4_eff=31%  bf16_eff=94%
+14336x4096x128 ng=32: int4=  93.42us  bf16= 150.58us  x1.61  int4_eff=46%  bf16_eff=95%
