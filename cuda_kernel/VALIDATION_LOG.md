@@ -4237,6 +4237,124 @@ are a larger fraction of total work at T=1.
 3. **sW/sX bank-conflict audit** — the same analysis applied to
    sW[2][kBm][32] and sX[2][kBn][32] may reveal additional conflicts.
 
+---
+
+## Round 58 — Stage G: sW/sX bank-conflict padding (REVERTED) (2026-04-29)
+
+### Motivation
+Following the successful r57 s_scale_u4/s_zero_u4 bank-conflict fix,
+we applied the same analysis to sW and sX.
+
+**sW[2][kBm][32] uint8**: row stride = 32 bytes = 8 bank slots.
+Period = 32/8 = 4. Rows 0 and 4 map to the same bank set.
+MMA access pattern: 32 lanes access 8 rows × 4 cols simultaneously.
+Result: **4-way bank conflict** on every MMA A-operand load.
+
+Same analysis for sX (B operand).
+
+### Attempt
+Pad each row by 4 bytes: `sW[2][kBm][bytes_per_group + 4]`.
+New row stride = 36 bytes = 9 bank slots. gcd(9, 32) = 1 → no conflict.
+
+### Failure: cp.async misaligned address
+
+`cp.async` requires the destination shared-memory address to be
+**16-byte aligned**. With row stride = 36 bytes, `sX[buf][tid]` has
+address `base + tid * 36`, which is NOT 16-byte aligned for odd `tid`.
+This causes a CUDA misaligned-address trap at runtime.
+
+### Root-cause analysis: fundamental constraint
+
+There is no row stride that simultaneously satisfies:
+- (a) 16-byte aligned (cp.async requirement): stride = 16m
+- (b) stride/4 is odd (bank-conflict-free for 32-byte data): stride/4 = 2k+1
+
+Proof: stride = 16m → stride/4 = 4m (even). But (b) requires odd. Contradiction.
+
+### Resolution
+- Revert to 32-byte stride.
+- Document the constraint in source comments.
+- Future fix options:
+  1. Switch cp.async to 4-byte granularity (`cp.async.ca.shared.4`),
+     then only 4-byte alignment is required → pad to 36 bytes works.
+  2. Use ldmatrix for A/B loads (Stage C), which has different
+     alignment requirements and can be made conflict-free with a
+     swizzled layout.
+
+### Status
+- r58: REVERTED on main (commit 694bc9f).
+- Per failed-experiment policy: source preserved (commented), rationale
+  documented here.
+
+---
+
+## Final Benchmark Summary — r57 baseline vs BF16 cuBLAS (2026-04-29)
+
+**Device**: RTX 4090 (SM89, 128 SMs, 1008 GB/s HBM, 660.6 INT4 TOPS)
+**Bench**: warmup=500, outer=15, inner=200 (torch.cuda.Event, median)
+**Roofline**: ACHIEVABLE=0.85, formulas from `roofline_delta.py`
+
+### Full-shape results
+
+| shape (d_out×d_in×T) | ng | INT4 (μs) | BF16 (μs) | INT4/BF16 | INT4 eff | BF16 eff |
+| -------------------- | -- | --------- | --------- | --------- | -------- | -------- |
+| 1024×1024×128        |  8 |   11.32   |   17.21   | **1.52×** |   13%    |    18%   |
+| 2048×2048×128        | 16 |   15.08   |   16.67   | **1.11×** |   27%    |    66%   |
+| 4096×4096×128        | 32 |   37.18   |   33.35   |   0.90×   |   36%    |   125%   |
+| 1024×4096×128        | 32 |   27.72   |   17.15   |   0.62×   |   17%    |    66%   |
+| 4096×1024×128        |  8 |   14.37   |   13.78   |   0.96×   |   30%    |    82%   |
+| 2048×4096×128        | 32 |   28.07   |   18.94   |   0.67×   |   27%    |   113%   |
+| 4096×2048×128        | 16 |   20.09   |   17.21   |   0.86×   |   37%    |   124%   |
+| 4096×4096×32         | 32 |   34.76   |   21.37   |   0.61×   |   32%    |   186%   |
+| 4096×4096×1          | 32 |   21.43   |   17.03   |   0.80×   |   49%    |   230%   |
+| **4096×14336×128**   |112 |  140.82   |  151.10   | **1.07×** |   31%    |    94%   |
+| **14336×4096×128**   | 32 |   69.51   |  150.62   | **2.17×** |   61%    |    95%   |
+
+**Aggregate**: median INT4/BF16 = **0.90×**, median INT4 eff = **31.3%**
+
+### Wins vs BF16 (4 of 11 shapes)
+- `1024×1024×128`: 1.52× (small square, ng=8)
+- `2048×2048×128`: 1.11× (medium square, ng=16)
+- `4096×14336×128`: 1.07× (Qwen3 down_proj, ng=112)
+- `14336×4096×128`: 2.17× (Qwen3 up/gate_proj, ng=32)
+
+### Losses vs BF16 (7 of 11 shapes)
+Root cause: **grid occupancy too low** (0.06-0.25 wave for most shapes).
+cuBLAS uses Split-K internally to fill all 128 SMs; our kernel does not.
+
+| shape            | grid (CTA) | waves | INT4 eff |
+| ---------------- | ---------- | ----- | -------- |
+| 1024×4096×128    |     32     |  0.25 |   17%    |
+| 2048×4096×128    |     64     |  0.50 |   27%    |
+| 4096×4096×128    |    128     |  1.00 |   36%    |
+| 4096×4096×32     |     64     |  0.17 |   32%    |
+| 4096×4096×1      |     64     |  0.17 |   49%    |
+
+Even at 1 wave (4096×4096×128), INT4 eff is only 36% vs cuBLAS 125%.
+This suggests the inner loop itself is ~2.5× below roofline, likely
+due to the sW/sX bank conflicts (4-way, unresolved) and insufficient
+pipeline depth.
+
+### Cumulative speedup vs original legacy kernel (r50 baseline)
+| shape            | original (us) | r57 (us) | speedup |
+| ---------------- | ------------- | -------- | ------- |
+| 2048×2048×128    |     27.2      |  15.08   | **1.80×** |
+| 4096×4096×128    |     49.5      |  37.18   | **1.33×** |
+| 4096×4096×1      |     ~50       |  21.43   | **~2.33×** |
+| 4096×14336×128   |     N/A       | 140.82   | 1.07× vs BF16 |
+| 14336×4096×128   |     N/A       |  69.51   | 2.17× vs BF16 |
+
+### Remaining high-impact work
+1. **Split-K on n_groups** (est. 2-3 days): would bring tall-thin
+   shapes (1024×4096, 2048×4096) from 0.25-0.50 wave to 1.0 wave,
+   potentially 2-3× speedup on those shapes.
+2. **sW/sX bank-conflict fix via cp.async 4-byte granularity**
+   (est. 0.5 days): switch load to `cp.async.ca.shared.4` + 4-byte
+   padding → eliminate 4-way conflict in MMA inner loop.
+3. **ldmatrix for A/B loads** (Stage C, est. 1-2 days): replace
+   4 LDS.32 per step with 1 ldmatrix.x4, also enables conflict-free
+   swizzled layout.
+
 
 
 
