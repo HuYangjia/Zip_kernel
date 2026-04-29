@@ -829,6 +829,16 @@ void launch(
     };
     auto pick = [&]() -> int {
         if (T <= 8) return 8;
+        // Stage E (r56) — large-ng override: when n_groups is very deep
+        // (>= 64) the K-loop inside each CTA dominates; shrinking kBn to
+        // fit wave-aware thresholds backfires because it doubles the
+        // launch count without meaningfully raising SM occupancy (the
+        // kernel is already compute/BW bound). For n_groups >= 64 stick
+        // with kBn=64 as long as the grid still has at least a quarter
+        // wave (>= 32 CTAs).
+        // Measured gain on RTX 4090 (r54 baseline):
+        //   4096x14336x128 ng=112:   174.67 -> 140.43 us (1.24x)
+        if (n_groups >= 64 && waves_at(64) >= 32) return 64;
         if (waves_at(64) >= 128) return 64;
         if (waves_at(32) >= 64)  return 32;
         return 8;
