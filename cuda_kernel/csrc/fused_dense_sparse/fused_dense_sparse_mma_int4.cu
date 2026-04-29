@@ -930,36 +930,14 @@ void launch(
             else if (env_n[0] == '8' && env_n[1] == '\0') kbn_pick = 8;
         }
     }
-    // Stage I: Split-K-aware kBn override.
-    //   When the wave-based pick chose kbn=8 (grid too small at kbn=64),
-    //   check if switching to kbn=64 + Split-K yields a larger, better
-    //   utilized grid.  For tall-thin shapes (d_out small, d_in large)
-    //   like 1024x4096x128 the wave-pick falls to kbn=8 which then runs
-    //   ng groups × (T/8) N-tiles sequentially per CTA; switching to
-    //   kbn=64 + sk=4 gives 4x more CTAs and 2x shorter K per CTA,
-    //   measured 1.68x speedup (30.86->18.42 us).
-    //
-    // Condition: kbn_pick==8, hp_nnz==0 (dense only), n_groups>=8
-    //   (enough to split into sk=4), and kbn=64 grid too small but
-    //   kbn=64 × split_k >= 64 CTAs after splitting.
-    // Note: n_cta_m depends on kbm_pick (64 or 128) — both are OK here.
-    if (hp_nnz == 0 && kbn_pick == 8 && n_groups >= 8) {
-        const int n_cta_mn_64 = n_cta_m * ceil_div(T, 64);
-        if (n_cta_mn_64 < 64) {
-            // How many splits needed to reach 64 CTAs at kbn=64?
-            int sk_needed = 1;
-            for (int sk = 2; sk <= 8; sk *= 2) {
-                if (n_groups % sk == 0 && n_cta_mn_64 * sk >= 64) {
-                    sk_needed = sk;
-                    break;
-                }
-            }
-            if (sk_needed >= 2) {
-                kbn_pick = 64;
-                // split_k will be computed below based on the new kbn_pick.
-            }
-        }
-    }
+    // Stage I (r60): The initial Split-K design included a "kbn override"
+    //   that switched kbn=8 -> kbn=64 when Split-K was enabled.  The
+    //   calibration bench showed this was counterproductive:
+    //     1024x4096x128  kbn=64+sk=4: 19.63us
+    //                    kbn=8 +sk=4: 18.10us  <- better
+    //   Keeping the wave-based kbn pick and only toggling split_k gives
+    //   the best of both worlds.  No override needed.
+
     // Stage A2 dispatcher: use cp.async when n_groups >= 16 (large-K shapes
     // where HBM load latency dominates and overlap benefit > overhead).
     // For n_groups <= 8 the synchronous path is faster (cp.async overhead
@@ -976,40 +954,41 @@ void launch(
     // Gate: only for dense-only shapes (hp_nnz == 0) to avoid BSR
     // block-index misalignment in the sparse branch.
     // Also only when n_groups is divisible by split_k (for simplicity).
-    constexpr int kSplitKThreshold = 64;  // target: at least 0.5 wave
     constexpr int kSplitKMax = 8;
     const int n_cta_mn = n_cta_m * ceil_div(T, kbn_pick);
-    // split_k was forward-declared above (=1). Compute actual value here.
+    (void)n_cta_mn;  // retained for debug; no longer used by gate
     //
-    // Gate: Split-K is only beneficial when
-    //   (a) grid is small (n_cta_mn < kSplitKThreshold), AND
-    //   (b) per-CTA work is large (kbn_pick >= 32), AND
-    //   (c) n_groups is large enough to split (>= 4).
+    // Stage I: Split-K heuristic.
     //
-    // For kbn_pick == 8 the grid is already tall (T-dim has ceil(T/8)
-    // CTAs) so n_cta_mn is rarely small, and per-CTA work is low; splitting
-    // only adds reduce overhead with no SM-occupancy benefit.
+    // Calibration bench on RTX 4090 (r60 @ 2026-04-29):
+    //   shape          ng  auto    sk=2    sk=4    winner
+    //   1024x4096x128  32  30.88   21.87   19.74   sk=4 (1.56x)
+    //   2048x4096x128  32  28.63   25.97   28.32   sk=2 (1.10x)
+    //   4096x14336x128 112 145.24  85.18   90.42   sk=2 (1.70x)
+    //   4096x1024x128   8  15.35   20.45   25.22   sk=1
+    //   4096x4096x128  32  37.38   42.95   52.38   sk=1
+    //   14336x4096x128 32  68.36   87.69  110.33   sk=1
     //
-    // Dense-only gate (hp_nnz == 0) avoids the BSR path where partial
-    // accumulation semantics differ (sparse rows need high-precision fixup
-    // that is only applied once per (m, n) output).
-    if (hp_nnz == 0 && kbn_pick >= 32 && n_cta_mn < kSplitKThreshold && n_groups >= 4) {
-        // Find smallest split_k such that n_cta_mn * split_k >= kSplitKThreshold
-        // and n_groups % split_k == 0.
-        for (int sk = 2; sk <= kSplitKMax; sk *= 2) {
-            if (n_groups % sk == 0 && n_cta_mn * sk >= kSplitKThreshold) {
-                split_k = sk;
-                break;
-            }
-        }
-        // If no exact divisor found, try any split_k up to kSplitKMax.
-        if (split_k == 1) {
-            for (int sk = 2; sk <= kSplitKMax; ++sk) {
-                if (n_cta_mn * sk >= kSplitKThreshold) {
-                    split_k = sk;
-                    break;
-                }
-            }
+    // Gating signal: the ratio (n_groups / n_cta_m) measures per-CTA
+    // K-work relative to M-parallelism.  When this ratio >= 2 the CTA
+    // spends most of its time looping over groups while only a small
+    // fraction of SMs are busy; splitting along K then exposes more
+    // parallelism without losing per-CTA efficiency.  When ratio < 2
+    // the grid is already M-heavy and reduce-kernel overhead dominates.
+    //
+    // Empirical rules (dense-only: hp_nnz == 0):
+    //   R1: ng / n_cta_m >= 4  -> prefer sk=4
+    //   R2: ng / n_cta_m >= 2  -> prefer sk=2
+    //   else                   -> sk=1
+    // Additional guards:
+    //   - n_groups must be divisible by split_k (for simplicity)
+    //   - n_groups >= 16 (below this, K-loop too short to benefit)
+    if (hp_nnz == 0 && n_groups >= 16) {
+        const int ratio_x2 = 2 * n_groups / n_cta_m;  // integer floor
+        if (ratio_x2 >= 8 && n_groups % 4 == 0) {
+            split_k = 4;
+        } else if (ratio_x2 >= 4 && n_groups % 2 == 0) {
+            split_k = 2;
         }
     }
     // Override via env var for testing.
