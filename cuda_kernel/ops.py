@@ -73,6 +73,10 @@ _SOURCES = [
     # build-system path is proven; runtime dispatch gated on
     # HKUST_V9_USE_CUTLASS=1 via bindings.cc thunk.
     str(_CSRC / "fused_dense_sparse" / "fused_dense_sparse_mma_int4_cutlass.cu"),
+    # Stage A1 companion: per-group int32 -> fp16 dequant kernel called
+    # from the CUTLASS launcher above.  Separate TU keeps the dequant
+    # hot-path tunable without recompiling the CUTLASS template tree.
+    str(_CSRC / "fused_dense_sparse" / "cutlass_dequant.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_gemv_decode.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_gemv_smallT.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_quant_gemv.cu"),
