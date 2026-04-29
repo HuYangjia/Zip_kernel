@@ -17,7 +17,7 @@ import statistics
 
 import torch
 
-sys.path.insert(0, "/root/Zip_kernel")
+sys.path.insert(0, "/root")
 from kernel.cuda_kernel import ops  # noqa: E402
 
 
