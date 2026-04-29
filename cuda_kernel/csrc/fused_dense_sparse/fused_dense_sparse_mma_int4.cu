@@ -39,11 +39,14 @@ constexpr int kMaxWindowedGroups = 64;
 //   block is present we unconditionally use kBm=128.
 template <int kBn, bool kUseGroupCache, int kBm = BROW, bool kUseCpAsync = false>
 __global__ void
-// Stage D — occupancy hint. With kBn=32, kBm=128 the kernel uses 167 regs;
-// 65536/(167*128) ≈ 3 blocks/SM achievable. Give NVCC this hint so it
-// prioritises register allocation accordingly (usually neutral or
-// slightly positive; measured +0..+3% on large shapes, no regression).
-__launch_bounds__(kBm, 3)
+// Stage D (REVERTED r55) — `__launch_bounds__(kBm, 3)` hint tried but
+// rejected: mixed result on sweep (2048x2048 +2%, 1024x1024 +4%,
+// 512x512 +11%, but 4096x4096 regressed -5%). The hint forces NVCC
+// to assume 3 blocks/SM, which hurts register-hungry shapes with
+// kBn=32 kBm=128 (167 regs * 128 = 21.3K, barely fits 3 blocks).
+// Leaving the attribute *disabled* by commenting it out; see
+// VALIDATION_LOG r55 for details.
+// __launch_bounds__(kBm, 3)
 fused_dense_sparse_mma_int4_kernel(
     const uint8_t* __restrict__ W_low,
     const uint8_t* __restrict__ X,
