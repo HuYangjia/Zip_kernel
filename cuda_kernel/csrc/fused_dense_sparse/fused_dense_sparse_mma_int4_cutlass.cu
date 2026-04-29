@@ -26,6 +26,37 @@
 // Build gate: this TU requires CUTLASS v2.11 headers and an SM80+
 // target; under SM<80 the include tree is #if-guarded out to keep
 // the ABI intact on unsupported arches.
+//
+// =========================================================================
+// Stage B (diagnostic int32-only, 2026-04-29)
+// =========================================================================
+//
+// Before we wire the full dequant epilogue (stage A1), we first prove
+// that the CUTLASS INT4 GEMM really does saturate the Ada Tensor Core
+// MMA pipeline. To keep the change minimal and not pollute the final
+// signature, this launcher now:
+//
+//   1. Allocates a scratch `int32 workspace` of shape (d_out, T) with
+//      ColumnMajor layout (≡ row-major (T, d_out)).
+//   2. Calls the smoke-mode `Int4Gemm` (ElementY=int32,
+//      EpilogueOutputOp=LinearCombinationClamp) to fill that workspace.
+//   3. Zeros `Y_total` (fp16) so any accidental downstream consumer
+//      gets deterministic, well-formed data.
+//
+// This is *diagnostic*: the caller is NOT supposed to trust `Y_total`
+// while stage B is active. The intent is to read `nsys` and SASS on
+// the resulting kernel to confirm:
+//
+//   (a) A launch happens at all (no silent fallthrough).
+//   (b) SASS contains `mma.m16n8k64.s4.s4.s32` at ≥ 99% MAC share.
+//   (c) Warp-scheduler stall reasons differ from the legacy kernel.
+//
+// Stage A1 (next iteration) replaces the workspace + zeroing with a
+// second tiny CUDA kernel that computes
+//     y_fp16[m,t] = (acc_s32[m,t] - zero_u4[m,g] * sum_X[t])
+//                   * scale_u4[m,g] * scale_x[t]
+// reading the int32 workspace from HBM (one extra round-trip, accepted
+// as tradeoff per `.codebuddy/plan/r50_cutlass_int4/` path-A1 decision).
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -93,21 +124,114 @@ void launch(
     torch::Tensor Y_total,
     int d_out, int d_in
 ) {
-    // Silence -Wunused warnings while keeping the full signature visible.
-    (void)W_low; (void)W_high_blocks;
+    // Stage B diagnostic launcher — see file-header Stage B notes.
+    //
+    // Unused at Stage B (wired in A1 / visitor-tree second pass):
+    (void)W_high_blocks;
     (void)hp_row_offsets; (void)hp_col_indices;
-    (void)X_s4;
     (void)scale_u4; (void)zero_u4;
     (void)sum_X; (void)scale_x;
-    (void)Y_total;
-    (void)d_out; (void)d_in;
-    (void)InstantiationProbe::gemm_bytes;  // force compile-time probe.
+    (void)InstantiationProbe::gemm_bytes;
 
-    TORCH_CHECK(false,
-        "[r50_cutlass_int4] CUTLASS fused Dense+Sparse launcher is a "
-        "compile-only stub at L3.6. Do not set HKUST_V9_USE_CUTLASS=1 "
-        "until L4 (visitor tree + pack adapter) lands. See "
-        ".codebuddy/plan/r50_cutlass_int4/task-item.md.");
+    // -----------------------------------------------------------------
+    // Input contract checks (must match layout_contract.md §1 T1/T2/T3).
+    // -----------------------------------------------------------------
+    TORCH_CHECK(W_low.is_cuda() && X_s4.is_cuda() && Y_total.is_cuda(),
+                "[r50_cutlass_int4] all tensors must reside on CUDA.");
+    TORCH_CHECK(W_low.dtype() == torch::kInt8 && X_s4.dtype() == torch::kInt8,
+                "[r50_cutlass_int4] W_low / X_s4 must be int8 (packed int4).");
+    TORCH_CHECK(Y_total.dtype() == torch::kHalf,
+                "[r50_cutlass_int4] Y_total must be fp16.");
+
+    const int T = static_cast<int>(X_s4.size(0));
+    TORCH_CHECK(X_s4.size(1) == d_in / 2,
+                "[r50_cutlass_int4] X_s4.size(1) must equal d_in/2.");
+    TORCH_CHECK(W_low.size(0) == d_out && W_low.size(1) == d_in / 2,
+                "[r50_cutlass_int4] W_low shape must be (d_out, d_in/2).");
+    TORCH_CHECK(Y_total.size(0) == T && Y_total.size(1) == d_out,
+                "[r50_cutlass_int4] Y_total shape must be (T, d_out).");
+    TORCH_CHECK(X_s4.stride(1) == 1 && W_low.stride(1) == 1,
+                "[r50_cutlass_int4] inner-dim stride must be 1.");
+
+    // Alignment: CUTLASS int4 GEMM needs 32-element (128-bit) alignment
+    // on both operands, i.e. d_in % 32 == 0. Also guard the tile size
+    // `ThreadblockShape<128,128,128>` assumption (M=d_out, N=T, K=d_in
+    // must each be divisible by the corresponding tile dim).
+    TORCH_CHECK(d_in % 128 == 0 && d_out % 128 == 0 && T % 128 == 0,
+                "[r50_cutlass_int4] M/N/K must each be divisible by 128 "
+                "(d_out=", d_out, ", T=", T, ", d_in=", d_in,
+                "). Stage B smoke currently requires tile-aligned shapes; "
+                "ragged-T handling lands with Stage A1.");
+
+    using Int4Gemm     = hkust_r50::cutlass_int4::Int4Gemm;
+    using ElementY_cuT = hkust_r50::cutlass_int4::ElementY;  // int32 in smoke
+
+    // -----------------------------------------------------------------
+    // Allocate int32 workspace for C (MxN = d_out x T, ColumnMajor).
+    // ColumnMajor (d_out, T) is physically contiguous in d_out = stride(1)
+    // of a row-major (T, d_out). We use a plain 1D int32 tensor and let
+    // TensorRef derive the layout from `ldc = d_out`.
+    // -----------------------------------------------------------------
+    auto workspace_int32 = torch::empty(
+        {T, d_out},
+        torch::TensorOptions().dtype(torch::kInt32).device(Y_total.device())
+    );
+
+    // Build TensorRefs. CUTLASS expects raw pointers in *element* units.
+    // For int4b_t the physical pointer is int8, cast via reinterpret.
+    auto* w_ptr = reinterpret_cast<cutlass::int4b_t*>(
+        W_low.data_ptr<int8_t>());
+    auto* x_ptr = reinterpret_cast<cutlass::int4b_t*>(
+        X_s4.data_ptr<int8_t>());
+    auto* c_ptr = workspace_int32.data_ptr<int32_t>();
+
+    // LayoutA (RowMajor, M=d_out, K=d_in): leading dim = K = d_in.
+    // LayoutB (ColumnMajor, K=d_in, N=T):   leading dim = K = d_in.
+    //   (X_s4 is torch row-major (T, d_in) with stride(0) = d_in;
+    //    reinterpreted as column-major (d_in, T) the leading dim
+    //    is still d_in — exactly X_s4.stride(0).)
+    // LayoutC (ColumnMajor, M=d_out, N=T):  leading dim = M = d_out.
+    //   (workspace_int32 is torch row-major (T, d_out) with stride(0)
+    //    = d_out; as column-major (d_out, T) the leading dim is d_out.)
+
+    cutlass::gemm::GemmCoord problem =
+        hkust_r50::cutlass_int4::make_problem_size(d_out, d_in, T);
+
+    typename Int4Gemm::Arguments args{
+        problem,
+        /*ref_A=*/ {w_ptr, typename Int4Gemm::LayoutA{d_in}},
+        /*ref_B=*/ {x_ptr, typename Int4Gemm::LayoutB{d_in}},
+        /*ref_C=*/ {c_ptr, typename Int4Gemm::LayoutC{d_out}},
+        /*ref_D=*/ {c_ptr, typename Int4Gemm::LayoutC{d_out}},
+        /*epilogue=*/ {/*alpha=*/1, /*beta=*/0}
+    };
+
+    Int4Gemm gemm_op;
+    cutlass::Status status = gemm_op.can_implement(args);
+    TORCH_CHECK(status == cutlass::Status::kSuccess,
+                "[r50_cutlass_int4] Int4Gemm.can_implement failed: ",
+                cutlass::cutlassGetStatusString(status),
+                " (problem M=", d_out, " N=", T, " K=", d_in, ").");
+
+    status = gemm_op.initialize(args);
+    TORCH_CHECK(status == cutlass::Status::kSuccess,
+                "[r50_cutlass_int4] Int4Gemm.initialize failed: ",
+                cutlass::cutlassGetStatusString(status));
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    status = gemm_op(stream);
+    TORCH_CHECK(status == cutlass::Status::kSuccess,
+                "[r50_cutlass_int4] Int4Gemm.run failed: ",
+                cutlass::cutlassGetStatusString(status));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+    // Stage B contract: Y_total is NOT trusted; zero it for safety.
+    // A1 will replace this with the dequant kernel that reads
+    // workspace_int32 and writes a correct fp16 Y_total.
+    Y_total.zero_();
+
+    // `workspace_int32` drops out of scope here; torch's caching
+    // allocator will recycle the buffer on the next call.
 }
 
 }  // namespace fused_dense_sparse_mma_int4_cutlass
