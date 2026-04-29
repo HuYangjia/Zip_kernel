@@ -3887,6 +3887,100 @@ or bench shapes from small to large (not large to small).
   - 2048x4096x128: 47.5 -> 30.71us = 1.55x
   - 4096x2048x128: 26.7 -> 21.60us = 1.24x
 
+---
+
+## Round 54 — Stage B.1: vectorized writeback (__half2 packed stores) (2026-04-29)
+
+### Motivation
+After r50/r51/r52c the dense branch achieves 1.24-1.58x vs legacy on
+large shapes; the remaining per-iteration hot path costs are the MMA
+inner loop itself and the fp16 writeback epilogue. The writeback loop
+issued one 16-bit global store per output element; pairing adjacent
+columns into 32-bit `__half2` stores halves the global-store
+instruction count for aligned shapes.
+
+### Implementation
+In the writeback epilogue of `fused_dense_sparse_mma_int4_kernel`:
+- Observation: inside a warp's SMMA output, registers `r=0/r=1` cover
+  two adjacent columns of the same row; same for `r=2/r=3`.  With Y
+  being `(d_out, T)` row-major and `stride_y_n == 1`, these pairs are
+  contiguous 32-bit spans in global memory.
+- Pair them into `__floats2half2_rn(v0, v1)` and issue
+  `*reinterpret_cast<__half2*>(&Y[y_off]) = packed` whenever the pair
+  is 4-byte aligned and fully in-bounds; fall back to scalar fp16
+  stores at tile / row edges.
+
+### Parity landmine: CUDA misaligned-address trap
+
+First attempt only guarded `n_global0 + 1 < T && stride_y_n == 1`.
+Result: PASS on all aligned shapes, but CUDA misaligned-address
+trap on unaligned shapes like `257×128×65` and `127×128×127`.
+
+Root causes (2 conditions both required for `__half2` 4-byte alignment):
+1. `n_global0 & 1 == 0`  (column base must be even)
+2. `stride_y_m & 1 == 0` (row stride must be even; when `T` is odd,
+   `stride_y_m = T` is odd, so odd rows start at odd fp16 offsets and
+   flip the parity of `y_off`)
+
+Fix (final `pair_ok` guard):
+```
+pair_ok = (n_local1 < kBn) && (n_global0 + 1 < T)
+        && (stride_y_n == 1)
+        && ((n_global0 & 1) == 0)
+        && ((stride_y_m & 1) == 0);
+```
+
+### Performance (A100, in-session isolated bench, 5 rounds per shape)
+
+| shape            | ng | r54 (us) | r52c (us) | delta  |
+| ---------------- | -- | -------- | --------- | ------ |
+| 128x128x128      |  1 |   6.15   |   6.00    | 0.97x (noise) |
+| 256x256x128      |  2 |   6.12   |   6.00    | 0.98x (noise) |
+| 512x512x128      |  4 |   7.14   |   7.00    | 0.98x (noise) |
+| 1024x1024x128    |  8 |  11.49   |  10.98    | 0.96x (noise) |
+| 2048x2048x128    | 16 |  16.33   |  17.26    | 1.06x  |
+| 4096x4096x128    | 32 |  38.49   |  39.38    | 1.02x  |
+| 1024x4096x128    | 32 |  27.53   |  30.16    | **1.10x**  |
+| 4096x1024x128    |  8 |  14.37   |  15.99    | **1.11x**  |
+| 2048x4096x128    | 32 |  27.90   |  30.71    | **1.10x**  |
+| 4096x2048x128    | 16 |  19.92   |  21.60    | **1.08x**  |
+
+Parity: PASS on `128/256/1024/2048/4096` (aligned) AND on
+`257×128×65`, `127×128×127`, `513×256×33` (unaligned).
+
+### Lessons / landmines
+- `__half2*` stores on fp16 arrays require the BYTE address to be
+  4-byte aligned, which in fp16-units means `(byte_off / 2)` must be
+  even. For `Y[m*stride_m + n*stride_n]` with `stride_n==1`, this
+  requires BOTH `n_start` even AND `stride_m` even.  Missing either
+  condition triggers a CUDA misaligned-address trap at runtime (the
+  kernel compiles fine since ptxas does not prove the alignment).
+- The packed-half2 path does not change bit-exactness because
+  `__floats2half2_rn(v0,v1)` produces the same RN-rounded fp16 as two
+  separate `__float2half(v)` calls.
+
+### Cumulative speedup vs original legacy (r50+r51+r52c+r54 combined)
+
+| shape            | orig (us) | r54 (us) | speedup |
+| ---------------- | --------- | -------- | ------- |
+| 2048x2048x128    |   27.2    |  16.33   | **1.66x** |
+| 4096x4096x128    |   49.5    |  38.49   | **1.29x** |
+| 1024x4096x128    |   37.6    |  27.53   | **1.37x** |
+| 2048x4096x128    |   47.5    |  27.90   | **1.70x** |
+| 4096x2048x128    |   26.7    |  19.92   | **1.34x** |
+| 4096x1024x128    |   16.0    |  14.37   | **1.11x** |
+
+### Status
+- r54: MERGED to main (commits de8aa33 → 9c35550).
+- Next candidates (effort × impact):
+  1. Stage B.2 — 128-bit vectorized writeback (`uint4` packs 8 fp16s).
+     Would need `kNsubPerCta >= 2` and all 8 neighbor-columns aligned,
+     tighter gate; bigger win on `d_out×T >> 4096×128` shapes.
+  2. Stage C — ldmatrix in MMA inner loop (instruction-count reduction
+     in the hot path).
+  3. Stage D — 3-stage cp.async pipeline (more aggressive latency hiding
+     for large ng; needs extra smem buffer).
+
 
 
 
