@@ -4159,12 +4159,83 @@ Relative error ≤ 3.5e-4, well below the 5e-3 tolerance.
 2. **T=1 / T=32 (decode / short prefill)**: grid = 64 CTAs, kBm=64
    pick yields 0.17 wave. Same Split-K fix applies but with a
    different parallelisation axis (M dim also needs splitting).
-3. **Roofline gap for 4096×4096×128** (34% eff vs 90%+ for cuBLAS):
+  3. **Roofline gap for 4096×4096×128** (34% eff vs 90%+ for cuBLAS):
    we are running one wave perfectly but the inner loop still
    leaves ~2x on the table. Likely sources: ldmatrix for A loads
    (Stage C in the roadmap), finer-grained cp.async pipeline, or
    fusing the dequant into the epilogue registers instead of the
    writeback FP computation.
+
+---
+
+## Round 57 — Stage F: smem bank-conflict fix for s_scale_u4/s_zero_u4 (2026-04-29)
+
+### Motivation
+Theoretical analysis of the `s_scale_u4[kBm][kGrpBuf]` shared-memory
+layout revealed a **4-way bank conflict** on every scale/zero read in
+the MMA inner loop.
+
+Layout: `__half s_scale_u4[128][32]` → row stride = 64 bytes = 16
+4-byte bank slots. With 32 banks total, rows 0 and 2 map to the same
+bank set (period = 32/16 = 2), causing a 4-way conflict when 8 rows
+are accessed simultaneously by a warp.
+
+### Fix
+Pad each row by 1 fp16 (2 bytes):
+```cpp
+static constexpr int kScalePad = kUseGroupCache ? 1 : 0;
+__shared__ __half s_scale_u4[kBm][kUseGroupCache ? kGrpBuf + kScalePad : 1];
+__shared__ __half s_zero_u4 [kBm][kUseGroupCache ? kGrpBuf + kScalePad : 1];
+```
+New row stride = 33 fp16 = 66 bytes. `66/4 = 16.5` → not a multiple
+of 32 → consecutive rows land on consecutive banks → **no conflict**.
+
+smem overhead: +1 fp16 × kBm × 2 arrays = +512 bytes (negligible).
+
+### Results
+
+Parity: PASS on all shapes including `4096×4096×1`, `4096×4096×32`,
+`4096×4096×128`, `4096×14336×128`, `14336×4096×128`.
+
+Full-shape bench (r57 vs r56):
+
+| shape            | ng  | r57 (us) | r56 (us) | delta  |
+| ---------------- | --- | -------- | -------- | ------ |
+| 1024x1024x128    |   8 |  12.26   |  12.37   | +0.9%  |
+| 2048x2048x128    |  16 |  16.35   |  16.43   | +0.5%  |
+| 4096x4096x128    |  32 |  40.14   |  40.18   | +0.1%  |
+| 1024x4096x128    |  32 |  27.63   |  27.74   | +0.4%  |
+| 4096x1024x128    |   8 |  14.32   |  14.43   | +0.8%  |
+| 2048x4096x128    |  32 |  27.95   |  28.11   | +0.6%  |
+| 4096x2048x128    |  16 |  20.04   |  20.03   |  0%    |
+| 4096x4096x32     |  32 |  34.66   |  35.00   | +1.0%  |
+| **4096x4096x1**  |  32 |  21.31   |  22.14   | **+3.9%** |
+| 4096x14336x128   | 112 | 140.10   | 140.13   |  0%    |
+| 14336x4096x128   |  32 |  69.40   |  69.65   | +0.4%  |
+
+The decode shape (T=1) benefits most (+3.9%) because it uses the
+group cache (n_groups=32 ≤ kGrpBuf=32) and the scale/zero reads
+are a larger fraction of total work at T=1.
+
+### Status
+- r57: MERGED to main (commit 4a1039c).
+- Cumulative speedup vs original legacy (r50+r51+r52c+r54+r56+r57):
+  - 2048x2048x128: 27.2 → 16.35 us = **1.66x**
+  - 4096x4096x128: 49.5 → 40.14 us = **1.23x**
+  - 4096x4096x1:   ~50  → 21.31 us = **~2.35x** (decode)
+  - 4096x14336x128: N/A → 140.10 us vs BF16 151.11 = **1.08x**
+  - 14336x4096x128: N/A → 69.40 us vs BF16 150.19 = **2.16x**
+
+### Next candidates
+1. **Split-K on n_groups dimension** — the single largest remaining
+   gap. Tall-thin shapes (1024x4096, 2048x4096 at T=128) have only
+   0.25 wave. Splitting ng into 2-4 partial CTAs + reduce kernel
+   would bring them to 0.5-1.0 wave. Est. 2-3 days.
+2. **ldmatrix for A loads** (Stage C) — replace 4 LDS.32 per step
+   with 1 ldmatrix.x4. Reduces instruction count in the hot path.
+   Risk: INT4 MMA register layout mapping is non-trivial.
+3. **sW/sX bank-conflict audit** — the same analysis applied to
+   sW[2][kBm][32] and sX[2][kBn][32] may reveal additional conflicts.
 
 
 
