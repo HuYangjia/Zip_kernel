@@ -4655,3 +4655,161 @@ are deferred to a future round.
 - Next step pivot to Stage I.2 / Stage J (cheaper, smaller-scope wins).
 
 ---
+
+## Run 2026-04-29 19:10 (UTC+8): r61 Stage F — occupancy-driven gate
+
+### Motivation
+
+After r60 Stage I (Split-K) locked in 3 large-ng wins (+34-40 %) the
+full_bench_vs_bf16 sweep still reported median INT4 roof-efficiency at
+**32 %** with a long tail of 12-30 % on tall-thin / small shapes.
+
+Before investing in another MMA rewrite, a first-principles diagnosis
+was done (see F.0) to figure out whether the ceiling is compute, shared
+memory, or something else entirely.
+
+### F.0 — First-principles diagnosis
+
+Computed `flops_int4 / bytes_hbm` for every sweep shape: **all 11 shapes
+are memory-bound** (`t_bw_gemm > t_comp`, crossover AI ≈ 656 OP/B, our
+shapes sit at 116–453 OP/B).  Effective HBM BW utilisation is:
+
+```
+1024x1024x128 :  10 % of 1008 GB/s
+2048x2048x128 :  21 %
+4096x4096x128 :  31 %
+1024x4096x128 :  22 %
+4096x4096x32  :  27 %
+4096x4096x1   :  42 %
+4096x14336x128:  44 %
+14336x4096x128:  52 %
+```
+
+Then a **L2 reuse experiment** (rotate 1 vs 8 vs 32 distinct W tensors)
+showed BW differs by < 3 % across L2 pressure — ruling out "L2 caches
+our W" as the reason any shape reports > 40 %.  The kernel's in-flight
+HBM request rate is what caps BW, and that is governed by **occupancy**.
+
+### F.1 — Experimental validation of the "smem-caps-occupancy" hypothesis
+
+Added env-switch `HKUST_V9_FUSED_FORCE_CACHE` (values `0` / `1` /
+unset) so we can A/B the group-cache path without rebuilding.  Then
+the new `tools/profile/bw_cache_experiment.py` sweep compared default
+vs force-off vs force-on on all 11 shapes.
+
+Delta HBM-BW (force-off vs default):
+
+| shape | t_def (us) | t_off (us) | off/def | BW_def | BW_off |
+|---|---:|---:|---:|---:|---:|
+| 1024×4096×128 | 18.40 | 14.77 | **1.25×** | 222 | **276** |
+| 2048×4096×128 | 26.42 | 22.42 | **1.18×** | 249 | **293** |
+| 4096×4096×1   | 20.96 | 18.23 | **1.15×** | 426 | **490** |
+| 4096×4096×32  | 34.51 | 32.54 | **1.06×** | 277 | **294** |
+| 14336×4096×128| 68.93 | 65.84 | **1.05×** | 529 | **554** |
+| 4096×1024×128 | 14.19 | 15.60 | 0.91× | 258 | 235 |
+| (rest)        | ≈same | ≈same | 1.00× | — | — |
+
+Parity: `max|Y_def - Y_off| / max|Y_def| = 0` for all shapes (both code
+paths produce bit-exact results — the cache path is purely a reuse
+optimisation, not a precision one).
+
+→ **Hypothesis confirmed**: `s_scale_u4 + s_zero_u4` ≈ 17 KB / CTA pin
+the kernel at ~2 CTAs/SM; disabling them lifts occupancy and therefore
+HBM BW for large-ng shapes.  But small-ng (≤ 8) shapes lose from the
+extra HBM trips.
+
+### F.2 — Tighten the `use_group_cache` gate (PERMANENT CHANGE)
+
+Replaced the old (ng ≤ kGrpBuf || (ng ≤ 64 && n_cta_m ≤ 64)) gate with
+the **empirically-tight** rule:
+
+```cpp
+use_group_cache = (n_groups <= 8) ||
+                  (n_groups <= kGrpBuf && T <= 32);
+```
+
+The env-switch remains as a debug hook.
+
+Before/after (r60 vs r61 Stage F, median of 15 windows × 200 iters):
+
+| shape | r60 speed | r61 speed | r60 eff | **r61 eff** | Δ |
+|---|---:|---:|---:|---:|---:|
+| 1024×1024×128 | 1.07× | 1.06× | 12% | 12% | — |
+| 2048×2048×128 | 0.82× | 0.80× | 25% | 24% | −1pp |
+| 4096×4096×128 | 0.90× | 0.81× | 37% | 33% | −4pp ⚠ |
+| **1024×4096×128** | 0.70× | **0.86×** | 26% | **32%** | **+6pp** ⭐ |
+| 4096×1024×128 | 0.73× | 0.72× | 30% | 30% | — |
+| **2048×4096×128** | 0.72× | **0.83×** | 29% | **34%** | **+5pp** ⭐ |
+| 4096×2048×128 | 0.85× | 0.86× | 37% | 37% | — |
+| 4096×4096×32  | 0.61× | 0.61× | 32% | 32% | — |
+| 4096×4096×1   | 0.81× | 0.81% | 50% | 50% | — |
+| 4096×14336×128| 1.78× | 1.78× | 52% | 52% | — |
+| **14336×4096×128** | 2.15× | **2.24×** | 61% | **63%** | **+2pp** ⭐ |
+
+Net: 3 shapes materially improved (+2..+6 pp), 1 shape regressed 4 pp
+in the bench report but the finer `probe4k` sweep (9 windows × 2500
+iters) resolved the 4096×4096×128 delta at **−0.9 %** — within noise.
+Median `INT4 eff` essentially unchanged (32.2 → 32.1) but the
+improvement mass lands exactly on the tall-thin LLM projection shapes
+we care about (Qwen3 q/kv/o and the gate_up-like 14336×4096).
+
+### F.3–F.5 — Searching for further occupancy headroom (negative result)
+
+1. **kBm probe** (`tools/profile/kbm_probe.py`): forcing kBm=64
+   regresses every large-ng shape 10–30 % (half sW helps occupancy but
+   halves MMA throughput per CTA).  The R44/R52 gate as-is is optimal.
+
+2. **Register analysis** (`cuobjdump --dump-resource-usage` on the r61
+   .cuda.o):
+
+   | template <kBn, cache, kBm, cpAsync, ldm> | REG | SHARED |
+   |---|---:|---:|
+   | <32, 0, 128, 1, 0> | **120** | 21184 |
+   | <32, 1, 128, 1, 0> | 117 | 37952 |
+   | <64, 0, 128, 1, 0> | **186** | 25472 |
+   | <64, 1, 128, 1, 0> | 206 | 43968 |
+
+   On SM89 (65 536 regs/SM), the kBn=64 kBm=128 variant we use for
+   ng ≥ 64 tops out at **2 CTAs/SM** (128 × 186 = 23 808 regs). Even
+   removing **all** shared memory would keep occupancy at 2 CTA/SM
+   because the register file is the binding constraint.
+
+3. **Accumulator footprint** is the direct root cause: every thread
+   holds `y_fp[kMsubPerWarp=2][kNsubPerCta=(kBn/8)][4] = 2 · kBn/8 · 4`
+   fp32 regs → 64 regs for kBn=64.  `d_acc` mirrors this. This is a
+   design invariant of the manual-MMA path — not reducible without a
+   tile-shape change.
+
+### Conclusion
+
+**Our manual-MMA kernel has hit its register ceiling.** Further eff
+gains on kBn=64 shapes require an MMA kernel with a different
+accumulator distribution (warp specialisation / split-K-in-regs) or
+an external library whose pipeline hides the HBM latency better at
+the same register budget.
+
+### Files touched
+- `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu`:
+  - new env-switch block (F.1)
+  - tightened `use_group_cache` gate (F.2)
+- `tools/profile/bw_cache_experiment.py` (F.1 probe, new)
+- `tools/profile/kbm_probe.py` (F.3 probe, new)
+
+### Commits
+- `52a898b` r61 F.1: add HKUST_V9_FUSED_FORCE_CACHE env switch
+- `6c14349` r61 F.1: bw_cache_experiment probe script
+- `8b7df32` r61 F.2: tighten use_group_cache gate
+- `8fc2b0d` r61 F.3: kbm probe script
+
+### Archive
+- `logs/r61_stage_f/bench_report.md`
+- `logs/r61_stage_f/bench_raw.json`
+- `logs/r61_stage_f/bench.log`
+
+### Status
+- r61 Stage F.2: **LANDED** (+2..+6 pp INT4 eff on 3 LLM-projection shapes, 1 noise-level regression).
+- r61 Stage F.3-F.5: **DIAGNOSTIC ONLY** (register ceiling confirmed; no code change).
+- Next pivot: Stage L3.6 (CUTLASS 2.11 INT4 Gemm full instantiation) to
+  escape the manual-MMA register ceiling.
+
+---
