@@ -48,7 +48,22 @@ using ElementCompute = float;
 
 /// Final user-visible output element — `half_t` for compatibility with
 /// the torch FP16 caller path.
+///
+/// NOTE: in `HKUST_R50_CUTLASS_SMOKE_ONLY` mode the `Int4Gemm` type in
+/// `int4_mma_builder.hpp` substitutes the canonical CUTLASS
+/// `LinearCombinationClamp` epilogue, and CUTLASS 2.11's SM80 INT4
+/// default epilogue path requires `ElementOutput ∈ {int4b_t, uint4b_t,
+/// int8, uint8, int32_t}` (see
+/// `cutlass/epilogue/threadblock/default_epilogue_tensor_op.h:244`).
+/// `half_t` is only legal once the custom `LinearCombinationDequantizeW4A4`
+/// visitor (L3.6) is wired in. To keep the smoke TU buildable while that
+/// visitor is still a stub, the smoke branch downgrades `ElementY` to
+/// `int32_t`. The production branch keeps `half_t`.
+#if defined(HKUST_R50_CUTLASS_SMOKE_ONLY)
+using ElementY = int32_t;
+#else
 using ElementY = cutlass::half_t;
+#endif
 
 /// Epilogue auxiliary element (scale_u4, zero_u4, scale_x all fp16).
 using ElementAux = cutlass::half_t;
@@ -112,7 +127,10 @@ using TensorRefScaleX  = cutlass::TensorRef<ElementAux,    cutlass::layout::Pack
 // the off-by-swap error described in layout_contract.md D.3.
 
 CUTLASS_HOST_DEVICE
-inline cutlass::gemm::GemmCoord make_problem_size(int d_out, int d_in, int T) {
+static cutlass::gemm::GemmCoord make_problem_size(int d_out, int d_in, int T) {
+    // `static` (over `inline`) avoids nvcc rejecting the combined
+    // `CUTLASS_HOST_DEVICE inline` (which already expands to an
+    // inline attribute internally) as `duplicate specifier`.
     return cutlass::gemm::GemmCoord{/*M=*/d_out, /*N=*/T, /*K=*/d_in};
 }
 

@@ -79,9 +79,15 @@ using ThreadblockSwizzle = cutlass::gemm::threadblock::GemmIdentityThreadblockSw
 
 #if defined(HKUST_R50_CUTLASS_SMOKE_ONLY)
   #include "cutlass/epilogue/thread/linear_combination_clamp.h"
+  // In smoke mode ElementY is downgraded to int32 (see
+  // int4_weight_layout.hpp for rationale). ElementsPerAccess is
+  // therefore 128/32 = 4, not 8 — hard-coding 8 would trigger
+  // DefaultIteratorsTensorOp assertion failures.
+  static constexpr int kEpaSmoke =
+      128 / cutlass::sizeof_bits<ElementY>::value;
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationClamp<
-      ElementY,                           // ElementOutput
-      kElementsPerAccessEpilogue,         // ElementsPerAccess = 8
+      ElementY,                           // ElementOutput (int32 in smoke)
+      kEpaSmoke,                          // ElementsPerAccess = 4 in smoke
       ElementAcc,                         // ElementAccumulator = int32
       ElementCompute                      // ElementCompute = float
   >;
