@@ -433,18 +433,19 @@ fused_dense_sparse_mma_int4_kernel(
     // DENSE BRANCH
     if constexpr (kUseGroupCache) {
         if (cache_sz) {
-            issue_sz_window_load(0);
+            // Stage I: start window at g_start (may be > 0 under Split-K).
+            issue_sz_window_load(g_start - (g_start % kGrpBuf));
         }
     }
     // Stage A2: use cp.async for W/X loads so that group g+1's HBM fetch
     // overlaps with group g's MMA computation (2-stage async pipeline).
     // sum_X is small (kBn ints) and stays on the synchronous path.
     if constexpr (kUseCpAsync) {
-        issue_w_dense_load_async(0, 0);
-        issue_x_load_async(0, 0);
-        issue_sum_X_load(0, 0);
+        issue_w_dense_load_async(g_start, 0);
+        issue_x_load_async(g_start, 0);
+        issue_sum_X_load(g_start, 0);
         cp_async_commit();
-        cp_async_wait_group<0>();   // wait for g=0 before first MMA
+        cp_async_wait_group<0>();   // wait for g=g_start before first MMA
         __syncthreads();
     } else {
         issue_w_dense_load(g_start, 0);
@@ -472,7 +473,9 @@ fused_dense_sparse_mma_int4_kernel(
         }
     }
 
-    int g_window_base = g_start;
+    // Stage I: window base must align to kGrpBuf boundary that contains g_start.
+    // (If kUseGroupCache is false, g_window_base is unused.)
+    int g_window_base = kUseGroupCache ? (g_start - (g_start % kGrpBuf)) : g_start;
     for (int g = g_start; g < g_end; ++g) {
         if constexpr (kUseGroupCache) {
             if (cache_sz && g != g_start && (g % kGrpBuf) == 0) {
