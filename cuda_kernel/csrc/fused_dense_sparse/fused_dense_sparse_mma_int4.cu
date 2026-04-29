@@ -56,7 +56,16 @@ constexpr int kMaxWindowedGroups = 64;
 //   Sparse branch requires BROW=128 for BSR block packing, so the opt-in
 //   is STRICTLY gated on hp_row_offsets having no sparse blocks; if any
 //   block is present we unconditionally use kBm=128.
-template <int kBn, bool kUseGroupCache, int kBm = BROW, bool kUseCpAsync = false>
+// Stage C (r61) — kUseLdmatrix: replace manual A/B smem loads with
+//   ldmatrix.sync.aligned.m8n8.x{4,2}.shared.b16 PTX instructions.
+//   Reduces instruction count on the MMA A/B load path (32 manual loads
+//   per ks-step → 2 ldmatrix instructions per ks-step), and allows HW to
+//   coalesce smem accesses more efficiently.  Without XOR swizzle the
+//   4-way bank conflict is not fully eliminated, but ldmatrix already
+//   reduces the effective conflict because the HW combines the 8 lane
+//   base addresses into a single wavefront request.
+template <int kBn, bool kUseGroupCache, int kBm = BROW, bool kUseCpAsync = false,
+          bool kUseLdmatrix = false>
 __global__ void
 // Stage D (REVERTED r55) — `__launch_bounds__(kBm, 3)` hint tried but
 // rejected: mixed result on sweep (2048x2048 +2%, 1024x1024 +4%,
@@ -346,39 +355,98 @@ fused_dense_sparse_mma_int4_kernel(
             #pragma unroll
             for (int im = 0; im < kMsubPerWarp; ++im) {
                 int msub_base = warp_id * 32 + im * 16;
-                int row0 = msub_base + (lane >> 2);
-                int row1 = row0 + 8;
-                int col_low  = kpb_base + (lane & 3) * 4;
-                int col_high = col_low + 16;
-                uint32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
-                if (row0 < kBm) {
-                    a0 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col_low]);
-                    a2 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col_high]);
+                if constexpr (kUseLdmatrix) {
+                    // Stage C.1a: use ldmatrix.x4 for A operand.
+                    //
+                    // MMA m16n8k64.s4 A operand layout (per warp):
+                    //   a0 = A[msub_base + 0..7,  ks*32..ks*32+15]  (tile 0)
+                    //   a1 = A[msub_base + 8..15, ks*32..ks*32+15]  (tile 1)
+                    //   a2 = A[msub_base + 0..7,  ks*32+16..ks*32+31] (tile 2)
+                    //   a3 = A[msub_base + 8..15, ks*32+16..ks*32+31] (tile 3)
+                    //
+                    // ldmatrix.x4 lane→tile mapping:
+                    //   lane in [ 0, 8):  tile 0, provides base for row msub_base+l
+                    //   lane in [ 8,16):  tile 1, provides base for row msub_base+8+l
+                    //   lane in [16,24):  tile 2, provides base for row msub_base+l   (col+16)
+                    //   lane in [24,32):  tile 3, provides base for row msub_base+8+l (col+16)
+                    //
+                    // The returned 4 registers per lane hold (tile0, tile1, tile2, tile3)
+                    // at position (lane % 8) row, (lane / 8) column-pair — matching MMA.
+                    int lane_in_tile = lane & 7;           // 0..7
+                    int tile_idx     = lane >> 3;          // 0..3
+                    int row_off      = (tile_idx & 1) * 8; // tiles 1,3 → row+8
+                    int col_off      = (tile_idx & 2) * 8; // tiles 2,3 → col+16
+                    int row = msub_base + row_off + lane_in_tile;
+                    int col = kpb_base + col_off;
+                    // Clamp OOB rows to a safe in-range address (row 0) and
+                    //  rely on issue_*_load's zero-fill for the semantic zero.
+                    if (row >= kBm) row = 0;
+                    uint32_t r0, r1, r2, r3;
+                    ldmatrix_x4_b16(&sW[buf][row][col], r0, r1, r2, r3);
+                    a_regs[im][0] = r0;
+                    a_regs[im][1] = r1;
+                    a_regs[im][2] = r2;
+                    a_regs[im][3] = r3;
+                } else {
+                    int row0 = msub_base + (lane >> 2);
+                    int row1 = row0 + 8;
+                    int col_low  = kpb_base + (lane & 3) * 4;
+                    int col_high = col_low + 16;
+                    uint32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                    if (row0 < kBm) {
+                        a0 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col_low]);
+                        a2 = *reinterpret_cast<const uint32_t*>(&sW[buf][row0][col_high]);
+                    }
+                    if (row1 < kBm) {
+                        a1 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col_low]);
+                        a3 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col_high]);
+                    }
+                    a_regs[im][0] = a0;
+                    a_regs[im][1] = a1;
+                    a_regs[im][2] = a2;
+                    a_regs[im][3] = a3;
                 }
-                if (row1 < kBm) {
-                    a1 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col_low]);
-                    a3 = *reinterpret_cast<const uint32_t*>(&sW[buf][row1][col_high]);
-                }
-                a_regs[im][0] = a0;
-                a_regs[im][1] = a1;
-                a_regs[im][2] = a2;
-                a_regs[im][3] = a3;
             }
 
             uint32_t b_regs[kNsubPerCta][2];
             #pragma unroll
             for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
-                int n_row_in_sub = lane >> 2;
-                int n_row = in_sub * 8 + n_row_in_sub;
-                int col_low  = kpb_base + (lane & 3) * 4;
-                int col_high = col_low + 16;
-                uint32_t b0 = 0, b1 = 0;
-                if (n_row < kBn) {
-                    b0 = *reinterpret_cast<const uint32_t*>(&sX[buf][n_row][col_low]);
-                    b1 = *reinterpret_cast<const uint32_t*>(&sX[buf][n_row][col_high]);
+                if constexpr (kUseLdmatrix) {
+                    // Stage C.1a: ldmatrix.x2 for B operand.
+                    //
+                    // MMA m16n8k64.s4 B operand layout (per warp):
+                    //   b0 = B[in_sub*8 + 0..7, ks*32..ks*32+15]  (tile 0)
+                    //   b1 = B[in_sub*8 + 0..7, ks*32+16..ks*32+31] (tile 1)
+                    //
+                    // ldmatrix.x2 lane→tile mapping:
+                    //   lane in [ 0, 8):  tile 0, base for row in_sub*8+l
+                    //   lane in [ 8,16):  tile 1, base for row in_sub*8+l (col+16)
+                    //   lane in [16,32):  unused — HW still issues reads; give
+                    //                     safe in-range address and discard.
+                    int lane_in_tile = lane & 7;
+                    int tile_idx     = (lane >> 3) & 1;    // 0 or 1 (ignore hi bit)
+                    int col_off      = tile_idx * 16;
+                    int n_row        = in_sub * 8 + lane_in_tile;
+                    int col          = kpb_base + col_off;
+                    // Clamp OOB rows (n_row >= kBn) and lane>=16 to row 0.
+                    if (n_row >= kBn || lane >= 16) n_row = 0;
+                    uint32_t r0, r1;
+                    ldmatrix_x2_b16(&sX[buf][n_row][col], r0, r1);
+                    b_regs[in_sub][0] = r0;
+                    b_regs[in_sub][1] = r1;
+                } else {
+                    int n_row_in_sub = lane >> 2;
+                    int n_row = in_sub * 8 + n_row_in_sub;
+                    int col_low  = kpb_base + (lane & 3) * 4;
+                    int col_high = col_low + 16;
+                    uint32_t b0 = 0, b1 = 0;
+                    if (n_row < kBn) {
+                        b0 = *reinterpret_cast<const uint32_t*>(&sX[buf][n_row][col_low]);
+                        b1 = *reinterpret_cast<const uint32_t*>(&sX[buf][n_row][col_high]);
+                    }
+                    b_regs[in_sub][0] = b0;
+                    b_regs[in_sub][1] = b1;
                 }
-                b_regs[in_sub][0] = b0;
-                b_regs[in_sub][1] = b1;
             }
 
             #pragma unroll
@@ -848,7 +916,40 @@ void launch(
         constexpr bool kUseCpAsync = decltype(kCpAsync_c)::value;
         dim3 block(kBmLocal, 1, 1);
         dim3 grid(ceil_div(d_out, kBmLocal), ceil_div(T, kBn), split_k);
-        fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync><<<grid, block, 0, stream>>>(
+        // Stage C.1a: ldmatrix opt-in via HKUST_V9_LDMATRIX env var.
+        //   0 (default) → legacy manual smem loads.
+        //   1           → ldmatrix.x4 for A, ldmatrix.x2 for B.
+        // Kept as a runtime switch during development so the parity/bench
+        // harness can A/B compare with zero code changes to callers.
+        static const int ldmatrix_env = []() {
+            const char* e = std::getenv("HKUST_V9_LDMATRIX");
+            return e ? std::atoi(e) : 0;
+        }();
+        if (ldmatrix_env) {
+            fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync, true><<<grid, block, 0, stream>>>(
+                reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
+                reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
+                reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
+                reinterpret_cast<const __half*>(zero_u4.data_ptr<at::Half>()),
+                sum_X.data_ptr<int>(),
+                reinterpret_cast<const __half*>(scale_x.data_ptr<at::Half>()),
+                reinterpret_cast<const uint8_t*>(W_high_blocks.data_ptr<int8_t>()),
+                hp_row_offsets.data_ptr<int>(),
+                hp_col_indices.data_ptr<int>(),
+                reinterpret_cast<__half*>(Y_total.data_ptr<at::Half>()),
+                (split_k > 1) ? Y_partial_ptr : nullptr,
+                d_out, d_in, T, n_groups, split_k,
+                W_low.stride(0), W_low.stride(1),
+                X_s4.stride(0), X_s4.stride(1),
+                scale_u4.stride(0), scale_u4.stride(1),
+                zero_u4.stride(0), zero_u4.stride(1),
+                sum_X.stride(0), sum_X.stride(1),
+                W_high_blocks.stride(0), W_high_blocks.stride(1), W_high_blocks.stride(2),
+                Y_total.stride(0), Y_total.stride(1)
+            );
+            return;
+        }
+        fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync, false><<<grid, block, 0, stream>>>(
             reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
             reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
             reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
