@@ -977,14 +977,17 @@ void launch(
     // the grid is already M-heavy and reduce-kernel overhead dominates.
     //
     // Empirical rules (dense-only: hp_nnz == 0):
-    //   R1: ng / n_cta_m >= 4  -> prefer sk=4
-    //   R2: ng / n_cta_m >= 2  -> prefer sk=2
-    //   else                   -> sk=1
+    //   R1: ng / n_cta_m_at_128 >= 4  -> prefer sk=4
+    //   R2: ng / n_cta_m_at_128 >= 2  -> prefer sk=2
+    //   else                          -> sk=1
+    // We use n_cta_m_at_128 (not n_cta_m) so that the ratio is
+    // independent of the kbm_pick R52 gate; otherwise 2048x4096 which
+    // flips to kbm=64 would lose its Split-K eligibility.
     // Additional guards:
     //   - n_groups must be divisible by split_k (for simplicity)
     //   - n_groups >= 16 (below this, K-loop too short to benefit)
     if (hp_nnz == 0 && n_groups >= 16) {
-        const int ratio_x2 = 2 * n_groups / n_cta_m;  // integer floor
+        const int ratio_x2 = 2 * n_groups / n_cta_m_at_128;  // integer floor
         if (ratio_x2 >= 8 && n_groups % 4 == 0) {
             split_k = 4;
         } else if (ratio_x2 >= 4 && n_groups % 2 == 0) {
