@@ -37,7 +37,7 @@ constexpr int kMaxWindowedGroups = 64;
 //   Sparse branch requires BROW=128 for BSR block packing, so the opt-in
 //   is STRICTLY gated on hp_row_offsets having no sparse blocks; if any
 //   block is present we unconditionally use kBm=128.
-template <int kBn, bool kUseGroupCache, int kBm = BROW>
+template <int kBn, bool kUseGroupCache, int kBm = BROW, bool kUseCpAsync = false>
 __global__ void fused_dense_sparse_mma_int4_kernel(
     const uint8_t* __restrict__ W_low,
     const uint8_t* __restrict__ X,
@@ -354,12 +354,19 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
     // Stage A2: use cp.async for W/X loads so that group g+1's HBM fetch
     // overlaps with group g's MMA computation (2-stage async pipeline).
     // sum_X is small (kBn ints) and stays on the synchronous path.
-    issue_w_dense_load_async(0, 0);
-    issue_x_load_async(0, 0);
-    issue_sum_X_load(0, 0);
-    cp_async_commit();
-    cp_async_wait_group<0>();   // wait for g=0 before first MMA
-    __syncthreads();
+    if constexpr (kUseCpAsync) {
+        issue_w_dense_load_async(0, 0);
+        issue_x_load_async(0, 0);
+        issue_sum_X_load(0, 0);
+        cp_async_commit();
+        cp_async_wait_group<0>();   // wait for g=0 before first MMA
+        __syncthreads();
+    } else {
+        issue_w_dense_load(0, 0);
+        issue_x_load(0, 0);
+        issue_sum_X_load(0, 0);
+        __syncthreads();
+    }
 
     // Round 23: pre-convert s_scale_x[n_local] (fp16 -> fp32) once per CTA.
     //   Invariant across both DENSE and SPARSE passes, so compute once
@@ -392,12 +399,18 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
 
         const int buf = g & 1;
         if (g + 1 < n_groups) {
-            // Stage A2: issue g+1 loads asynchronously so they overlap
-            // with the MMA computation for group g below.
-            issue_w_dense_load_async(g + 1, buf ^ 1);
-            issue_x_load_async(g + 1, buf ^ 1);
-            issue_sum_X_load(g + 1, buf ^ 1);   // sum_X stays sync (small)
-            cp_async_commit();
+            if constexpr (kUseCpAsync) {
+                // Stage A2: issue g+1 loads asynchronously so they overlap
+                // with the MMA computation for group g below.
+                issue_w_dense_load_async(g + 1, buf ^ 1);
+                issue_x_load_async(g + 1, buf ^ 1);
+                issue_sum_X_load(g + 1, buf ^ 1);   // sum_X stays sync (small)
+                cp_async_commit();
+            } else {
+                issue_w_dense_load(g + 1, buf ^ 1);
+                issue_x_load(g + 1, buf ^ 1);
+                issue_sum_X_load(g + 1, buf ^ 1);
+            }
         }
 
         const int g_cache = cache_sz ? (g - g_window_base) : g;
@@ -463,8 +476,10 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
 
         // Stage A2: wait for the g+1 cp.async loads (issued above) to
         // complete before the next iteration uses buf^1.
-        if (g + 1 < n_groups) {
-            cp_async_wait_group<0>();
+        if constexpr (kUseCpAsync) {
+            if (g + 1 < n_groups) {
+                cp_async_wait_group<0>();
+            }
         }
         __syncthreads();
     }
@@ -673,13 +688,14 @@ void launch(
         (n_groups <= kGrpBuf) ||
         (n_groups <= kMaxWindowedGroups && n_cta_m <= 64);
 
-    auto do_launch = [&](auto kBn_c, auto kCache_c, auto kBm_c) {
+    auto do_launch = [&](auto kBn_c, auto kCache_c, auto kBm_c, auto kCpAsync_c) {
         constexpr int kBn = decltype(kBn_c)::value;
         constexpr bool kUseGroupCache = decltype(kCache_c)::value;
         constexpr int kBmLocal = decltype(kBm_c)::value;
+        constexpr bool kUseCpAsync = decltype(kCpAsync_c)::value;
         dim3 block(kBmLocal, 1, 1);
         dim3 grid(ceil_div(d_out, kBmLocal), ceil_div(T, kBn), 1);
-        fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal><<<grid, block, 0, stream>>>(
+        fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync><<<grid, block, 0, stream>>>(
             reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
             reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
             reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
@@ -753,9 +769,22 @@ void launch(
             else if (env_n[0] == '8' && env_n[1] == '\0') kbn_pick = 8;
         }
     }
+    // Stage A2 dispatcher: use cp.async when n_groups >= 16 (large-K shapes
+    // where HBM load latency dominates and overlap benefit > overhead).
+    // For n_groups <= 8 the synchronous path is faster (cp.async overhead
+    // exceeds the latency hiding benefit for short K-loops).
+    const bool use_cp_async = (n_groups >= 16);
+
     auto launch_for_kbn = [&](auto kBn_c, auto kBm_c) {
-        if (use_group_cache) do_launch(kBn_c, std::true_type{},  kBm_c);
-        else                 do_launch(kBn_c, std::false_type{}, kBm_c);
+        auto cp_true  = std::true_type{};
+        auto cp_false = std::false_type{};
+        if (use_group_cache) {
+            if (use_cp_async) do_launch(kBn_c, std::true_type{},  kBm_c, cp_true);
+            else              do_launch(kBn_c, std::true_type{},  kBm_c, cp_false);
+        } else {
+            if (use_cp_async) do_launch(kBn_c, std::false_type{}, kBm_c, cp_true);
+            else              do_launch(kBn_c, std::false_type{}, kBm_c, cp_false);
+        }
     };
     if (kbm_pick == 128) {
         auto kbm_c = std::integral_constant<int, 128>{};
