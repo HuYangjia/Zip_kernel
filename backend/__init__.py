@@ -28,22 +28,76 @@ Isolation guarantee
 
 from __future__ import annotations
 
-from .dispatcher import (
-    v9_linear_fakequant,
-    v9_linear_forward,
-    v9_linear_forward_decode,
-    v9_linear_forward_prefill,
+# R50 L4: Allow importing pure-python sub-modules
+# (``kernel.backend.weight_loader``) from triton-less hosts (Mac
+# dev boxes). The eager dispatcher/graph_cache imports below would
+# otherwise explode with ``ModuleNotFoundError: triton`` at import
+# time. We soft-fail the triton-dependent surface exactly like
+# ``kernel.cuda_kernel.__init__`` does for the JIT build.
+
+try:
+    from .dispatcher import (
+        v9_linear_fakequant,
+        v9_linear_forward,
+        v9_linear_forward_decode,
+        v9_linear_forward_prefill,
+    )
+    from .graph_cache import (
+        clear_cuda_graph_cache,
+        cuda_graph_cache_stats,
+        get_cuda_graph_policy,
+        prewarm_cuda_graph_cache,
+        set_cuda_graph_policy,
+        v9_linear_forward_cuda_graph,
+    )
+    from .policy import get_backend_status, set_backend_policy
+    from .registry import BackendKernel
+
+    _TRITON_BACKEND_AVAILABLE = True
+    _TRITON_BACKEND_IMPORT_ERROR: Exception | None = None
+except ModuleNotFoundError as _exc:  # pragma: no cover - triton-less hosts only
+    import warnings
+
+    _TRITON_BACKEND_AVAILABLE = False
+    _TRITON_BACKEND_IMPORT_ERROR = _exc
+
+    # Provide placeholder names so ``from kernel.backend import X`` fails
+    # only at use-site, not at import-time, for triton-dependent symbols.
+    def _missing_triton(*_a, **_k):  # pragma: no cover - trivial
+        raise RuntimeError(
+            "kernel.backend triton-dependent path is unavailable on this "
+            f"host ({type(_TRITON_BACKEND_IMPORT_ERROR).__name__}: "
+            f"{_TRITON_BACKEND_IMPORT_ERROR}). Pure-python helpers under "
+            "kernel.backend.weight_loader remain importable."
+        )
+
+    v9_linear_forward = _missing_triton  # type: ignore[assignment]
+    v9_linear_forward_decode = _missing_triton  # type: ignore[assignment]
+    v9_linear_forward_prefill = _missing_triton  # type: ignore[assignment]
+    v9_linear_fakequant = _missing_triton  # type: ignore[assignment]
+    v9_linear_forward_cuda_graph = _missing_triton  # type: ignore[assignment]
+    set_cuda_graph_policy = _missing_triton  # type: ignore[assignment]
+    get_cuda_graph_policy = _missing_triton  # type: ignore[assignment]
+    prewarm_cuda_graph_cache = _missing_triton  # type: ignore[assignment]
+    cuda_graph_cache_stats = _missing_triton  # type: ignore[assignment]
+    clear_cuda_graph_cache = _missing_triton  # type: ignore[assignment]
+    set_backend_policy = _missing_triton  # type: ignore[assignment]
+    get_backend_status = _missing_triton  # type: ignore[assignment]
+    BackendKernel = None  # type: ignore[assignment]
+
+    warnings.warn(
+        "kernel.backend triton-dependent surface disabled "
+        f"({type(_exc).__name__}: {_exc}); pure-python helpers "
+        "(weight_loader, CutlassV9Tensors) remain importable.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
+from .weight_loader import (
+    CutlassPackValidationError,
+    CutlassV9Tensors,
+    pack_v9_weights_for_cutlass,
 )
-from .graph_cache import (
-    clear_cuda_graph_cache,
-    cuda_graph_cache_stats,
-    get_cuda_graph_policy,
-    prewarm_cuda_graph_cache,
-    set_cuda_graph_policy,
-    v9_linear_forward_cuda_graph,
-)
-from .policy import get_backend_status, set_backend_policy
-from .registry import BackendKernel
 
 __all__ = [
     "v9_linear_forward",
@@ -60,4 +114,8 @@ __all__ = [
     "prewarm_cuda_graph_cache",
     "cuda_graph_cache_stats",
     "clear_cuda_graph_cache",
+    # R50 L4.1 — CUTLASS INT4 weight-loader adapter (see weight_loader.py)
+    "pack_v9_weights_for_cutlass",
+    "CutlassV9Tensors",
+    "CutlassPackValidationError",
 ]
