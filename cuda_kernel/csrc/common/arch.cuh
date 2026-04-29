@@ -86,6 +86,21 @@ __device__ __forceinline__ void cp_async_cg_16(
     );
 }
 
+// Issue one 4-byte cp.async from global to shared.
+// Requires only 4-byte alignment (vs 16-byte for cp_async_cg_16).
+// Use when the destination address is not 16-byte aligned (e.g. when
+// smem rows are padded to a non-16-byte-multiple stride for bank-conflict
+// avoidance).
+__device__ __forceinline__ void cp_async_ca_4(
+    void* dst_shmem, const void* src_gmem
+) {
+    uint32_t dst_u32 = shmem_ptr_to_uint32(dst_shmem);
+    asm volatile(
+        "cp.async.ca.shared.global [%0], [%1], 4;\n"
+        :: "r"(dst_u32), "l"(src_gmem)
+    );
+}
+
 __device__ __forceinline__ void cp_async_commit() {
     asm volatile("cp.async.commit_group;\n" ::);
 }
