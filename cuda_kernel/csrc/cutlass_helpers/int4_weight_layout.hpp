@@ -21,6 +21,7 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/numeric_types.h"
 #include "cutlass/layout/matrix.h"
+#include "cutlass/layout/vector.h"   // PackedVectorLayout (scale_x / sum_X)
 #include "cutlass/tensor_ref.h"
 #include "cutlass/gemm/gemm.h"
 
