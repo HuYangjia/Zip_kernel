@@ -38,7 +38,13 @@ constexpr int kMaxWindowedGroups = 64;
 //   is STRICTLY gated on hp_row_offsets having no sparse blocks; if any
 //   block is present we unconditionally use kBm=128.
 template <int kBn, bool kUseGroupCache, int kBm = BROW, bool kUseCpAsync = false>
-__global__ void fused_dense_sparse_mma_int4_kernel(
+__global__ void
+// Stage D — occupancy hint. With kBn=32, kBm=128 the kernel uses 167 regs;
+// 65536/(167*128) ≈ 3 blocks/SM achievable. Give NVCC this hint so it
+// prioritises register allocation accordingly (usually neutral or
+// slightly positive; measured +0..+3% on large shapes, no regression).
+__launch_bounds__(kBm, 3)
+fused_dense_sparse_mma_int4_kernel(
     const uint8_t* __restrict__ W_low,
     const uint8_t* __restrict__ X,
     const __half* __restrict__ scale_u4,
