@@ -942,7 +942,8 @@ void launch(
     // Condition: kbn_pick==8, hp_nnz==0 (dense only), n_groups>=8
     //   (enough to split into sk=4), and kbn=64 grid too small but
     //   kbn=64 × split_k >= 64 CTAs after splitting.
-    if (hp_nnz == 0 && kbn_pick == 8 && n_groups >= 8 && kbm_pick == 128) {
+    // Note: n_cta_m depends on kbm_pick (64 or 128) — both are OK here.
+    if (hp_nnz == 0 && kbn_pick == 8 && n_groups >= 8) {
         const int n_cta_mn_64 = n_cta_m * ceil_div(T, 64);
         if (n_cta_mn_64 < 64) {
             // How many splits needed to reach 64 CTAs at kbn=64?
