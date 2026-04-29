@@ -148,8 +148,10 @@ void launch(
                 "[r50_cutlass_int4] X_s4.size(1) must equal d_in/2.");
     TORCH_CHECK(W_low.size(0) == d_out && W_low.size(1) == d_in / 2,
                 "[r50_cutlass_int4] W_low shape must be (d_out, d_in/2).");
-    TORCH_CHECK(Y_total.size(0) == T && Y_total.size(1) == d_out,
-                "[r50_cutlass_int4] Y_total shape must be (T, d_out).");
+    TORCH_CHECK(Y_total.size(0) == d_out && Y_total.size(1) == T,
+                "[r50_cutlass_int4] Y_total shape must be (d_out, T) "
+                "(torch row-major). Got (", Y_total.size(0), ",",
+                Y_total.size(1), "), expected (", d_out, ",", T, ").");
     TORCH_CHECK(X_s4.stride(1) == 1 && W_low.stride(1) == 1,
                 "[r50_cutlass_int4] inner-dim stride must be 1.");
 
@@ -167,13 +169,12 @@ void launch(
     using ElementY_cuT = hkust_r50::cutlass_int4::ElementY;  // int32 in smoke
 
     // -----------------------------------------------------------------
-    // Allocate int32 workspace for C (MxN = d_out x T, ColumnMajor).
-    // ColumnMajor (d_out, T) is physically contiguous in d_out = stride(1)
-    // of a row-major (T, d_out). We use a plain 1D int32 tensor and let
-    // TensorRef derive the layout from `ldc = d_out`.
+    // Allocate int32 workspace for C (MxN = d_out x T, RowMajor).
+    // Matches production Y_total layout: `torch.empty((d_out, T), ...)`
+    // is physically `(d_out, T) row-major`, so stride(M) = N = T.
     // -----------------------------------------------------------------
     auto workspace_int32 = torch::empty(
-        {T, d_out},
+        {d_out, T},
         torch::TensorOptions().dtype(torch::kInt32).device(Y_total.device())
     );
 
@@ -190,9 +191,9 @@ void launch(
     //   (X_s4 is torch row-major (T, d_in) with stride(0) = d_in;
     //    reinterpreted as column-major (d_in, T) the leading dim
     //    is still d_in — exactly X_s4.stride(0).)
-    // LayoutC (ColumnMajor, M=d_out, N=T):  leading dim = M = d_out.
-    //   (workspace_int32 is torch row-major (T, d_out) with stride(0)
-    //    = d_out; as column-major (d_out, T) the leading dim is d_out.)
+    // LayoutC (RowMajor, M=d_out, N=T):     leading dim = N = T.
+    //   (workspace_int32 is torch row-major (d_out, T) with stride(0)
+    //    = T; matches RowMajor leading dim exactly.)
 
     cutlass::gemm::GemmCoord problem =
         hkust_r50::cutlass_int4::make_problem_size(d_out, d_in, T);
@@ -201,8 +202,8 @@ void launch(
         problem,
         /*ref_A=*/ {w_ptr, typename Int4Gemm::LayoutA{d_in}},
         /*ref_B=*/ {x_ptr, typename Int4Gemm::LayoutB{d_in}},
-        /*ref_C=*/ {c_ptr, typename Int4Gemm::LayoutC{d_out}},
-        /*ref_D=*/ {c_ptr, typename Int4Gemm::LayoutC{d_out}},
+        /*ref_C=*/ {c_ptr, typename Int4Gemm::LayoutC{T}},
+        /*ref_D=*/ {c_ptr, typename Int4Gemm::LayoutC{T}},
         /*epilogue=*/ {/*alpha=*/1, /*beta=*/0}
     };
 

@@ -86,9 +86,19 @@ using LayoutW = cutlass::layout::RowMajor;
 using LayoutX = cutlass::layout::ColumnMajor;
 
 /// Output layout in CUTLASS's `(M, N)` = `(d_out, T)` view.
-/// Column-major `(d_out, T)` is physically identical to row-major
-/// `Y_half (T, d_out)` — see layout_contract.md D.6 (2026-04-29).
-using LayoutY = cutlass::layout::ColumnMajor;
+/// **RowMajor** — legacy `_prepare_fused_args` allocates `Y_total` as
+/// `torch.empty((d_out, T), dtype=half_t)` which is physically
+/// `(d_out, T) row-major`. Under CUTLASS LayoutRowMajor the element
+/// at `(m, n=t)` has offset `m * T + t`, exactly matching the torch
+/// row-major layout of `Y_total`.
+///
+/// This supersedes the 2026-04-29 §D.6 claim that `ColumnMajor(d_out,T)
+/// ≡ RowMajor(T,d_out)`; that equivalence is mathematically correct
+/// but the PRODUCTION `Y_total` is allocated as RowMajor(d_out, T) (see
+/// `kernel/cuda_kernel/ops.py::_prepare_fused_args`), so the contract
+/// must match production, not the hypothesized intermediate.  See
+/// `layout_contract.md` D.7 (2026-04-29, post-G-phase debug).
+using LayoutY = cutlass::layout::RowMajor;
 
 // ---------------------------------------------------------------------------
 // 3. Alignment constants (frozen by layout_contract.md §2.2)
