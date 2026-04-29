@@ -157,16 +157,24 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
 
     // Stage A2: cp.async variant of issue_w_dense_load.
     // Each thread issues 4 × 16-byte cp.async for its row.
-    // Out-of-bounds rows are zero-filled via the predicated variant.
+    // Out-of-bounds rows are zero-filled synchronously (cp.async with
+    // pred=false does NOT zero-fill; it leaves dst unchanged).
     auto issue_w_dense_load_async = [&](int g, int buf) {
         int m = m_tile + tid;
         uint8_t* dst = &sW[buf][tid][0];
-        const uint8_t* src = W_low + (int64_t)m * stride_w_m
-                                   + (int64_t)(g * bytes_per_group) * stride_w_k;
-        bool in_bounds = (m < d_out);
-        #pragma unroll
-        for (int i = 0; i < 4; ++i) {
-            cp_async_cg_16_pred(dst + i * 16, src + i * 16, in_bounds);
+        if (m < d_out) {
+            const uint8_t* src = W_low + (int64_t)m * stride_w_m
+                                       + (int64_t)(g * bytes_per_group) * stride_w_k;
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                cp_async_cg_16(dst + i * 16, src + i * 16);
+            }
+        } else {
+            // Synchronous zero-fill for out-of-bounds rows.
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                *reinterpret_cast<uint4*>(dst + i * 16) = make_uint4(0, 0, 0, 0);
+            }
         }
     };
 
@@ -189,20 +197,21 @@ __global__ void fused_dense_sparse_mma_int4_kernel(
     };
 
     // Stage A2: cp.async variant of issue_x_load.
+    // Out-of-bounds rows are zero-filled synchronously (same reason as W).
     auto issue_x_load_async = [&](int g_or_bc, int buf) {
         const int total_quads = kBn * 4;
         for (int q = tid; q < total_quads; q += kBm) {
             int row = q >> 2;
             int quad = q & 3;
             int n = n_tile + row;
-            bool in_bounds = (n < T);
-            int64_t off = (int64_t)n * stride_x_n
-                        + (int64_t)(g_or_bc * bytes_per_group + quad * 16) * stride_x_k;
-            cp_async_cg_16_pred(
-                &sX[buf][row][quad * 16],
-                X + off,
-                in_bounds
-            );
+            uint8_t* dst = &sX[buf][row][quad * 16];
+            if (n < T) {
+                int64_t off = (int64_t)n * stride_x_n
+                            + (int64_t)(g_or_bc * bytes_per_group + quad * 16) * stride_x_k;
+                cp_async_cg_16(dst, X + off);
+            } else {
+                *reinterpret_cast<uint4*>(dst) = make_uint4(0, 0, 0, 0);
+            }
         }
     };
 
