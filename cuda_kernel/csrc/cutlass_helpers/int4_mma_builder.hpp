@@ -25,6 +25,7 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/gemm.h"
 #include "cutlass/gemm/device/gemm.h"
+#include "cutlass/gemm/device/gemm_batched.h"
 #include "cutlass/gemm/threadblock/threadblock_swizzle.h"
 #include "cutlass/arch/arch.h"
 #include "cutlass/arch/mma.h"
@@ -124,6 +125,38 @@ using Int4Gemm = cutlass::gemm::device::Gemm<
     /*AlignmentA          */ kAlignmentW,
     /*AlignmentB          */ kAlignmentX,
     /*SplitKSerial        */ false
+>;
+
+// ---------------------------------------------------------------------------
+// 3b. Batched variant — drives Stage A1.5 (one launch for n_groups K-slices).
+// ---------------------------------------------------------------------------
+// GemmBatched uses the same underlying kernel-level GemmKernel but adds a
+// batch dimension to grid_z and per-batch A/B/C/D stride.  The kernel
+// source we rely on is CUTLASS 2.11's
+// `cutlass/gemm/device/gemm_batched.h` (default kernel built from
+// DefaultGemm<...,SplitKSerial=false>::GemmKernel::Mma + ::Epilogue).
+// Stage A1.5 dispatches one batch per activation group, with the group
+// dimension folded into grid.z so launch overhead is O(1) instead of
+// O(n_groups).
+
+using Int4GemmBatched = cutlass::gemm::device::GemmBatched<
+    /*ElementA            */ ElementW,
+    /*LayoutA             */ LayoutW,
+    /*ElementB            */ ElementX,
+    /*LayoutB             */ LayoutX,
+    /*ElementC            */ ElementY,
+    /*LayoutC             */ LayoutY,
+    /*ElementAccumulator_ */ ElementAcc,
+    /*OperatorClass_      */ OperatorClass,
+    /*ArchTag_            */ ArchTag,
+    /*ThreadblockShape_   */ ThreadblockShape,
+    /*WarpShape_          */ WarpShape,
+    /*InstructionShape_   */ InstructionShape,
+    /*EpilogueOutputOp_   */ EpilogueOutputOp,
+    /*ThreadblockSwizzle_ */ ThreadblockSwizzle,
+    /*Stages              */ kStages,
+    /*AlignmentA          */ kAlignmentW,
+    /*AlignmentB          */ kAlignmentX
 >;
 
 // ---------------------------------------------------------------------------

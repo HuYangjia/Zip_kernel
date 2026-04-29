@@ -185,11 +185,11 @@ void launch(
     TORCH_CHECK(scale_x.size(0) == T,
                 "[r50_cutlass_int4] scale_x shape must be (T,).");
 
-    using Int4Gemm = hkust_r50::cutlass_int4::Int4Gemm;
+    using Int4GemmBatched = hkust_r50::cutlass_int4::Int4GemmBatched;
 
     // -----------------------------------------------------------------
     // Allocate int32 workspace: (n_groups, d_out, T) row-major.
-    // Contiguous by construction; group g lives at offset g*d_out*T.
+    // Contiguous by construction; batch g lives at offset g*d_out*T.
     // -----------------------------------------------------------------
     auto workspace_int32 = torch::empty(
         {n_groups, d_out, T},
@@ -201,7 +201,7 @@ void launch(
     // LayoutA (RowMajor, M=d_out, K=BCOL): leading dim = d_in (row stride of W_low).
     // LayoutB (ColumnMajor, K=BCOL, N=T):   leading dim = d_in (row stride of X_s4).
     // LayoutC (RowMajor, M=d_out, N=T):     leading dim = T.
-    const int ld_w = d_in;   // bytes/2-worth of int4 per row of W_low
+    const int ld_w = d_in;
     const int ld_x = d_in;
     const int ld_c = T;
 
@@ -211,43 +211,43 @@ void launch(
         /*M=*/d_out, /*N=*/T, /*K=*/BCOL
     };
 
-    for (int g = 0; g < n_groups; ++g) {
-        // Slice g covers K-range [g*BCOL, (g+1)*BCOL) of both operands.
-        // CAUTION: `int4b_t` has sizeof==1 byte (it holds a uint8_t
-        // storage field), so `int4b_t* + BCOL` would step BCOL BYTES
-        // (= 2*BCOL int4 elements), which is wrong.  Do the arithmetic
-        // on byte pointers and reinterpret back.
-        const int byte_off = (g * BCOL) / 2;   // int4 elements -> bytes
-        auto* w_g = reinterpret_cast<cutlass::int4b_t*>(
-            W_low.data_ptr<int8_t>() + byte_off);
-        auto* x_g = reinterpret_cast<cutlass::int4b_t*>(
-            X_s4.data_ptr<int8_t>()  + byte_off);
-        auto* c_g = c_base + static_cast<int64_t>(g) * d_out * T;
+    // Stage A1.5: batched GEMM — one launch handles all n_groups K-slices.
+    // Per-batch strides (int4 elements for A/B, int32 elements for C).
+    //   stride_A = BCOL  : W[:, g*BCOL : (g+1)*BCOL]
+    //   stride_B = BCOL  : X[:, g*BCOL : (g+1)*BCOL]
+    //   stride_C = d_out * T : workspace_int32[g, :, :]
+    const int64_t stride_A = static_cast<int64_t>(BCOL);   // int4 elements
+    const int64_t stride_B = static_cast<int64_t>(BCOL);   // int4 elements
+    const int64_t stride_C = static_cast<int64_t>(d_out) * static_cast<int64_t>(T);
 
-        typename Int4Gemm::Arguments args{
-            problem,
-            {w_g, typename Int4Gemm::LayoutA{ld_w}},
-            {x_g, typename Int4Gemm::LayoutB{ld_x}},
-            {c_g, typename Int4Gemm::LayoutC{ld_c}},
-            {c_g, typename Int4Gemm::LayoutC{ld_c}},
-            {/*alpha=*/1, /*beta=*/0}
-        };
+    auto* w_ptr = reinterpret_cast<cutlass::int4b_t*>(W_low.data_ptr<int8_t>());
+    auto* x_ptr = reinterpret_cast<cutlass::int4b_t*>(X_s4.data_ptr<int8_t>());
 
-        Int4Gemm gemm_op;
-        cutlass::Status s = gemm_op.can_implement(args);
-        TORCH_CHECK(s == cutlass::Status::kSuccess,
-                    "[r50_cutlass_int4] can_implement failed at group ", g,
-                    ": ", cutlass::cutlassGetStatusString(s),
-                    " (problem M=", d_out, " N=", T, " K=", BCOL, ").");
-        s = gemm_op.initialize(args);
-        TORCH_CHECK(s == cutlass::Status::kSuccess,
-                    "[r50_cutlass_int4] initialize failed at group ", g,
-                    ": ", cutlass::cutlassGetStatusString(s));
-        s = gemm_op(stream);
-        TORCH_CHECK(s == cutlass::Status::kSuccess,
-                    "[r50_cutlass_int4] run failed at group ", g, ": ",
-                    cutlass::cutlassGetStatusString(s));
-    }
+    typename Int4GemmBatched::Arguments args{
+        problem,
+        {w_ptr, typename Int4GemmBatched::LayoutA{ld_w}}, stride_A,
+        {x_ptr, typename Int4GemmBatched::LayoutB{ld_x}}, stride_B,
+        {c_base, typename Int4GemmBatched::LayoutC{ld_c}}, stride_C,
+        {c_base, typename Int4GemmBatched::LayoutC{ld_c}}, stride_C,
+        {/*alpha=*/1, /*beta=*/0},
+        /*batch_count=*/n_groups
+    };
+
+    Int4GemmBatched gemm_op;
+    cutlass::Status s = gemm_op.can_implement(args);
+    TORCH_CHECK(s == cutlass::Status::kSuccess,
+                "[r50_cutlass_int4] batched.can_implement failed: ",
+                cutlass::cutlassGetStatusString(s),
+                " (problem M=", d_out, " N=", T, " K=", BCOL,
+                " batch=", n_groups, ").");
+    s = gemm_op.initialize(args);
+    TORCH_CHECK(s == cutlass::Status::kSuccess,
+                "[r50_cutlass_int4] batched.initialize failed: ",
+                cutlass::cutlassGetStatusString(s));
+    s = gemm_op(stream);
+    TORCH_CHECK(s == cutlass::Status::kSuccess,
+                "[r50_cutlass_int4] batched.run failed: ",
+                cutlass::cutlassGetStatusString(s));
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     // -----------------------------------------------------------------
