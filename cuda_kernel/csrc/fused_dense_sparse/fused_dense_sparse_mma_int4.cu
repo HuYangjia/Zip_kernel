@@ -1264,7 +1264,16 @@ void launch(
         // wave (>= 32 CTAs).
         // Measured gain on RTX 4090 (r54 baseline):
         //   4096x14336x128 ng=112:   174.67 -> 140.43 us (1.24x)
-        if (n_groups >= 64 && waves_at(64) >= 32) return 64;
+        // C.2c (r64, 2026-04-30): Stage E's n_g>=64 rule forces kBn=64
+        //   without checking T.  But at T=32 + very deep n_g (>=128),
+        //   kBn=64 half-fills its N slab (32 of 64) while paying the
+        //   full K-loop cost.  Measured: Qwen3-14B down T=32 (17408→5120,
+        //   n_g=136): kBn=64 79.56us vs kBn=32 70.07us (+11.9%).
+        //   Guard: only take Stage E at T >= 64 (where kBn=64 fills).
+        if (n_groups >= 64 && T >= 64 && waves_at(64) >= 32) return 64;
+        // Original Stage E preserved for T<=32 large-ng as a fallback
+        // (n_groups >= 64, waves_at(64) >= 32, but T < 64) — fall
+        // through to the other rules below which will pick the best.
         // C.2b (r64, 2026-04-30 — logs/r64_path_c/c2_kbn_sweep.json):
         //   For mid-T (T=32) shapes with wide d_out AND moderate n_groups
         //   (16 ≤ n_g ≤ 63), kBn=64 is chosen by the wave rule but kBn=32
@@ -1303,6 +1312,14 @@ void launch(
         //   grid) AND waves_at(32) >= 16 (at least a quarter wave).
         if (T >= 16 && T <= 64 && d_out >= 4096 && waves_at(32) >= 16) {
             return 32;
+        }
+        // C.2c-2 (r64, 2026-04-30): the d_out<4096 gap above falls all
+        //   the way to kBn=8, but for n_groups >= 16 + mid-T + d_out>=2048
+        //   the kernel benefits from kBn=16 (2x-1x tile split).
+        //   Measured: Qwen3-8B kv T=32 (4096→2048, n_g=32): kBn=8 23.67us
+        //   vs kBn=16 21.26us (+10.2%).
+        if (T >= 16 && T <= 64 && d_out >= 2048 && n_groups >= 16) {
+            return 16;
         }
         return 8;
     };
