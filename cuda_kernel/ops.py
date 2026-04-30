@@ -80,6 +80,11 @@ _SOURCES = [
     str(_CSRC / "fused_dense_sparse" / "fused_gemv_decode.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_gemv_smallT.cu"),
     str(_CSRC / "fused_dense_sparse" / "fused_quant_gemv.cu"),
+    # P0 (plan docs/P0_QUANT_FUSION_SPIKE.md): T>1 MMA path with
+    # activation quant fused into the prologue.  At P0.1 the host
+    # launcher is a TORCH_CHECK(false) stub — callers must continue
+    # to use activation_quant + fused_dense_sparse until P0.2 lands.
+    str(_CSRC / "fused_dense_sparse" / "fused_quant_dense_sparse_mma_int4.cu"),
 ]
 
 _NVCC_FLAGS = [
@@ -494,6 +499,72 @@ def fused_gemv_cuda_smallT(
     return Y_total
 
 
+def fused_quant_dense_sparse_cuda_int4(
+    X_fp16, perm,
+    W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    scale_u4, zero_u4, d_out, d_in,
+) -> torch.Tensor:
+    """P0: Fused activation quant + dense+sparse MMA INT4 GEMM (T>=2).
+
+    Removes the ~16us activation_quant launch floor by folding the
+    per-token max-abs / quantize / sum_X computation into the prologue
+    of the MMA kernel, then continuing with the bit-identical main
+    K-loop of fused_dense_sparse_mma_int4.
+
+    Precondition: X_fp16.shape[0] >= 2 (T=1 callers should use
+    fused_quant_gemv_cuda which has its own optimised dp4a path).
+
+    Parity: must be bit-identical to the composition
+
+        X_s4, scale_x, sum_X = activation_quant_cuda(X_fp16, perm)
+        Y = fused_dense_sparse_cuda_int4(
+            W_low_packed, W_high_blocks_packed,
+            hp_row_offsets, hp_col_indices,
+            X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+        )
+
+    See docs/P0_QUANT_FUSION_SPIKE.md for the design.
+    """
+    with _nvtx_range("cuda.fused_quant_dense_sparse"):
+        assert X_fp16.is_cuda and X_fp16.dtype == torch.float16
+        assert perm.dtype in (torch.int32, torch.int64)
+        assert W_low_packed.is_cuda and W_low_packed.dtype == torch.int8
+        T = X_fp16.shape[0] if X_fp16.dim() == 2 else (
+            X_fp16.shape[0] * X_fp16.shape[1]
+        )
+        if T < 2:
+            raise ValueError(
+                f"fused_quant_dense_sparse_cuda_int4 requires T >= 2, got {T}; "
+                f"use fused_quant_gemv_cuda for T=1."
+            )
+        X_fp16_2d = X_fp16.reshape(T, d_in).contiguous()
+        perm_i32 = perm.to(torch.int32).contiguous()
+        scale_u4_c = scale_u4.contiguous().to(torch.float16)
+        zero_u4_c  = zero_u4.contiguous().to(torch.float16)
+        W_low_c    = W_low_packed.contiguous()
+
+        if W_high_blocks_packed.numel() == 0:
+            W_high_blocks_packed = torch.zeros(
+                (0, 128, BCOL // 2),
+                dtype=torch.int8,
+                device=W_low_packed.device,
+            )
+        W_high_c = W_high_blocks_packed.contiguous()
+        hp_row_off_c = hp_row_offsets.contiguous().to(torch.int32)
+        hp_col_idx_c = hp_col_indices.contiguous().to(torch.int32)
+
+        Y_total = torch.empty((d_out, T), dtype=torch.float16,
+                              device=W_low_packed.device)
+        _ext.fused_quant_dense_sparse_mma_int4_launch(
+            X_fp16_2d, perm_i32,
+            W_low_c, W_high_c,
+            hp_row_off_c, hp_col_idx_c,
+            scale_u4_c, zero_u4_c,
+            Y_total,
+            int(d_out), int(d_in),
+        )
+        return Y_total
+
 # Default alias: auto-dispatch on T.
 def fused_dense_sparse_cuda(
     W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
@@ -537,4 +608,6 @@ __all__ = [
     "fused_gemv_cuda_smallT",
     # T=1 fused quant+GEMV single kernel (Round 15)
     "fused_quant_gemv_cuda",
+    # P0: T>=2 fused quant + dense+sparse MMA (see docs/P0_QUANT_FUSION_SPIKE.md)
+    "fused_quant_dense_sparse_cuda_int4",
 ]

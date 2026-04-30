@@ -83,6 +83,19 @@ void launch(torch::Tensor X_fp16, torch::Tensor perm,
             int d_out, int d_in);
 }
 
+namespace fused_quant_dense_sparse_mma_int4 {
+// P0 (plan docs/P0_QUANT_FUSION_SPIKE.md): T>1 MMA path with
+// activation quant fused into the prologue.  Same output contract as
+// fused_dense_sparse_mma_int4::launch but takes fp16 X + perm directly
+// instead of pre-quantized X_s4 / scale_x / sum_X.
+void launch(torch::Tensor X_fp16, torch::Tensor perm,
+            torch::Tensor W_low, torch::Tensor W_high_blocks,
+            torch::Tensor hp_row_offsets, torch::Tensor hp_col_indices,
+            torch::Tensor scale_u4, torch::Tensor zero_u4,
+            torch::Tensor Y_total,
+            int d_out, int d_in);
+}
+
 namespace fused_gemv_smallT {
 void launch(torch::Tensor W_low, torch::Tensor W_high_blocks,
             torch::Tensor hp_row_offsets, torch::Tensor hp_col_indices,
@@ -219,6 +232,20 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("X_s4"),
         py::arg("scale_u4"), py::arg("zero_u4"),
         py::arg("sum_X"), py::arg("scale_x"),
+        py::arg("Y_total"),
+        py::arg("d_out"), py::arg("d_in")
+    );
+
+    m.def(
+        "fused_quant_dense_sparse_mma_int4_launch",
+        &hkust_v9::fused_quant_dense_sparse_mma_int4::launch,
+        "P0: Fused activation quant + dense+sparse MMA INT4 GEMM (T>=2). "
+        "Takes fp16 X + perm instead of pre-quantized X_s4/scale_x/sum_X. "
+        "Removes the ~16us activation_quant launch floor for small/mid T.",
+        py::arg("X_fp16"), py::arg("perm"),
+        py::arg("W_low"), py::arg("W_high_blocks"),
+        py::arg("hp_row_offsets"), py::arg("hp_col_indices"),
+        py::arg("scale_u4"), py::arg("zero_u4"),
         py::arg("Y_total"),
         py::arg("d_out"), py::arg("d_in")
     );
