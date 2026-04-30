@@ -100,6 +100,17 @@ namespace cutlass_dequant {
         torch::Tensor Y_total,
         int d_out, int T, int n_groups
     );
+    void launch_dequant_accum(
+        torch::Tensor acc_int32_g,
+        torch::Tensor scale_u4, torch::Tensor zero_u4,
+        torch::Tensor sum_X,
+        torch::Tensor Y_fp32,
+        int d_out, int T, int n_groups, int g
+    );
+    void launch_finalize_fp32_to_fp16(
+        torch::Tensor Y_fp32, torch::Tensor scale_x, torch::Tensor Y_total,
+        int d_out, int T
+    );
 }
 
 namespace fused_dense_sparse_mma_int4_cutlass {
@@ -198,18 +209,26 @@ void launch(
     TORCH_CHECK(scale_x.size(0) == T,
                 "[r50_cutlass_int4] scale_x shape must be (T,).");
 
-    using Int4GemmBatched = hkust_r50::cutlass_int4::Int4GemmBatched;
+    using Int4Gemm = hkust_r50::cutlass_int4::Int4Gemm;
 
     // -----------------------------------------------------------------
-    // Allocate int32 workspace: (n_groups, d_out, T) row-major.
-    // Contiguous by construction; batch g lives at offset g*d_out*T.
+    // Stage A3 workspace layout:
+    //   acc_int32_2d : (d_out, T) int32 — re-used across groups
+    //   y_fp32       : (d_out, T) fp32  — running dequant accumulator
+    //
+    // Replaces the Stage A1.5 3D (n_groups, d_out, T) int32 workspace.
+    // For gate_up_proj T=512 (d_out=24576, ng=32) this cuts the workspace
+    // from 1.5 GB to ~100 MB (48 MB fp32 accumulator + 48 MB int32 acc)
+    // and keeps both buffers L2-resident for all d_out*T <= ~4M elements,
+    // eliminating the HBM round-trips that made Stage A1.5 8x slower
+    // than the hand-rolled fused kernel at T=512.
     // -----------------------------------------------------------------
-    auto workspace_int32 = torch::empty(
-        {n_groups, d_out, T},
-        torch::TensorOptions().dtype(torch::kInt32).device(Y_total.device())
-    );
+    auto opts_i32 = torch::TensorOptions().dtype(torch::kInt32).device(Y_total.device());
+    auto opts_f32 = torch::TensorOptions().dtype(torch::kFloat32).device(Y_total.device());
+    auto acc_int32_2d = torch::empty({d_out, T}, opts_i32);
+    auto y_fp32        = torch::empty({d_out, T}, opts_f32);
 
-    auto* c_base = workspace_int32.data_ptr<int32_t>();
+    auto* c_base = acc_int32_2d.data_ptr<int32_t>();
 
     // LayoutA (RowMajor, M=d_out, K=BCOL): leading dim = d_in (row stride of W_low).
     // LayoutB (ColumnMajor, K=BCOL, N=T):   leading dim = d_in (row stride of X_s4).
@@ -224,57 +243,67 @@ void launch(
         /*M=*/d_out, /*N=*/T, /*K=*/BCOL
     };
 
-    // Stage A1.5: batched GEMM — one launch handles all n_groups K-slices.
-    // Per-batch strides (int4 elements for A/B, int32 elements for C).
-    //   stride_A = BCOL  : W[:, g*BCOL : (g+1)*BCOL]
-    //   stride_B = BCOL  : X[:, g*BCOL : (g+1)*BCOL]
-    //   stride_C = d_out * T : workspace_int32[g, :, :]
-    const int64_t stride_A = static_cast<int64_t>(BCOL);   // int4 elements
-    const int64_t stride_B = static_cast<int64_t>(BCOL);   // int4 elements
-    const int64_t stride_C = static_cast<int64_t>(d_out) * static_cast<int64_t>(T);
-
     auto* w_ptr = reinterpret_cast<cutlass::int4b_t*>(W_low.data_ptr<int8_t>());
     auto* x_ptr = reinterpret_cast<cutlass::int4b_t*>(X_s4.data_ptr<int8_t>());
 
-    typename Int4GemmBatched::Arguments args{
-        problem,
-        {w_ptr, typename Int4GemmBatched::LayoutA{ld_w}}, stride_A,
-        {x_ptr, typename Int4GemmBatched::LayoutB{ld_x}}, stride_B,
-        {c_base, typename Int4GemmBatched::LayoutC{ld_c}}, stride_C,
-        {c_base, typename Int4GemmBatched::LayoutC{ld_c}}, stride_C,
-        {/*alpha=*/1, /*beta=*/0},
-        /*batch_count=*/n_groups
-    };
-
-    Int4GemmBatched gemm_op;
-    cutlass::Status s = gemm_op.can_implement(args);
-    TORCH_CHECK(s == cutlass::Status::kSuccess,
-                "[r50_cutlass_int4] batched.can_implement failed: ",
-                cutlass::cutlassGetStatusString(s),
-                " (problem M=", d_out, " N=", T, " K=", BCOL,
-                " batch=", n_groups, ").");
-    s = gemm_op.initialize(args);
-    TORCH_CHECK(s == cutlass::Status::kSuccess,
-                "[r50_cutlass_int4] batched.initialize failed: ",
-                cutlass::cutlassGetStatusString(s));
-    s = gemm_op(stream);
-    TORCH_CHECK(s == cutlass::Status::kSuccess,
-                "[r50_cutlass_int4] batched.run failed: ",
-                cutlass::cutlassGetStatusString(s));
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    Int4Gemm gemm_op;
 
     // -----------------------------------------------------------------
-    // Dequant: (n_groups, d_out, T) int32 + metadata -> (d_out, T) fp16
-    // Declared in csrc/fused_dense_sparse/cutlass_dequant.cu.
+    // Streamed GEMM + dequant loop.
+    //   for each group g in [0, n_groups):
+    //       1. Int4Gemm on the g-th BCOL-wide K-slice -> acc_int32_2d
+    //       2. dequant_accum_kernel consumes acc_int32_2d and adds into
+    //          y_fp32 (overwrites on g==0, adds otherwise)
+    //   then: finalize kernel scales by scale_x[t] and casts to fp16.
+    //
+    // Per-group A/B pointers: each iteration advances the int4 operand
+    // pointers by BCOL nibbles (= BCOL/2 bytes, but pointer arithmetic
+    // on cutlass::int4b_t already handles the half-byte stride).
     // -----------------------------------------------------------------
-    cutlass_dequant::launch_dequant(
-        workspace_int32,
-        scale_u4.contiguous(),
-        zero_u4.contiguous(),
-        sum_X.contiguous(),
-        scale_x.contiguous(),
-        Y_total,
-        d_out, T, n_groups
+    // Reusable contiguous contiguous tensors for the dequant helpers.
+    auto scale_u4_c = scale_u4.contiguous();
+    auto zero_u4_c  = zero_u4.contiguous();
+    auto sum_X_c    = sum_X.contiguous();
+    auto scale_x_c  = scale_x.contiguous();
+
+    for (int g = 0; g < n_groups; ++g) {
+        // Pointer arithmetic on int4b_t is bit-granular, so advancing by
+        // BCOL elements is exactly one (128-element) group in bytes=64.
+        auto* w_g = w_ptr + static_cast<int64_t>(g) * BCOL;
+        auto* x_g = x_ptr + static_cast<int64_t>(g) * BCOL;
+
+        typename Int4Gemm::Arguments args{
+            problem,
+            {w_g, typename Int4Gemm::LayoutA{ld_w}},
+            {x_g, typename Int4Gemm::LayoutB{ld_x}},
+            {c_base, typename Int4Gemm::LayoutC{ld_c}},
+            {c_base, typename Int4Gemm::LayoutC{ld_c}},
+            {/*alpha=*/1, /*beta=*/0}
+        };
+
+        cutlass::Status s = gemm_op.can_implement(args);
+        TORCH_CHECK(s == cutlass::Status::kSuccess,
+                    "[r50_cutlass_int4] A3 can_implement failed at g=", g,
+                    ": ", cutlass::cutlassGetStatusString(s),
+                    " (problem M=", d_out, " N=", T, " K=", BCOL, ").");
+        s = gemm_op.initialize(args);
+        TORCH_CHECK(s == cutlass::Status::kSuccess,
+                    "[r50_cutlass_int4] A3 initialize failed at g=", g,
+                    ": ", cutlass::cutlassGetStatusString(s));
+        s = gemm_op(stream);
+        TORCH_CHECK(s == cutlass::Status::kSuccess,
+                    "[r50_cutlass_int4] A3 run failed at g=", g,
+                    ": ", cutlass::cutlassGetStatusString(s));
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+        cutlass_dequant::launch_dequant_accum(
+            acc_int32_2d, scale_u4_c, zero_u4_c, sum_X_c,
+            y_fp32, d_out, T, n_groups, g
+        );
+    }
+
+    cutlass_dequant::launch_finalize_fp32_to_fp16(
+        y_fp32, scale_x_c, Y_total, d_out, T
     );
 }
 
