@@ -1177,7 +1177,16 @@ void launch(
     //   split-K axis.
     //
     // Split-K gate (moved from below):
-    if (hp_nnz == 0 && n_groups >= 16 && T >= 32) {
+    //
+    // Note on T<32: the main kernel CAN be invoked at any T, including
+    // T=1 from synthetic benches.  In production, T<=16 is routed to
+    // dedicated GEMV kernels (fused_quant_gemv / fused_gemv_smallT),
+    // but the gate must still not regress main-kernel behaviour under
+    // direct T<32 invocation.  The 2026-04-30 sweep showed that small
+    // T + large n_groups (e.g. T=1, ng=96) benefits from sk=4 just as
+    // much as T=32 does: the grid is short on both N-axis and M-axis
+    // and the K-axis is the only place to add parallelism.
+    if (hp_nnz == 0 && n_groups >= 16) {
         const int grid_mn_at_kbn64 =
             n_cta_m_at_128 * ceil_div(T, 64);
         const int target_wave = 128;
