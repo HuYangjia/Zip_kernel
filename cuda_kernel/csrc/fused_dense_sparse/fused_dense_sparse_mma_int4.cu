@@ -1342,6 +1342,21 @@ void launch(
         return 8;
     };
     int kbn_pick = pick();
+    // --- C.4 DEBUG ---
+    {
+        const char* dbg = std::getenv("HKUST_V9_FUSED_DEBUG_DISPATCH");
+        if (dbg && dbg[0] == '1') {
+            static int _c = 0;
+            if (_c < 20) {
+                fprintf(stderr, "[dispatch] T=%d d_in=%d d_out=%d n_g=%d "
+                        "kbm_pick=%d kbn_pick=%d split_k=%d n_cta_m=%d\n",
+                        T, d_in, d_out, n_groups, kbm_pick, kbn_pick,
+                        split_k, n_cta_m);
+                _c++;
+            }
+        }
+    }
+    // --- END C.4 DEBUG ---
     // R44: when kBm=64, grid_M doubles so waves_at() thresholds fire
     //   earlier.  In particular at d_out=2048 T=48/64 with kBm=64:
     //     waves_at(32) = 32*2 = 64 → pick kBn=32
