@@ -1286,23 +1286,6 @@ void launch(
         return 8;
     };
     int kbn_pick = pick();
-    // --- C.2 DEBUG: remove after diagnosis ---
-    {
-        const char* dbg = std::getenv("HKUST_V9_FUSED_DEBUG_DISPATCH");
-        if (dbg != nullptr && dbg[0] == '1') {
-            static int _pcnt = 0;
-            if (_pcnt < 3) {
-                fprintf(stderr, "[dispatch] T=%d d_in=%d d_out=%d n_g=%d "
-                                "kbm=%d kbn_initial=%d split_k=%d "
-                                "n_cta_m=%d waves32=%lld\n",
-                        T, d_in, d_out, n_groups, kbm_pick, kbn_pick, split_k,
-                        n_cta_m,
-                        (long long)((int64_t)n_cta_m * ((T + 31) / 32) * split_k));
-                _pcnt++;
-            }
-        }
-    }
-    // --- end debug ---
     // R44: when kBm=64, grid_M doubles so waves_at() thresholds fire
     //   earlier.  In particular at d_out=2048 T=48/64 with kBm=64:
     //     waves_at(32) = 32*2 = 64 → pick kBn=32
