@@ -1080,24 +1080,25 @@ void launch(
     // C.1 refinement (r64, 2026-04-30 — _phase3_phase4_work_plan §1 C.1):
     //   The T=128 sweep (logs/r64_path_c/c1_group_cache_sweep.json,
     //   25 shapes) revealed a gap: n_groups ∈ [33, 48] at T=128 benefits
-    //   from cache by +4.3% .. +7.6% because the windowed-cache path
-    //   (n_cta_m ≤ 64) already matches this regime but the host gate
-    //   never allowed it to trigger.  Concrete wins:
-    //     Qwen3-14B gate_up T=128 (5120→34816, n_g=40): +7.6%
-    //     Qwen3-1.7B down     T=128 (6144→2048, n_g=48):  +5.7%
-    //     Qwen3-14B q / o     T=128 (5120→5120, n_g=40): +4.3–4.4%
-    //   Safety:  kernel-internal `cache_sz` (L213) re-checks
-    //   `n_groups ≤ kMaxWindowedGroups && n_cta_m ≤ 64`, so enabling
-    //   this host gate for n_groups > 48 or wide grids is a no-op
-    //   at the execution level (smem is allocated but cache path
-    //   stays off at runtime).  That means the host-gate change is
-    //   safe — it only unlocks a previously-unreachable path, never
-    //   forces cache onto a shape that disables it internally.
+    //   from cache by +4.3% .. +5.7% because the windowed-cache path
+    //   (kMaxWindowedGroups=64, n_cta_m ≤ 64) already matches this regime
+    //   but the host gate never allowed it to trigger.  Concrete wins:
+    //     Qwen3-14B q / o     T=128 (5120→5120, n_g=40): +4.3–4.6%
+    //     Qwen3-1.7B down     T=128 (6144→2048, n_g=48):  +10.2%
+    //   Narrow the new branch to n_groups > kGrpBuf (i.e. 33..64) to
+    //   avoid pulling n_g ≤ 32 shapes — those benefit from cache OFF
+    //   at T=128 (ng=32, T=128: the non-cache path is 6-13% faster).
+    //   A prior attempt used n_groups ≤ kMaxWindowedGroups without the
+    //   lower bound and regressed 5 shapes by 6-13%, see VALIDATION_LOG.
     bool use_group_cache =
         (n_groups <= 8) ||
         (n_groups <= kGrpBuf && T <= 32) ||
-        // C.1 extension: T=128 moderate-ng shapes with small-ish grid
-        (T == 128 && n_groups <= kMaxWindowedGroups && n_cta_m <= 64);
+        // C.1 extension: T=128 with n_groups in the windowed-cache-only
+        // regime (33..64) and a moderate grid_M that the kernel's own
+        // cache_sz runtime gate will further honour.
+        (T == 128 &&
+         n_groups > kGrpBuf && n_groups <= kMaxWindowedGroups &&
+         n_cta_m <= 64);
     {
         const char* env = std::getenv("HKUST_V9_FUSED_FORCE_CACHE");
         if (env != nullptr) {
