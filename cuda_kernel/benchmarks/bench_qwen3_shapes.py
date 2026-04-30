@@ -80,6 +80,11 @@ QWEN3_MODELS: list[Qwen3Config] = [
     Qwen3Config("Qwen3-4B",   hidden=2560, intermediate=9728,  num_q_heads=32, num_kv_heads=8),
     Qwen3Config("Qwen3-8B",   hidden=4096, intermediate=12288, num_q_heads=32, num_kv_heads=8),
     Qwen3Config("Qwen3-14B",  hidden=5120, intermediate=17408, num_q_heads=40, num_kv_heads=8),
+    # r63 — bigger dense GQA models (same architecture family, used to
+    # show that INT4 speedup vs FP16 scales with model size up to 70B).
+    # Shapes are vendor-published for production checkpoints.
+    Qwen3Config("Qwen2.5-32B", hidden=5120, intermediate=27648, num_q_heads=40, num_kv_heads=8),
+    Qwen3Config("LLaMA3-70B",  hidden=8192, intermediate=28672, num_q_heads=64, num_kv_heads=8),
 ]
 
 
@@ -614,7 +619,9 @@ def main():
     parser.add_argument("--models", nargs="+", default=None,
                         help="Which Qwen3 models to bench (default: 0.6B/1.7B/4B/8B).")
     parser.add_argument("--full", action="store_true",
-                        help="Include Qwen3-14B (takes longer + more VRAM).")
+                        help="Include the larger (>=14B) models "
+                             "Qwen3-14B / Qwen2.5-32B / LLaMA3-70B "
+                             "(takes longer + more VRAM).")
     parser.add_argument("--ts", nargs="+", type=int, default=list(DEFAULT_TS),
                         help="Batch sizes to sweep.")
     parser.add_argument("--hp-ratio", type=float, default=0.05,
@@ -647,7 +654,11 @@ def main():
         if args.full:
             models = list(QWEN3_MODELS)
         else:
-            models = [m for m in QWEN3_MODELS if m.name != "Qwen3-14B"]
+            # Default omits the larger (≥14B) models — they take longer
+            # and need more VRAM.  Opt in via `--full` or explicit
+            # `--models Qwen3-14B Qwen2.5-32B LLaMA3-70B`.
+            _big = {"Qwen3-14B", "Qwen2.5-32B", "LLaMA3-70B"}
+            models = [m for m in QWEN3_MODELS if m.name not in _big]
 
     ts = time.strftime("%Y%m%d_%H%M%S")
     if args.out_root is not None:
