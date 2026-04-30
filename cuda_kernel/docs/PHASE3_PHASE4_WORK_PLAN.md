@@ -45,10 +45,22 @@ on default dispatch.
     n_groups=32 by 6-13% because they preferred cache OFF at T=128.
     See failure log F-C1a and `logs/r64_path_c/c1_group_cache_sweep.json`.
   - Commit: `da6fb02`.
-- [ ] **C.2** Introduce kBn=16 as a new tile size
-  - Current set: {8, 32, 64}; gap at T=128 where kBn=32 gives only 4 N-tiles.
-  - Instantiate template with kBn=16, hook into dispatcher sweep.
-  - Sweep all mid shapes; adopt kBn=16 for shapes where it wins ≥5%.
+- [x] **C.2** Introduce kBn=16 + refine dispatcher for mid-T ✅ DONE (2026-04-30)
+  - Template: kBn=16 now instantiates on both kbm_pick paths (128/64).
+  - Dispatcher additions (all data-driven from `logs/r64_path_c/c2_kbn_sweep.json`):
+    - **C.2**: `T ∈ [16,64] && d_out ≥ 4096 && waves_at(32) ≥ 16 → kBn=32` (avoid over-fragmentation).
+    - **C.2b**: `T ∈ (8,64] && d_out ≥ 4096 && n_groups ≤ 63 && waves_at(32) ≥ 64 → kBn=32` (avoid under-filled kBn=64).
+    - **C.2c-1**: Stage E large-ng kBn=64 force now also requires `T ≥ 64` (avoid under-filled kBn=64 at T=32 with deep n_g).
+  - Wins (cumulative vs pre-C.1 baseline):
+    - Qwen3-14B gate_up T=32: 267.37us → 189.07us (**-29.3%** 🏆)
+    - Qwen3-4B  gate_up T=32:  35.55us →  29.73us (-16.4%)
+    - Qwen3-8B  gate_up T=32:  56.81us →  53.03us (-6.7%)
+  - Residual oversights (accepted as known):
+    - Qwen3-14B dn T=32 (17408→5120, n_g=136): still +12% k32 vs auto (large-ng guard still too coarse).
+    - Qwen3-8B  kv T=32 (4096→2048,  n_g=32):  still +10% k16 vs auto (d_out<4096 fallback).
+    - Qwen3-4B  dn T=32 (9216→2560,  n_g=72):  still +6% k64 vs auto (deep-n_g mid-d_out edge).
+  - See failure log F-C2c for the over-broad kBn=16 rule that was reverted.
+  - Commits: `da6fb02` (kBn=16 instantiate), `a740d00` (final dispatcher).
 - [ ] **C.3** Qwen3-8B gate_up_proj T=128 (4096→24576) specific attack
   - Today: 48% eff (Path C's single worst drop).
   - Grid_M = 192 CTAs → group-cache effectively unused.
@@ -93,6 +105,17 @@ Prerequisite: Path C complete.
 
 ## 2. Progress log (append-only, most recent at top)
 
+### 2026-04-30 — C.2 kBn=16 + mid-T dispatcher refinement
+- kBn=16 template instantiated on both kbm=128/64 paths (no kernel body change, `kNsubPerCta = (kBn+7)/8` already generic).
+- Dispatcher gained three new rules (all data-driven):
+  - C.2   : `T ∈ [16,64] && d_out ≥ 4096 → kBn=32` (avoid over-fragmentation to kBn=8)
+  - C.2b  : `T ∈ (8,64] && d_out ≥ 4096 && n_g ≤ 63 → kBn=32` (avoid under-filled kBn=64)
+  - C.2c-1: Stage E's n_g≥64 force-kBn=64 now needs `T ≥ 64`
+- Measurement methodology: trial-randomised in-process sweep (N=5 interleaved trials, median per mode) — the initial single-shot in-process sweep had 40% noise from GPU clock/L2 transients.  Subprocess isolation considered but ~40 min too slow.
+- Biggest win: Qwen3-14B gate_up T=32 from 267us → 189us (-29.3%).  Cumulative four shapes with >5% gain; no regressions on the 30-shape parity/perf suite.
+- Failed C.2c-2 (over-broad kBn=16 rule) reverted — see F-C2c.
+- Commits: `da6fb02`..`a740d00`.
+
 ### 2026-04-30 — C.1 group-cache gate widened
 - 25-shape T=128 sweep (`logs/r64_path_c/c1_group_cache_sweep.json`)
   identified n_groups ∈ (32, 64] + small grid_M as a previously
@@ -118,6 +141,23 @@ Prerequisite: Path C complete.
 Per project norm: failed experiments are not deleted, only disabled.
 Each entry includes: what was tried, why it failed, numerical
 evidence, lesson.
+
+### F-C2c (2026-04-30) — over-broad kBn=16 fallback rule
+- **Tried**: `T ∈ (8,64] && n_groups ≥ 16 && d_out ≥ 2048 → kBn=16`
+  as a fix for Qwen3-8B kv T=32 (4096→2048) which benefits from kBn=16.
+- **Status**: regressed 2 shapes while fixing 1.
+  - Qwen3-0.6B o T=32 (2048→1024, n_g=16): kBn=64 wins +27.5% (small
+    n_cta_m=8 + deep intra-SM residency makes kBn=64 actually optimal).
+  - Qwen3-4B dn T=32 (9216→2560, n_g=72): kBn=64 wins +6.8% for the
+    same reason, plus deep K reuse.
+- **Root cause**: the `d_out ≥ 2048` lower bound was too permissive;
+  small d_out shapes with heavy per-CTA residency prefer kBn=64, not
+  kBn=16, because the whole shape fits in a handful of SMs.
+- **Lesson**: "n_groups ≥ 16" is NOT enough signal for a kBn=16
+  preference; interact with `n_cta_m` and per-CTA work volume.
+- **Resolution**: reverted the rule (commit `a740d00`).  The 8B kv
+  T=32 +10% oversight remains as an accepted residual (see C.2 DONE
+  list).
 
 ### F-C1a (2026-04-30) — group-cache gate too wide (first attempt)
 - **Tried**: widen use_group_cache to `T=128 && n_groups ≤ kMaxWindowedGroups (=64) && n_cta_m ≤ 64`.
