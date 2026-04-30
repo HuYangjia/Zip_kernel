@@ -1076,9 +1076,28 @@ void launch(
     //
     // The env switch HKUST_V9_FUSED_FORCE_CACHE still overrides this for
     // debug / A-B benching.
+    //
+    // C.1 refinement (r64, 2026-04-30 — _phase3_phase4_work_plan §1 C.1):
+    //   The T=128 sweep (logs/r64_path_c/c1_group_cache_sweep.json,
+    //   25 shapes) revealed a gap: n_groups ∈ [33, 48] at T=128 benefits
+    //   from cache by +4.3% .. +7.6% because the windowed-cache path
+    //   (n_cta_m ≤ 64) already matches this regime but the host gate
+    //   never allowed it to trigger.  Concrete wins:
+    //     Qwen3-14B gate_up T=128 (5120→34816, n_g=40): +7.6%
+    //     Qwen3-1.7B down     T=128 (6144→2048, n_g=48):  +5.7%
+    //     Qwen3-14B q / o     T=128 (5120→5120, n_g=40): +4.3–4.4%
+    //   Safety:  kernel-internal `cache_sz` (L213) re-checks
+    //   `n_groups ≤ kMaxWindowedGroups && n_cta_m ≤ 64`, so enabling
+    //   this host gate for n_groups > 48 or wide grids is a no-op
+    //   at the execution level (smem is allocated but cache path
+    //   stays off at runtime).  That means the host-gate change is
+    //   safe — it only unlocks a previously-unreachable path, never
+    //   forces cache onto a shape that disables it internally.
     bool use_group_cache =
         (n_groups <= 8) ||
-        (n_groups <= kGrpBuf && T <= 32);
+        (n_groups <= kGrpBuf && T <= 32) ||
+        // C.1 extension: T=128 moderate-ng shapes with small-ish grid
+        (T == 128 && n_groups <= kMaxWindowedGroups && n_cta_m <= 64);
     {
         const char* env = std::getenv("HKUST_V9_FUSED_FORCE_CACHE");
         if (env != nullptr) {
