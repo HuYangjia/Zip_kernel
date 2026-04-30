@@ -88,7 +88,25 @@ on default dispatch.
     - Qwen3-8B  gu T=512 (4096→24576): auto 427us (T=512 not in branch)
   - Parity 10/10 still passing.  Commit: `0b3fdda`.
   - r65 full 140-shape bench kicked off to validate no global regression.
-- [ ] **C.4** Cover T ∈ {48, 64, 96} — currently unbenched holes
+- [x] **C.4** Cover T ∈ {48, 64, 96} — unbenched dispatcher holes ✅ DONE (2026-04-30)
+  - Sweep: 15 shapes (Qwen3-8B × 5 projections × T∈{48,64,96}) ×
+    6 modes (auto + force kBm ∈ {128,64} + force kBn ∈ {8,32,64}).
+  - Found 13 oversights 20–62% below optimal.  Two root causes:
+    - **Bug A**: C.2b's `T ≤ 64` upper bound misfired on T=48/64 with
+      large d_out — those shapes do NOT have the kBn=64 half-fill
+      issue that T=32 has (since T=48 covers the full 32-col N-slab
+      with overflow, not a quarter fill).  Fix: tighten to `T ≤ 32`.
+    - **Bug B**: R44 gate's T∈[48,64] branch was calibrated on
+      (4096,4096) q/o shapes but accepted all shapes with d_out≤4096,
+      misfiring on:
+      (i) d_in=14336 down_proj (+22–25% regress after R44 → kBm=64).
+      (ii) d_in=4096, d_out=2048 kv_proj (+29–46% regress).
+      Fix: add `d_in ≤ 4096 AND (d_out ≥ 4096 OR d_in ≤ 2048)` guard.
+  - 7-trial interleaved verify (strict timing) confirms all T=48/64
+    shapes now at auto=optimal (0.0–0.4% gap).
+  - T=96 oversights remain (5 shapes, 6–62% gap) but T=96 is not in
+    the 140-shape Qwen3 bench — accept as residual for future work.
+  - Parity 10/10 still passing.  Commits: `7bf53ae`, `93fbbc0`, `2e14f87`.
 - [x] **C.1+C.2 validation** — 140-shape full bench ✅ DONE (2026-04-30)
 Prerequisite: Path C complete.
 
@@ -119,6 +137,34 @@ Prerequisite: Path C complete.
 ---
 
 ## 2. Progress log (append-only, most recent at top)
+
+### 2026-04-30 — C.4 T∈{48,64,96} sweep + r66 full bench (Path C COMPLETE)
+- C.4 sweep (15 shapes, Qwen3-8B × 5 proj × T∈{48,64,96}) found 13
+  oversights 20–62% below optimal; two root-cause bugs located.
+- Fix A: C.2b rule's `T ≤ 64` misfired on T=48/64 wide-d_out — did
+  not actually half-fill kBn=64 at T=48.  Tightened to `T ≤ 32`.
+- Fix B: R44 gate's T∈[48,64] branch accepted all d_out≤4096 shapes,
+  misfiring on deep-d_in dn (d_in=14336) and small-d_out kv.
+  Added `d_in ≤ 4096 AND (d_out ≥ 4096 OR d_in ≤ 2048)` guard.
+- 7-trial interleaved verify confirms all post-C.4 T=48/64 autos
+  now at optimal (0.0–0.4% gap).  T=96 residuals (5 shapes) left
+  for future C.x since T=96 is not in production benches.
+- r66 full 140-shape bench confirms NO macro regression:
+  - median speedup: 1.042× → 1.049× (+0.7%, within GPU drift)
+  - wins > 1×: 76 → 77 (+1)
+  - peak preserved at 3.57× (Qwen3-8B gu T=32)
+  - T=32 median Δ = +0.006 (C.2b tightening caused no regression;
+    contra-positive: C.4 was surgical and did not touch the shapes
+    that contributed to r65's gains)
+- Path C CUMULATIVE (r63 → r66):
+  - median 1.021× → **1.049×** (+2.7%)
+  - wins 72 → **77** (+5)
+  - big wins 19 → 20
+  - peak 3.25× → **3.57×**
+  - top: Qwen3-14B gu T=32 +0.56 abs, T=128 +0.22 abs, 4B gu +0.42
+- Artefacts: `logs/r66_path_c/{bench.json, roofline_report.md,
+  _compare_full_trajectory.py, c4_mid_T_sweep.json}`.
+- Commits: `7bf53ae` (C.2b narrow), `93fbbc0` (R44 narrow), `2e14f87`.
 
 ### 2026-04-30 — C.3 kBm=64 for huge d_out at T=128 + full r65 validation
 - Problem: Qwen3-14B gate_up T=128 (5120→34816) ran at 0.96× speedup
