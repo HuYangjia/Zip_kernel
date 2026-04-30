@@ -1,0 +1,24 @@
+15:35:58 INFO bench_qwen3 output dir: /root/Zip_kernel/cuda_kernel/logs/r64_path_c/bench/qwen3_20260430_153558
+15:35:58 INFO bench_qwen3 device: NVIDIA GeForce RTX 4090
+15:35:58 INFO bench_qwen3 pytorch 2.8.0+cu126  triton 3.4.0
+15:35:58 INFO bench_qwen3 hp_ratio: 0.050
+15:35:58 INFO bench_qwen3 flush_l2_fp16: True
+15:35:58 DEBUG bench_qwen3 [1/140] Qwen3-0.6B q_proj T=1
+15:36:06 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=1    [ 1024-> 2048] e2e: fp16= -31.0  triton= 117.2  cuda=   5.1  cuda/fp16=-6.05x  cuda/triton=22.89x
+15:36:06 DEBUG bench_qwen3 [2/140] Qwen3-0.6B q_proj T=32
+15:36:13 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=32   [ 1024-> 2048] e2e: fp16= -60.8  triton= 117.5  cuda=  14.2  cuda/fp16=-4.27x  cuda/triton=8.27x
+15:36:13 DEBUG bench_qwen3 [3/140] Qwen3-0.6B q_proj T=128
+15:36:19 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=128  [ 1024-> 2048] e2e: fp16=  12.5  triton= 119.6  cuda=  19.0  cuda/fp16=0.66x  cuda/triton=6.29x
+15:36:19 DEBUG bench_qwen3 [4/140] Qwen3-0.6B q_proj T=512
+15:36:26 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=512  [ 1024-> 2048] e2e: fp16=  26.2  triton= 126.0  cuda=  49.6  cuda/fp16=0.53x  cuda/triton=2.54x
+15:36:26 DEBUG bench_qwen3 [5/140] Qwen3-0.6B kv_proj T=1
+15:36:27 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=1    [ 1024-> 2048] e2e: fp16= -16.8  triton= 116.6  cuda=   5.1  cuda/fp16=-3.26x  cuda/triton=22.68x
+15:36:27 DEBUG bench_qwen3 [6/140] Qwen3-0.6B kv_proj T=32
+15:36:27 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=32   [ 1024-> 2048] e2e: fp16=   5.9  triton= 117.4  cuda=  14.3  cuda/fp16=0.41x  cuda/triton=8.23x
+15:36:27 DEBUG bench_qwen3 [7/140] Qwen3-0.6B kv_proj T=128
+15:36:28 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=128  [ 1024-> 2048] e2e: fp16=   7.1  triton= 118.6  cuda=  19.0  cuda/fp16=0.37x  cuda/triton=6.24x
+15:36:28 DEBUG bench_qwen3 [8/140] Qwen3-0.6B kv_proj T=512
+15:36:29 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=512  [ 1024-> 2048] e2e: fp16=  10.2  triton= 118.7  cuda=  37.0  cuda/fp16=0.28x  cuda/triton=3.21x
+15:36:29 DEBUG bench_qwen3 [9/140] Qwen3-0.6B o_proj T=1
+15:36:36 INFO bench_qwen3 Qwen3-0.6B  o_proj       T=1    [ 2048-> 1024] e2e: fp16=  -0.6  triton= 114.2  cuda=   6.6  cuda/fp16=-0.10x  cuda/triton=17.43x
+15:36:36 DEBUG bench_qwen3 [10/140] Qwen3-0.6B o_proj T=32
