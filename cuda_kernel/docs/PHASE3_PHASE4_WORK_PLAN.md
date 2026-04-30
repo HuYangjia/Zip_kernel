@@ -38,11 +38,13 @@ on default dispatch.
 
 ### Path C — main MMA kernel refinement (Step 1, low-risk high-ROI)
 
-- [ ] **C.1** Re-tune `use_group_cache` gate at T=128
-  - Current gate: `n_groups ≤ 8 OR (n_groups ≤ 32 AND T ≤ 32)`.
-  - Hypothesis: cache helps T=128 for low-grid_M shapes too.
-  - Sweep: (T=128, cache∈{on,off}) × (n_groups∈{4,8,16,32}) × (d_out∈{1024,2048,4096,8192,14336}).
-  - Action: either widen gate or keep it; write decision + data to VALIDATION_LOG.
+- [x] **C.1** Re-tune `use_group_cache` gate at T=128 ✅ DONE (2026-04-30)
+  - Decision: widened gate to `T=128 && n_groups ∈ (32, 64] && n_cta_m ≤ 64`.
+  - Wins: Qwen3-1.7B dn T=128 −10.2%, Qwen3-14B q/o T=128 −4.0%/−4.1%.
+  - Key lesson: initial attempt (`n_groups ≤ 64`) regressed 5 shapes at
+    n_groups=32 by 6-13% because they preferred cache OFF at T=128.
+    See failure log F-C1a and `logs/r64_path_c/c1_group_cache_sweep.json`.
+  - Commit: `da6fb02`.
 - [ ] **C.2** Introduce kBn=16 as a new tile size
   - Current set: {8, 32, 64}; gap at T=128 where kBn=32 gives only 4 N-tiles.
   - Instantiate template with kBn=16, hook into dispatcher sweep.
@@ -91,6 +93,16 @@ Prerequisite: Path C complete.
 
 ## 2. Progress log (append-only, most recent at top)
 
+### 2026-04-30 — C.1 group-cache gate widened
+- 25-shape T=128 sweep (`logs/r64_path_c/c1_group_cache_sweep.json`)
+  identified n_groups ∈ (32, 64] + small grid_M as a previously
+  unreachable cache-on regime.
+- Gate widened to include that regime.  Parity 10/10 still passing.
+- Measured gains: Qwen3-1.7B dn T=128 -10.2%, Qwen3-14B q/o -4.0%/-4.1%.
+- First iteration regressed 5 shapes (n_g=32, 6-13% slower) → narrowed
+  the lower bound to `n_groups > kGrpBuf (=32)`; second iteration clean.
+- Commit: `da6fb02`.
+
 ### 2026-04-30 — Path B rejection + work plan creation
 - Path B (smallT) re-benched at T∈{2,4,8,16}; unanimously slower than
   main MMA in production shapes (1.24×–9.05× regression); REJECTED.
@@ -106,6 +118,26 @@ Prerequisite: Path C complete.
 Per project norm: failed experiments are not deleted, only disabled.
 Each entry includes: what was tried, why it failed, numerical
 evidence, lesson.
+
+### F-C1a (2026-04-30) — group-cache gate too wide (first attempt)
+- **Tried**: widen use_group_cache to `T=128 && n_groups ≤ kMaxWindowedGroups (=64) && n_cta_m ≤ 64`.
+- **Status**: regression on 5 shapes with n_groups=32.
+  - Qwen3-8B q_proj   T=128: 32.29 → 34.29us (+6%)
+  - Qwen3-8B o_proj   T=128: 32.29 → 34.30us (+6%)
+  - Qwen3-8B kv_proj  T=128: 21.00 → 23.81us (+13%)
+  - Qwen3-4B o_proj   T=128: 24.70 → 27.38us (+10.8%)
+  - Qwen3-4B q_proj   T=128: less dramatic but also not an improvement
+- **Root cause**: at n_groups = 32, the scale/zero-buffer smem footprint
+  (16 KB) actively harms SM occupancy (drops from 3 to 2 CTAs/SM on
+  kBm=128), even though the cache path IS runtime-enabled.  Those
+  shapes had been benefiting from the non-cached variant's lighter
+  smem.  The windowed-cache-only regime (33..64) has larger n_groups
+  so the cache amortises over more reuse, tilting the balance the
+  other way.
+- **Lesson**: smem-gated optimisations need a LOWER bound (`n_groups > kGrpBuf`),
+  not just an upper bound.  Always bench the gate's neighbour regime
+  too (n_g = 32 here) before shipping the change.
+- **Resolution**: narrowed to `n_groups > kGrpBuf && n_groups ≤ kMaxWindowedGroups`.
 
 ### F-P0 (2026-04-30) — activation_quant fusion into MMA prologue
 - **Tried**: fuse activation_quant into fused_dense_sparse_mma_int4
