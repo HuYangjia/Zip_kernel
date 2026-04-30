@@ -1165,8 +1165,48 @@ void launch(
     // Round 37 (reverted): forcing 9<=T<=32 onto kBn=32 did not help the
     //   target gate_up T=16 shape materially, but it regressed q/kv/o and
     //   down_proj at T=16.  Keep the original wave-aware rule below.
+    // r62 F2 Step 2: compute split_k BEFORE kBn pick, so pick can be
+    //   split-K-aware.  The split-K heuristic itself doesn't depend on
+    //   kbn_pick (it uses ceil_div(T, 64) as a fixed estimator of how
+    //   many N-tiles we'll end up with), so moving it up is safe.
+    //
+    //   Previous order (kBn pick before split-K) made the kBn-pick
+    //   `waves_at` thresholds ignore that sk=N multiplies the effective
+    //   grid by N, causing T=32 shapes to pick kBn=8 (over-fragmented)
+    //   even when sk=4 already delivered the needed CTA count via the
+    //   split-K axis.
+    //
+    // Split-K gate (moved from below):
+    if (hp_nnz == 0 && n_groups >= 16 && T >= 32) {
+        const int grid_mn_at_kbn64 =
+            n_cta_m_at_128 * ceil_div(T, 64);
+        const int target_wave = 128;
+        const int denom = (grid_mn_at_kbn64 > 1) ? grid_mn_at_kbn64 : 1;
+        int want_sk = ceil_div(target_wave, denom);
+        if      (want_sk >= 4) want_sk = 4;
+        else if (want_sk >= 2) want_sk = 2;
+        else                   want_sk = 1;
+        if      (want_sk == 4 && n_groups % 4 == 0) split_k = 4;
+        else if (want_sk >= 2 && n_groups % 2 == 0) split_k = 2;
+        else                                        split_k = 1;
+    }
+    // Override for testing (read here too so pick() below sees the
+    // override-adjusted split_k).
+    {
+        const char* env_sk = std::getenv("HKUST_V9_FUSED_FORCE_SPLITK");
+        if (env_sk != nullptr) {
+            int sk = atoi(env_sk);
+            if (sk >= 1 && sk <= 32) split_k = sk;
+        }
+    }
+
     auto waves_at = [&](int kBn_c) {
-        return (int64_t)n_cta_m * ceil_div(T, kBn_c);
+        // r62 F2: account for split-K's multiplicative effect on the
+        // effective grid.  With sk=N the kernel launches N times more
+        // CTAs along the K-dimension, so the wave-occupancy thresholds
+        // below must be divided by sk before comparison.  Equivalent
+        // to multiplying the raw wave count by sk.
+        return (int64_t)n_cta_m * ceil_div(T, kBn_c) * split_k;
     };
     auto pick = [&]() -> int {
         if (T <= 8) return 8;
@@ -1230,64 +1270,16 @@ void launch(
     // exceeds the latency hiding benefit for short K-loops).
     const bool use_cp_async = (n_groups >= 16);
 
-    // Stage I: Split-K on n_groups dimension.
-    // When the grid (n_cta_m * n_cta_n) is small (< kSplitKThreshold CTAs),
-    // split n_groups into split_k slices so that gridDim.z = split_k and
-    // total CTAs = n_cta_m * n_cta_n * split_k >= kSplitKThreshold.
-    // Each CTA writes fp32 partial sums to Y_partial; a reduce kernel
-    // then sums the partials and writes fp16 to Y.
     //
-    // Gate: only for dense-only shapes (hp_nnz == 0) to avoid BSR
-    // block-index misalignment in the sparse branch.
-    // Also only when n_groups is divisible by split_k (for simplicity).
+    // Stage I: split_k is computed ABOVE (before the kBn pick, so the
+    //   wave-aware kBn pick can see the split-K multiplier).  The
+    //   buffer allocation below just uses whatever value is currently
+    //   in `split_k`.
+    //
+    // kSplitKMax is retained as documentation of the historical upper
+    // bound (reduce-kernel cost dominates beyond 4, we cap at 4 above).
     constexpr int kSplitKMax = 8;
-    const int n_cta_mn = n_cta_m * ceil_div(T, kbn_pick);
-    (void)n_cta_mn;  // retained for debug; no longer used by gate
-    //
-    // Stage I: Split-K heuristic.
-    //
-    // Calibration bench on RTX 4090 (r60 @ 2026-04-29):
-    //   shape          ng  auto    sk=2    sk=4    winner
-    //   1024x4096x128  32  30.88   21.87   19.74   sk=4 (1.56x)
-    //   2048x4096x128  32  28.63   25.97   28.32   sk=2 (1.10x)
-    //   4096x14336x128 112 145.24  85.18   90.42   sk=2 (1.70x)
-    //   4096x1024x128   8  15.35   20.45   25.22   sk=1
-    //   4096x4096x128  32  37.38   42.95   52.38   sk=1
-    //   14336x4096x128 32  68.36   87.69  110.33   sk=1
-    //
-    // Gating signal: the ratio (n_groups / n_cta_m) measures per-CTA
-    // K-work relative to M-parallelism.  When this ratio >= 2 the CTA
-    // spends most of its time looping over groups while only a small
-    // fraction of SMs are busy; splitting along K then exposes more
-    // parallelism without losing per-CTA efficiency.  When ratio < 2
-    // the grid is already M-heavy and reduce-kernel overhead dominates.
-    //
-    // Empirical rules (dense-only: hp_nnz == 0):
-    //   R1: ng / n_cta_m_at_128 >= 4  -> prefer sk=4
-    //   R2: ng / n_cta_m_at_128 >= 2  -> prefer sk=2
-    //   else                          -> sk=1
-    // We use n_cta_m_at_128 (not n_cta_m) so that the ratio is
-    // independent of the kbm_pick R52 gate; otherwise 2048x4096 which
-    // flips to kbm=64 would lose its Split-K eligibility.
-    // Additional guards:
-    //   - n_groups must be divisible by split_k (for simplicity)
-    //   - n_groups >= 16 (below this, K-loop too short to benefit)
-    if (hp_nnz == 0 && n_groups >= 16) {
-        const int ratio_x2 = 2 * n_groups / n_cta_m_at_128;  // integer floor
-        if (ratio_x2 >= 8 && n_groups % 4 == 0) {
-            split_k = 4;
-        } else if (ratio_x2 >= 4 && n_groups % 2 == 0) {
-            split_k = 2;
-        }
-    }
-    // Override via env var for testing.
-    {
-        const char* env_sk = std::getenv("HKUST_V9_FUSED_FORCE_SPLITK");
-        if (env_sk != nullptr) {
-            int sk = atoi(env_sk);
-            if (sk >= 1 && sk <= 32) split_k = sk;
-        }
-    }
+    (void)kSplitKMax;
 
     // Allocate Y_partial buffer for split_k > 1.
     // Y_partial_ptr and Y_partial_tensor were forward-declared above.
