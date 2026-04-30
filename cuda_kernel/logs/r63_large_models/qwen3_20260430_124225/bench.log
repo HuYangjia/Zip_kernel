@@ -1,0 +1,128 @@
+12:42:25 INFO bench_qwen3 output dir: /root/Zip_kernel/cuda_kernel/logs/r63_large_models/qwen3_20260430_124225
+12:42:25 INFO bench_qwen3 device: NVIDIA GeForce RTX 4090
+12:42:25 INFO bench_qwen3 pytorch 2.8.0+cu126  triton 3.4.0
+12:42:25 INFO bench_qwen3 hp_ratio: 0.050
+12:42:25 INFO bench_qwen3 flush_l2_fp16: True
+12:42:25 DEBUG bench_qwen3 [1/60] Qwen3-14B q_proj T=1
+12:42:29 INFO bench_qwen3 Qwen3-14B   q_proj       T=1    [ 5120-> 5120] e2e: fp16=  61.0  triton= 133.5  cuda=  26.6  cuda/fp16=2.30x  cuda/triton=5.03x
+12:42:29 DEBUG bench_qwen3 [2/60] Qwen3-14B q_proj T=32
+12:42:33 INFO bench_qwen3 Qwen3-14B   q_proj       T=32   [ 5120-> 5120] e2e: fp16=  64.3  triton= 135.8  cuda=  41.0  cuda/fp16=1.57x  cuda/triton=3.31x
+12:42:33 DEBUG bench_qwen3 [3/60] Qwen3-14B q_proj T=128
+12:42:37 INFO bench_qwen3 Qwen3-14B   q_proj       T=128  [ 5120-> 5120] e2e: fp16=  69.1  triton= 195.6  cuda=  67.3  cuda/fp16=1.03x  cuda/triton=2.91x
+12:42:37 DEBUG bench_qwen3 [4/60] Qwen3-14B q_proj T=512
+12:42:41 INFO bench_qwen3 Qwen3-14B   q_proj       T=512  [ 5120-> 5120] e2e: fp16= 171.7  triton= 370.5  cuda= 175.3  cuda/fp16=0.98x  cuda/triton=2.11x
+12:42:41 DEBUG bench_qwen3 [5/60] Qwen3-14B kv_proj T=1
+12:42:45 INFO bench_qwen3 Qwen3-14B   kv_proj      T=1    [ 5120-> 2048] e2e: fp16=  25.6  triton= 133.4  cuda=  17.3  cuda/fp16=1.48x  cuda/triton=7.70x
+12:42:45 DEBUG bench_qwen3 [6/60] Qwen3-14B kv_proj T=32
+12:42:48 INFO bench_qwen3 Qwen3-14B   kv_proj      T=32   [ 5120-> 2048] e2e: fp16=  27.2  triton= 134.8  cuda=  34.9  cuda/fp16=0.78x  cuda/triton=3.86x
+12:42:48 DEBUG bench_qwen3 [7/60] Qwen3-14B kv_proj T=128
+12:42:52 INFO bench_qwen3 Qwen3-14B   kv_proj      T=128  [ 5120-> 2048] e2e: fp16=  30.2  triton= 141.1  cuda=  41.1  cuda/fp16=0.74x  cuda/triton=3.44x
+12:42:52 DEBUG bench_qwen3 [8/60] Qwen3-14B kv_proj T=512
+12:42:56 INFO bench_qwen3 Qwen3-14B   kv_proj      T=512  [ 5120-> 2048] e2e: fp16=  62.7  triton= 197.8  cuda=  75.9  cuda/fp16=0.83x  cuda/triton=2.61x
+12:42:56 DEBUG bench_qwen3 [9/60] Qwen3-14B o_proj T=1
+12:42:56 INFO bench_qwen3 Qwen3-14B   o_proj       T=1    [ 5120-> 5120] e2e: fp16=  60.7  triton= 132.4  cuda=  26.4  cuda/fp16=2.30x  cuda/triton=5.01x
+12:42:56 DEBUG bench_qwen3 [10/60] Qwen3-14B o_proj T=32
+12:42:57 INFO bench_qwen3 Qwen3-14B   o_proj       T=32   [ 5120-> 5120] e2e: fp16=  64.3  triton= 136.7  cuda=  41.2  cuda/fp16=1.56x  cuda/triton=3.32x
+12:42:57 DEBUG bench_qwen3 [11/60] Qwen3-14B o_proj T=128
+12:42:57 INFO bench_qwen3 Qwen3-14B   o_proj       T=128  [ 5120-> 5120] e2e: fp16=  69.1  triton= 195.8  cuda=  67.5  cuda/fp16=1.02x  cuda/triton=2.90x
+12:42:57 DEBUG bench_qwen3 [12/60] Qwen3-14B o_proj T=512
+12:42:58 INFO bench_qwen3 Qwen3-14B   o_proj       T=512  [ 5120-> 5120] e2e: fp16= 172.3  triton= 370.5  cuda= 175.3  cuda/fp16=0.98x  cuda/triton=2.11x
+12:42:58 DEBUG bench_qwen3 [13/60] Qwen3-14B gate_up_proj T=1
+12:43:03 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=1    [ 5120->34816] e2e: fp16= 378.3  triton= 260.6  cuda= 183.1  cuda/fp16=2.07x  cuda/triton=1.42x
+12:43:03 DEBUG bench_qwen3 [14/60] Qwen3-14B gate_up_proj T=32
+12:43:08 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=32   [ 5120->34816] e2e: fp16= 434.5  triton= 310.8  cuda= 299.8  cuda/fp16=1.45x  cuda/triton=1.04x
+12:43:08 DEBUG bench_qwen3 [15/60] Qwen3-14B gate_up_proj T=128
+12:43:14 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=128  [ 5120->34816] e2e: fp16= 456.4  triton= 555.8  cuda= 477.3  cuda/fp16=0.96x  cuda/triton=1.16x
+12:43:14 DEBUG bench_qwen3 [16/60] Qwen3-14B gate_up_proj T=512
+12:43:24 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=512  [ 5120->34816] e2e: fp16=1174.8  triton=1708.7  cuda=1517.3  cuda/fp16=0.77x  cuda/triton=1.13x
+12:43:24 DEBUG bench_qwen3 [17/60] Qwen3-14B down_proj T=1
+12:43:28 INFO bench_qwen3 Qwen3-14B   down_proj    T=1    [17408-> 5120] e2e: fp16= 193.2  triton= 425.2  cuda=  85.2  cuda/fp16=2.27x  cuda/triton=4.99x
+12:43:28 DEBUG bench_qwen3 [18/60] Qwen3-14B down_proj T=32
+12:43:33 INFO bench_qwen3 Qwen3-14B   down_proj    T=32   [17408-> 5120] e2e: fp16= 226.1  triton= 452.3  cuda= 123.6  cuda/fp16=1.83x  cuda/triton=3.66x
+12:43:33 DEBUG bench_qwen3 [19/60] Qwen3-14B down_proj T=128
+12:43:38 INFO bench_qwen3 Qwen3-14B   down_proj    T=128  [17408-> 5120] e2e: fp16= 244.4  triton= 624.9  cuda= 193.1  cuda/fp16=1.27x  cuda/triton=3.24x
+12:43:38 DEBUG bench_qwen3 [20/60] Qwen3-14B down_proj T=512
+12:43:44 INFO bench_qwen3 Qwen3-14B   down_proj    T=512  [17408-> 5120] e2e: fp16= 586.0  triton=1243.8  cuda= 734.5  cuda/fp16=0.80x  cuda/triton=1.69x
+12:43:44 DEBUG bench_qwen3 [21/60] Qwen2.5-32B q_proj T=1
+12:43:45 INFO bench_qwen3 Qwen2.5-32B q_proj       T=1    [ 5120-> 5120] e2e: fp16=  61.0  triton= 132.0  cuda=  26.6  cuda/fp16=2.29x  cuda/triton=4.96x
+12:43:45 DEBUG bench_qwen3 [22/60] Qwen2.5-32B q_proj T=32
+12:43:45 INFO bench_qwen3 Qwen2.5-32B q_proj       T=32   [ 5120-> 5120] e2e: fp16=  64.3  triton= 137.2  cuda=  41.4  cuda/fp16=1.55x  cuda/triton=3.31x
+12:43:45 DEBUG bench_qwen3 [23/60] Qwen2.5-32B q_proj T=128
+12:43:46 INFO bench_qwen3 Qwen2.5-32B q_proj       T=128  [ 5120-> 5120] e2e: fp16=  69.4  triton= 196.6  cuda=  67.8  cuda/fp16=1.02x  cuda/triton=2.90x
+12:43:46 DEBUG bench_qwen3 [24/60] Qwen2.5-32B q_proj T=512
+12:43:47 INFO bench_qwen3 Qwen2.5-32B q_proj       T=512  [ 5120-> 5120] e2e: fp16= 174.7  triton= 372.0  cuda= 176.4  cuda/fp16=0.99x  cuda/triton=2.11x
+12:43:47 DEBUG bench_qwen3 [25/60] Qwen2.5-32B kv_proj T=1
+12:43:47 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=1    [ 5120-> 2048] e2e: fp16=  25.7  triton= 132.0  cuda=  17.4  cuda/fp16=1.47x  cuda/triton=7.58x
+12:43:47 DEBUG bench_qwen3 [26/60] Qwen2.5-32B kv_proj T=32
+12:43:48 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=32   [ 5120-> 2048] e2e: fp16=  27.2  triton= 135.5  cuda=  35.1  cuda/fp16=0.78x  cuda/triton=3.86x
+12:43:48 DEBUG bench_qwen3 [27/60] Qwen2.5-32B kv_proj T=128
+12:43:48 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=128  [ 5120-> 2048] e2e: fp16=  30.3  triton= 141.7  cuda=  41.3  cuda/fp16=0.73x  cuda/triton=3.43x
+12:43:48 DEBUG bench_qwen3 [28/60] Qwen2.5-32B kv_proj T=512
+12:43:49 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=512  [ 5120-> 2048] e2e: fp16=  62.9  triton= 197.6  cuda=  75.7  cuda/fp16=0.83x  cuda/triton=2.61x
+12:43:49 DEBUG bench_qwen3 [29/60] Qwen2.5-32B o_proj T=1
+12:43:49 INFO bench_qwen3 Qwen2.5-32B o_proj       T=1    [ 5120-> 5120] e2e: fp16=  61.0  triton= 132.9  cuda=  26.6  cuda/fp16=2.30x  cuda/triton=5.00x
+12:43:49 DEBUG bench_qwen3 [30/60] Qwen2.5-32B o_proj T=32
+12:43:50 INFO bench_qwen3 Qwen2.5-32B o_proj       T=32   [ 5120-> 5120] e2e: fp16=  64.5  triton= 137.2  cuda=  41.5  cuda/fp16=1.56x  cuda/triton=3.31x
+12:43:50 DEBUG bench_qwen3 [31/60] Qwen2.5-32B o_proj T=128
+12:43:50 INFO bench_qwen3 Qwen2.5-32B o_proj       T=128  [ 5120-> 5120] e2e: fp16=  69.5  triton= 196.6  cuda=  67.8  cuda/fp16=1.03x  cuda/triton=2.90x
+12:43:50 DEBUG bench_qwen3 [32/60] Qwen2.5-32B o_proj T=512
+12:43:51 INFO bench_qwen3 Qwen2.5-32B o_proj       T=512  [ 5120-> 5120] e2e: fp16= 174.2  triton= 372.5  cuda= 176.5  cuda/fp16=0.99x  cuda/triton=2.11x
+12:43:51 DEBUG bench_qwen3 [33/60] Qwen2.5-32B gate_up_proj T=1
+12:43:57 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=1    [ 5120->55296] e2e: fp16= 596.7  triton= 361.8  cuda= 298.4  cuda/fp16=2.00x  cuda/triton=1.21x
+12:43:57 DEBUG bench_qwen3 [34/60] Qwen2.5-32B gate_up_proj T=32
+12:44:02 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=32   [ 5120->55296] e2e: fp16= 665.1  triton= 386.2  cuda= 378.7  cuda/fp16=1.76x  cuda/triton=1.02x
+12:44:02 DEBUG bench_qwen3 [35/60] Qwen2.5-32B gate_up_proj T=128
+12:44:09 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=128  [ 5120->55296] e2e: fp16= 674.0  triton= 756.3  cuda= 703.6  cuda/fp16=0.96x  cuda/triton=1.07x
+12:44:09 DEBUG bench_qwen3 [36/60] Qwen2.5-32B gate_up_proj T=512
+12:44:23 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=512  [ 5120->55296] e2e: fp16=1854.1  triton=2647.0  cuda=2595.5  cuda/fp16=0.71x  cuda/triton=1.02x
+12:44:23 DEBUG bench_qwen3 [37/60] Qwen2.5-32B down_proj T=1
+12:45:13 INFO bench_qwen3 Qwen2.5-32B down_proj    T=1    [27648-> 5120] e2e: fp16= 302.8  triton= 705.4  cuda= 364.5  cuda/fp16=0.83x  cuda/triton=1.94x
+12:45:13 DEBUG bench_qwen3 [38/60] Qwen2.5-32B down_proj T=32
+12:46:07 INFO bench_qwen3 Qwen2.5-32B down_proj    T=32   [27648-> 5120] e2e: fp16= 326.3  triton= 735.8  cuda= 301.0  cuda/fp16=1.08x  cuda/triton=2.44x
+12:46:07 DEBUG bench_qwen3 [39/60] Qwen2.5-32B down_proj T=128
+12:46:13 INFO bench_qwen3 Qwen2.5-32B down_proj    T=128  [27648-> 5120] e2e: fp16= 378.5  triton=1021.3  cuda= 382.7  cuda/fp16=0.99x  cuda/triton=2.67x
+12:46:13 DEBUG bench_qwen3 [40/60] Qwen2.5-32B down_proj T=512
+12:46:21 INFO bench_qwen3 Qwen2.5-32B down_proj    T=512  [27648-> 5120] e2e: fp16= 918.6  triton=1955.2  cuda=1310.8  cuda/fp16=0.70x  cuda/triton=1.49x
+12:46:21 DEBUG bench_qwen3 [41/60] LLaMA3-70B q_proj T=1
+12:46:46 INFO bench_qwen3 LLaMA3-70B  q_proj       T=1    [ 8192-> 8192] e2e: fp16= 146.7  triton= 202.2  cuda=  65.8  cuda/fp16=2.23x  cuda/triton=3.07x
+12:46:46 DEBUG bench_qwen3 [42/60] LLaMA3-70B q_proj T=32
+12:46:50 INFO bench_qwen3 LLaMA3-70B  q_proj       T=32   [ 8192-> 8192] e2e: fp16= 172.1  triton= 216.7  cuda=  74.5  cuda/fp16=2.31x  cuda/triton=2.91x
+12:46:50 DEBUG bench_qwen3 [43/60] LLaMA3-70B q_proj T=128
+12:46:54 INFO bench_qwen3 LLaMA3-70B  q_proj       T=128  [ 8192-> 8192] e2e: fp16= 191.1  triton= 310.2  cuda= 112.6  cuda/fp16=1.70x  cuda/triton=2.76x
+12:46:54 DEBUG bench_qwen3 [44/60] LLaMA3-70B q_proj T=512
+12:46:59 INFO bench_qwen3 LLaMA3-70B  q_proj       T=512  [ 8192-> 8192] e2e: fp16= 398.7  triton= 737.1  cuda= 377.0  cuda/fp16=1.06x  cuda/triton=1.96x
+12:46:59 DEBUG bench_qwen3 [45/60] LLaMA3-70B kv_proj T=1
+12:47:03 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=1    [ 8192-> 2048] e2e: fp16=  39.2  triton= 184.1  cuda=  26.2  cuda/fp16=1.50x  cuda/triton=7.04x
+12:47:03 DEBUG bench_qwen3 [46/60] LLaMA3-70B kv_proj T=32
+12:47:07 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=32   [ 8192-> 2048] e2e: fp16=  40.6  triton= 213.2  cuda=  48.8  cuda/fp16=0.83x  cuda/triton=4.37x
+12:47:07 DEBUG bench_qwen3 [47/60] LLaMA3-70B kv_proj T=128
+12:47:11 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=128  [ 8192-> 2048] e2e: fp16=  46.8  triton= 216.0  cuda=  60.7  cuda/fp16=0.77x  cuda/triton=3.56x
+12:47:11 DEBUG bench_qwen3 [48/60] LLaMA3-70B kv_proj T=512
+12:47:15 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=512  [ 8192-> 2048] e2e: fp16= 100.8  triton= 305.3  cuda= 112.9  cuda/fp16=0.89x  cuda/triton=2.71x
+12:47:15 DEBUG bench_qwen3 [49/60] LLaMA3-70B o_proj T=1
+12:47:15 INFO bench_qwen3 LLaMA3-70B  o_proj       T=1    [ 8192-> 8192] e2e: fp16= 146.7  triton= 203.2  cuda=  66.9  cuda/fp16=2.19x  cuda/triton=3.04x
+12:47:15 DEBUG bench_qwen3 [50/60] LLaMA3-70B o_proj T=32
+12:47:16 INFO bench_qwen3 LLaMA3-70B  o_proj       T=32   [ 8192-> 8192] e2e: fp16= 172.1  triton= 216.5  cuda=  74.4  cuda/fp16=2.31x  cuda/triton=2.91x
+12:47:16 DEBUG bench_qwen3 [51/60] LLaMA3-70B o_proj T=128
+12:47:17 INFO bench_qwen3 LLaMA3-70B  o_proj       T=128  [ 8192-> 8192] e2e: fp16= 191.0  triton= 310.1  cuda= 112.5  cuda/fp16=1.70x  cuda/triton=2.76x
+12:47:17 DEBUG bench_qwen3 [52/60] LLaMA3-70B o_proj T=512
+12:47:19 INFO bench_qwen3 LLaMA3-70B  o_proj       T=512  [ 8192-> 8192] e2e: fp16= 400.4  triton= 737.1  cuda= 377.1  cuda/fp16=1.06x  cuda/triton=1.95x
+12:47:19 DEBUG bench_qwen3 [53/60] LLaMA3-70B gate_up_proj T=1
+12:47:26 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=1    [ 8192->57344] e2e: fp16= 985.9  triton= 624.8  cuda= 485.3  cuda/fp16=2.03x  cuda/triton=1.29x
+12:47:26 DEBUG bench_qwen3 [54/60] LLaMA3-70B gate_up_proj T=32
+12:47:33 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=32   [ 8192->57344] e2e: fp16=1099.9  triton= 660.2  cuda= 593.4  cuda/fp16=1.85x  cuda/triton=1.11x
+12:47:33 DEBUG bench_qwen3 [55/60] LLaMA3-70B gate_up_proj T=128
+12:47:42 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=128  [ 8192->57344] e2e: fp16=1142.7  triton=1228.4  cuda=1147.2  cuda/fp16=1.00x  cuda/triton=1.07x
+12:47:42 DEBUG bench_qwen3 [56/60] LLaMA3-70B gate_up_proj T=512
+12:48:02 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=512  [ 8192->57344] e2e: fp16=3030.4  triton=4420.3  cuda=4380.6  cuda/fp16=0.69x  cuda/triton=1.01x
+12:48:02 DEBUG bench_qwen3 [57/60] LLaMA3-70B down_proj T=1
+12:48:55 INFO bench_qwen3 LLaMA3-70B  down_proj    T=1    [28672-> 8192] e2e: fp16= 497.5  triton= 722.2  cuda= 428.2  cuda/fp16=1.16x  cuda/triton=1.69x
+12:48:55 DEBUG bench_qwen3 [58/60] LLaMA3-70B down_proj T=32
+12:49:47 INFO bench_qwen3 LLaMA3-70B  down_proj    T=32   [28672-> 8192] e2e: fp16= 528.8  triton= 775.4  cuda= 441.1  cuda/fp16=1.20x  cuda/triton=1.76x
+12:49:47 DEBUG bench_qwen3 [59/60] LLaMA3-70B down_proj T=128
+12:49:53 INFO bench_qwen3 LLaMA3-70B  down_proj    T=128  [28672-> 8192] e2e: fp16= 603.5  triton=1070.7  cuda= 519.3  cuda/fp16=1.16x  cuda/triton=2.06x
+12:49:53 DEBUG bench_qwen3 [60/60] LLaMA3-70B down_proj T=512
+12:50:05 INFO bench_qwen3 LLaMA3-70B  down_proj    T=512  [28672-> 8192] e2e: fp16=1575.3  triton=2557.0  cuda=1562.6  cuda/fp16=1.01x  cuda/triton=1.64x
+12:50:05 INFO bench_qwen3 wrote /root/Zip_kernel/cuda_kernel/logs/r63_large_models/qwen3_20260430_124225/bench.json
+12:50:05 INFO bench_qwen3 wrote /root/Zip_kernel/cuda_kernel/logs/r63_large_models/qwen3_20260430_124225/bench.md
+12:50:05 INFO bench_qwen3 done.  300 records across 60 shapes.

@@ -95,6 +95,55 @@ by proj: gate_up 45%, down 30%, q/o 25-27%, kv 18%  (median)
 peak   : 88% (Qwen3-8B gate_up T=32) — kernel can reach hardware limit
 ```
 
+## 2.2 Extension to larger models (Qwen3-14B + Qwen2.5-32B + LLaMA3-70B)
+
+Initially only Qwen3-{0.6,1.7,4,8}B were benched.  To verify whether the
+speedup extrapolates to the largest dense GQA shapes that fit a single
+RTX 4090 (24 GB), r63 adds three ≥14B models.  Note that Qwen3 dense
+family tops out at 14B — the 32B and 70B rows use Qwen2.5-32B and
+LLaMA3-70B, whose architecture is bit-identical GQA.
+
+Artefacts: [../logs/r63_large_models/SUMMARY.md](../logs/r63_large_models/SUMMARY.md),
+[../logs/r63_large_models/qwen3_20260430_124225/roofline_report.md](../logs/r63_large_models/qwen3_20260430_124225/roofline_report.md).
+
+**Combined 140-shape picture** (7 models × 5 projs × 4 batch sizes):
+
+| model | params | median | wins | peak |
+|---|---:|---:|---:|---:|
+| Qwen3-0.6B | 0.6 B | 0.36× | 2 / 20 | 1.74× |
+| Qwen3-1.7B | 1.7 B | 0.76× | 8 / 20 | 2.35× |
+| Qwen3-4B | 4.0 B | 1.01× | 10 / 20 | 2.52× |
+| **Qwen3-8B** | 8.0 B | **1.34×** | **15 / 20** | **3.25×** 🏆 |
+| Qwen3-14B | 14.0 B | 1.15× | 12 / 20 | 2.30× |
+| Qwen2.5-32B | 32.0 B | 1.01× | 10 / 20 | 2.30× |
+| LLaMA3-70B | 70.0 B | 1.18× | 15 / 20 | 2.31× |
+| **overall** | **140 shapes** | **1.02×** | **72 / 140** | **3.25×** |
+
+**T=1 decode (the production hot path) across all 7 models**:
+
+> **31 / 35 wins (89 %)  •  median 1.74×  •  spans 0.6B-70B uniformly**
+
+### Why Qwen3-8B is the local peak (not 70B)
+
+The naive expectation is "bigger model = bigger INT4 win".  Measurement
+disagrees: Qwen3-8B gives the highest median (1.34×), not the largest
+70B model (1.18×).  The roofline report exposes why:
+
+- For LLaMA3-70B's largest shapes (e.g. gate_up T=512), cuBLAS FP16 is
+  firmly in the **compute-bound** regime at 105-123 % effective
+  roofline (cuBLAS hits the Tensor Core limit).
+- Our INT4 kernel's Tensor-Core utilisation in that regime is only
+  **20-30 %** (memory `bd78lejo`: MMA pipeline starved by epilogue
+  HFMA2 dequant and shared-memory swizzle IMAD).
+- So the **4× nominal INT4-vs-FP16 TC advantage** collapses to ~1.0×
+  actual whenever the shape crosses into the compute-bound regime.
+- Qwen3-8B sits in the sweet spot where HBM-bound small-T + modest
+  compute-bound tail gives the largest average win.
+
+This **reinforces** the Phase 4 priority ordering below: closing the
+20-30 % TC utilisation gap (option 2) unlocks the compute-bound regime
+uniformly across 14-70B, which today sits at break-even.
+
 ## 3. Contributions by stage
 
 | stage | what shipped | median speedup | wins |
