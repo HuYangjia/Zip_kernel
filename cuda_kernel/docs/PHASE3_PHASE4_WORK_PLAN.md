@@ -120,6 +120,30 @@ Prerequisite: Path C complete.
 
 ## 2. Progress log (append-only, most recent at top)
 
+### 2026-04-30 — C.3 kBm=64 for huge d_out at T=128 + full r65 validation
+- Problem: Qwen3-14B gate_up T=128 (5120→34816) ran at 0.96× speedup
+  despite sitting in a region where dispatcher heuristics should give
+  full wave; microsweep showed kBm=64 beat kBm=128 by 17%.
+- Patch: extend kBm=64 gate with
+  `(T == 128 && d_out >= 32768 && d_in <= 8192)`.  Surgically narrow:
+  excludes Qwen3-8B gu (d_out=24576 prefers kBm=128) and LLaMA-70B
+  (d_in=28672).
+- Targeted microsweep verification: 14B gu T=128 420us → 349us (-17%).
+- r65 full 140-shape bench confirms cumulative wins:
+  - median speedup: 1.021× → 1.042×  (+2.1% total over r63)
+  - wins > 1×:        72 → 76  (+4)
+  - Qwen3-14B gu T=128: 0.96× → **1.19×** (+0.23 abs)
+  - Qwen3-14B gu T=32:  1.45× → 2.01× (+0.56 abs) — sticky from r64
+  - peak remains 3.56× (Qwen3-8B gu T=32)
+- Sanity check on suspect "regressions" (0.6B q/kv T=32): trial spread
+  41% (max-min = 7us around a 17us median), confirming these are pure
+  GPU drift / activation_quant launch-floor jitter, NOT dispatcher
+  regressions.  The targeted wins have trial spread <1%, i.e. rock
+  solid.
+- Commit: `0b3fdda` (C.3 patch), `9024c6e` (14B-aware clamp revert).
+- Artefacts: `logs/r65_path_c/bench.json` + `roofline_report.md` +
+  `_compare_r63_r64_r65.py`.
+
 ### 2026-04-30 — C.2 kBn=16 + mid-T dispatcher refinement
 - kBn=16 template instantiated on both kbm=128/64 paths (no kernel body change, `kNsubPerCta = (kBn+7)/8` already generic).
 - Dispatcher gained three new rules (all data-driven):
