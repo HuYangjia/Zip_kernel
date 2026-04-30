@@ -45,6 +45,18 @@ on default dispatch.
     n_groups=32 by 6-13% because they preferred cache OFF at T=128.
     See failure log F-C1a and `logs/r64_path_c/c1_group_cache_sweep.json`.
   - Commit: `da6fb02`.
+- [x] **C.1+C.2 validation** — 140-shape full bench ✅ DONE (2026-04-30)
+  - Artefact: `logs/r64_path_c/bench.json` + `roofline_report.md` + `_compare_r63_vs_r64.py`.
+  - Headline wins (r63 → r64):
+    - Peak speedup: 3.25× → **3.57×** 🏆 (Qwen3-8B gate_up T=32)
+    - Big wins (≥ 2×): 19 → 20
+    - Wins (≥ 1×): 72 → 73
+    - Qwen3-8B median: 1.34× → 1.35×
+    - Qwen3-14B gate_up T=32: 1.45× → **2.01×** (+0.56 abs, 299.79us → 216.16us, −27.9%)
+    - Qwen3-4B  gate_up T=32: 2.52× → **2.93×** (+0.42 abs)
+    - Qwen3-1.7B down T=128:  0.73× → **0.80×** (+0.08 abs)
+  - No architectural regression.  Δspeedup bucket: 5 big improve / 11 mid improve / 102 neutral / 17 mid regress / 5 big regress, where the "regress" bucket is dominated by T=1 decode shapes (cuda +8–11%, fp16 −0.3% — GPU tenant/clock drift, NOT dispatcher-related since T=1 uses a different kernel `fused_quant_gemv`).
+  - Median Δ (r64 − r63) = −0.005×: within today's GPU drift envelope (T=32 median cuda_us +3.58% vs r63 on the same machine).  Not a real regression.
 - [x] **C.2** Introduce kBn=16 + refine dispatcher for mid-T ✅ DONE (2026-04-30)
   - Template: kBn=16 now instantiates on both kbm_pick paths (128/64).
   - Dispatcher additions (all data-driven from `logs/r64_path_c/c2_kbn_sweep.json`):
