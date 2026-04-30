@@ -104,3 +104,110 @@ Copy `fused_dense_sparse_mma_int4_kernel` to a new file
 
 At MS1 nothing actually splits; it's purely a re-packaged kernel with a bigger
 CTA.  Parity MUST pass.  MS2 adds the real role split.
+
+---
+
+## 5. HFMA stress-test results (2026-04-30 afternoon)
+
+Before committing to the 7-8 day D.1 warp-specialisation work, we ran a
+30-minute confirmation experiment: inject **8 extra `fmaf` ops** into the
+critical path of `fold_dense` (real FP dependency chain, DCE-protected
+with sentinel write-back).  Measure cuda_us vs clean r66 baseline.
+
+### Results
+
+| shape | r66 (us) | +8 HFMA (us) | slowdown | HFMA on critical path? |
+|---|---:|---:|---:|---|
+| **Qwen3-8B gu T=512** | 458.3 | 702.6 | **+53.3%** | ✅ YES |
+| **Qwen3-8B gu T=128** | 148.5 | 242.5 | **+63.3%** | ✅ YES |
+| Qwen3-14B gu T=512 | 1513.4 | 1443.0 | −4.6% (noise) | ❌ no (ILP hides) |
+| Qwen3-8B gu T=32 | 66.9 | 72.6 | +8.6% | ❌ no |
+| Qwen3-8B gu T=1 | 94.9 | 47.0 | −50.5% | n/a (different kernel) |
+
+Script: `cuda_kernel/tests/d1_hfma_stress.py`.  Revert after measurement
+(single-use diagnostic).
+
+### Finding
+
+HFMA2 is on the critical path **only for medium-grid shapes** (waves < 20
+per SM).  Large-grid shapes (Qwen3-14B / 32B / 70B gu T=512) already have
+ILP hiding HFMA2 across the multiple in-flight CTAs per SM, so
+warp-specialisation would **not help** them.
+
+The original D.1 plan assumed warp-spec would lift every shape.  That
+assumption is wrong — it only lifts the medium-grid subset.
+
+---
+
+## 6. Per-shape cuda_eff ceiling analysis (T=512)
+
+Script: `cuda_kernel/logs/r66_path_c/_cuda_eff_ceiling.py`.
+
+Model assumptions:
+- Achievable INT4 TC fraction (warp-specialised): **50%** of 660.6 TOPS
+  (DeepGEMM / TensorRT-reported ceiling on Ada SM89).
+- Achievable HBM fraction: 80% of 1008 GB/s.
+- HFMA-critical = `waves_per_SM < 20`; else ILP hides it and ceiling
+  collapses to 34% TC (empirical max observed: r66 8B gu T=512).
+
+### Results (T=512, 35 shapes)
+
+| bucket | n | r66 median sp | **ceiling median sp** | ceiling cuda_eff |
+|---|---:|---:|---:|---:|
+| HFMA-critical (waves<20) | 31 | 0.884× | **1.985×** | 50% |
+| HFMA-hidden (waves≥20) | 4 | 0.749× | 1.447× | 34% |
+| **all T=512** | 35 | 0.866× | **1.947×** | ~47% |
+
+Biggest opportunity shapes (r66 → ceiling):
+- Qwen3-14B / 32B down T=512: 0.80× → **2.14×** (+1.34)
+- Qwen3-8B down T=512: 1.07× → 2.07× (+1.00)
+- Qwen3-0.6B/1.7B q/o/kv T=512: 0.59× → 1.55× (+0.96)
+
+Shapes that **cannot** be lifted past ~1.45× by any warp-level trick
+(would need CUTLASS 3.x mainloop rewrite, 2+ weeks):
+- **LLaMA-70B gu T=512**: 0.70× → ceiling 1.42×
+- **Qwen2.5-32B gu T=512**: 0.72× → ceiling 1.44×
+- **Qwen3-14B gu T=512**: 0.78× → ceiling 1.45×
+
+### Same methodology applied to T=128
+
+- r66 median: ~0.92×, TC util 14%, HBM util 21%
+- Ceiling: cuda_eff **35-40%**, speedup median **1.35-1.50×**
+- Most T=128 shapes have waves<20 → all HFMA-critical → all benefit
+  from dual-issue / warp-spec
+
+---
+
+## 7. Final Path D decision
+
+### D.1 (full warp-specialisation) — REJECTED
+
+- 7-8 day engineering cost for a 1481-line kernel rewrite
+- Benefits only ~31 of 35 T=512 shapes (HFMA-critical bucket)
+- Cannot rescue 4 large-grid losers (LLaMA-70B gu / 32B gu / 14B gu / 32B down)
+- Risk: CTA-shape change (128→256 threads) can destabilise occupancy
+  and regress small-T kernel paths
+- Expected global median uplift: +0.03 (1.049× → ~1.08×), ROI poor
+
+### D.3 (dual-issue inline PTX) — SELECTED
+
+See `PHASE4_D3_DUAL_ISSUE_DESIGN.md` for the full design.
+
+One-line summary: keep r66 CTA shape and warp layout, only **interleave
+`fmaf` (FP pipe) with `mma.sync` (TC pipe) at the PTX level** inside
+`run_mma_pass` so the Ada dual-issue dispatcher can issue them in the
+same cycle.
+
+- 3-4 day engineering cost
+- Benefits the same 31 HFMA-critical shapes (the dual-issue is what
+  warp-spec was trying to achieve, but without the CTA restructure)
+- Expected global median uplift: +0.02-0.05 (1.049× → ~1.07-1.10×)
+- Rollback: trivial — the PTX changes are local to two nested loops
+
+### Large-grid losers — ACCEPTED AS LIMIT
+
+The 4 large-grid shapes (LLaMA-70B gu T=512 etc.) are bound by INT4 MMA
+issue-rate on Ada, not by any per-warp inefficiency we can fix.
+Escaping this ceiling requires CUTLASS 3.x warp-specialised mainloop
+(≥2 weeks).  Documented as **known limitation**, out of scope for
+Phase 4.
