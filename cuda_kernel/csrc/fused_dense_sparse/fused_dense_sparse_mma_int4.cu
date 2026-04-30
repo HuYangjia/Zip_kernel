@@ -1029,7 +1029,22 @@ void launch(
         ( (T <= 8)   && (d_out <= 4096) )
      || ( (T <= 16)  && (d_out <= 3072) )
      || ( (T > 16 && T <= 32)  && (d_out <= 4096) && (d_in <= 4096) )
-     || ( (T >= 48 && T <= 64)  && (d_out <= 4096) )
+     // C.4 (r64, 2026-04-30 — logs/r64_path_c/c4_mid_T_sweep.json):
+     //   The T∈[48,64] branch was calibrated on the (4096,4096) q/o
+     //   shape but misfires for:
+     //     (a) d_in=14336 down_proj: R44 kBm=64 gives 57us vs kBm=128
+     //         44us (+22-25% regression).  Deep n_groups=112 makes
+     //         kBm=64's doubled grid overhead exceed its wave benefit.
+     //     (b) d_in=4096 + d_out=2048 kv_proj: R44 kBm=64 gives 29us
+     //         vs kBm=128 21us (+29-46%).  Small d_out (only 16 M-tiles
+     //         at kBm=128) means kBm=128 already has enough CTAs; the
+     //         kBm=64 grid doubling to 32 is wasted.
+     //   Add a d_in ≤ 4096 guard (excludes dn) AND d_out ≥ 4096 OR d_in
+     //   ≤ 2048 (excludes kv with small d_out at medium d_in).  The
+     //   surviving shapes match the original R44 calibration envelope
+     //   — q/o at d_in=d_out=4096.
+     || ( (T >= 48 && T <= 64) && (d_out <= 4096) && (d_in <= 4096)
+          && (d_out >= 4096 || d_in <= 2048) )
      || ( (T == 96)  && (d_out <= 2048) )
      // R52: T=128 with 512<=d_out<=2048 and d_in>=2048 benefits from kBm=64.
      //   d_out<512 or d_in<2048 (ng<16): overhead > benefit.
@@ -1309,7 +1324,18 @@ void launch(
         //   amortise kBn=32 grid) AND n_groups ≤ 63 (exclude the large-ng
         //   override above).  `waves_at(32) >= 64` kept so we don't
         //   demote into starvation when the grid is already half-filled.
-        if (T > 8 && T <= 64 && d_out >= 4096 && n_groups <= 63
+        //
+        // C.4 fix (r64, 2026-04-30 — logs/r64_path_c/c4_mid_T_sweep.json):
+        //   The original T upper bound of 64 misfires for T=48/64
+        //   shapes with huge d_out — kBn=32 halves throughput there.
+        //   C.4 measured Qwen3-8B gu T=48 (4096→24576): auto (kBn=32)
+        //   111us vs kBn=64 59us (+47%).  T=48/64 don't have the
+        //   half-fill problem (48 > 32 covers a full N-slab of 32 plus
+        //   extra K work) and kBn=64 packs more work per CTA, freeing
+        //   the warp scheduler from per-CTA launch-decode cost.  The
+        //   half-fill issue is specific to T=32 (exactly one quarter
+        //   of a kBn=64 slab).  Tighten T upper bound accordingly.
+        if (T > 8 && T <= 32 && d_out >= 4096 && n_groups <= 63
             && waves_at(32) >= 64) {
             return 32;
         }
@@ -1342,21 +1368,6 @@ void launch(
         return 8;
     };
     int kbn_pick = pick();
-    // --- C.4 DEBUG ---
-    {
-        const char* dbg = std::getenv("HKUST_V9_FUSED_DEBUG_DISPATCH");
-        if (dbg && dbg[0] == '1') {
-            static int _c = 0;
-            if (_c < 20) {
-                fprintf(stderr, "[dispatch] T=%d d_in=%d d_out=%d n_g=%d "
-                        "kbm_pick=%d kbn_pick=%d split_k=%d n_cta_m=%d\n",
-                        T, d_in, d_out, n_groups, kbm_pick, kbn_pick,
-                        split_k, n_cta_m);
-                _c++;
-            }
-        }
-    }
-    // --- END C.4 DEBUG ---
     // R44: when kBm=64, grid_M doubles so waves_at() thresholds fire
     //   earlier.  In particular at d_out=2048 T=48/64 with kBm=64:
     //     waves_at(32) = 32*2 = 64 → pick kBn=32
