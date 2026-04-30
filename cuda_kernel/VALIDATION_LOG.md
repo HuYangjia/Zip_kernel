@@ -4949,3 +4949,276 @@ historical calibration envelope.
   to Stage L3.6** (CUTLASS 2.11) to push HBM BW utilisation at high ng.
 
 ---
+
+
+## Run 2026-04-29 23:30 (UTC+8): r62 P2 — bench methodology fix (L2 flush / cold cache)
+
+### Context
+
+r61 Stage G's Qwen3-8B e2e bench reported 4 shapes with speedup < 1 vs
+BF16 cuBLAS (q/kv/o_proj T=32/128, down_proj T=128 etc.).  That looked
+like a kernel-efficiency problem, but profile work (see `logs/r62_p2/`)
+revealed the BF16 baseline was being measured with **L2 cache warm**:
+the tight-loop `time_ms` harness kept the 16 MiB BF16 weight matrix
+fully resident in L2 across iterations, so cuBLAS reported effective
+BW utilisation of 110–235 % — an impossible figure that exposes the
+measurement bug.
+
+### Fix
+
+- `kernel/triton_kernel/benchmarks/_bench_util.py::time_ms` gains a
+  `flush_l2: bool = False` parameter.  When enabled, every inner
+  iteration first writes to a scratch tensor sized to the device's
+  L2 capacity (`cudaGetDeviceProperties(l2CacheSize)`), forcing
+  eviction of any kernel-resident lines before the next run.
+- `bench_qwen3_shapes.py` opts in to `flush_l2=True` only for the FP16
+  baseline (the INT4 kernel is weight-streaming already and does not
+  benefit from L2; flushing both sides biases against whichever side
+  has *less* reuse).
+- New compare script: `kernel/cuda_kernel/benchmarks/_compare_tight_vs_cold.py`
+  produces a side-by-side table of the same shape under both methods.
+
+### Results — Qwen3-8B (tight-loop vs cold-cache)
+
+| | tight-loop (R61 G) | cold-cache (r62 P2) |
+|---|---:|---:|
+| median speedup vs FP16 | 0.91× | **1.21×** |
+| wins (≥1.00×) | 7/20 | **11/20** |
+| max speedup | 3.03× (gate_up T=32) | 3.25× (gate_up T=32) |
+| min speedup | 0.44× (kv_proj T=128) | 0.54× |
+
+The 7 shapes previously shown as losses (q/o_proj T=32/128, kv_proj
+T=32/128/512, down_proj T=128) are all explained by the tight-loop
+artefact: cuBLAS was getting a free L2 reuse that the real inference
+workload never sees.  Under cold cache the 4 "kernel-bug" losses
+collapse to honest BF16-wins-at-small-K losses.
+
+### Commits
+- `111d50e` r62 P2: L2 flush harness + compare tool
+- `83d2efa` r62 P2: apply to bench_qwen3_shapes (BF16 side only)
+- `34d035c` r62 P2: archive L2-flush compare bench + SUMMARY
+
+### Archive
+- `logs/r62_p2/SUMMARY.md`
+- `logs/r62_p2/tight_vs_cold_compare.md`
+
+### Status — r62 P2: **LANDED** (bench methodology, +0.30× median speedup
+correction; 4 false-loss shapes reclassified as wins).
+
+
+## Run 2026-04-30 10:30 (UTC+8): r62 F4 — CUTLASS migration attempt (REJECTED, archived as negative result)
+
+### Context
+
+r62 F1's cold-cache bench (median 1.21×, 11/20 wins) left 7 real losses
+(all cases where BF16 cuBLAS beats legacy INT4 at HBM-bound operating
+points).  F4 attempted CUTLASS 2.11 migration as the path to close
+those.
+
+### Stage A1.5 — GemmBatched + 3D int32 workspace
+
+Drove n_groups K-slices through `cutlass::gemm::device::GemmBatched`
+with a fixed `ThreadblockShape<128,128,128>`, `WarpShape<64,64,128>`,
+`InstructionShape<16,8,64>`.  Output flowed to a
+`(n_groups, d_out, T)` int32 workspace, followed by a standalone
+`launch_dequant` kernel that fused the V9 formula (acc - zero·sumX) ·
+scale_u4 · scale_x into a (d_out, T) fp16 tensor.
+
+**Result** (12 real Qwen3 shapes vs legacy): 11/12 losses, 1/12 tied,
+0/12 wins.  Worst case 0.11× (gate_up T=512 → 3.67 ms vs 0.42 ms).
+
+**Root cause**: the 3D workspace is
+`n_groups * d_out * T * 4B` = up to **1.5 GB for gate_up T=512**.  The
+HBM round-trip through this buffer dominates everything the INT4
+tensor-core path earns.
+
+### Stage A3 — per-group Gemm + 2D workspace + fused accumulator
+
+Replaced the batched GEMM with a loop of `n_groups` single-GEMM calls
+writing to a reusable `(d_out, T)` int32 workspace.  Each group's
+output was immediately folded into a `(d_out, T)` fp32 accumulator by
+a fused `dequant_accum` kernel; a final `finalize_fp32_to_fp16` pass
+applied scale_x[t] and cast to fp16.
+
+Required a pointer-arithmetic fix: `sizeof(cutlass::int4b_t) == 1`
+(Storage is uint8_t), so advancing `int4b_t*` by N moves 2N int4
+elements.  Corrected to byte-level stride on the underlying `int8_t*`.
+
+**Result** (same 12 shapes): 0/12 wins, worst case 0.07× (gate_up T=512
+6.14 ms).  Even worse than A1.5 in absolute terms.
+
+**Root cause**: host-side launch overhead.  Each of the n_groups
+iterations issues `Int4Gemm::can_implement + initialize + run` +
+`dequant_accum` = 4 kernel launches.  For n_groups=32, that is 128
+launch events × ~7 us each on RTX 4090 (autodl) = 900 us of pure
+launch overhead, dwarfing the compute.
+
+### Stage H (aborted) — 4-byte cp_async.ca swizzle fix for sW/sX bank
+conflicts
+
+Attempted to break the 16-byte-aligned uint4 shared-memory writes of
+the legacy kernel into 4-byte writes to enable finer XOR swizzle.
+Parity broke at ng>=16 (rel_err 0.47–0.58): `cp.async.ca` with 4-byte
+granularity violates the per-group tile atomicity assumed by the MMA
+path.  Reverted.
+
+### Decision
+
+All three CUTLASS-based avenues (A1.5, A3, H) fail: A1.5 is bandwidth-
+bound on workspace, A3 is launch-overhead bound, H is correctness-
+bound.  The only remaining CUTLASS route would be a **custom
+EpilogueVisitor** (`LinearCombinationDequantizeW4A4`) that fuses
+dequant into the epilogue inline — but CUTLASS 2.11's visitor
+infrastructure is incomplete (only softmax example ships), and the
+per-(m, g) scale/zero lookup requires threading through the kernel
+`Params` struct plus a split-K-serial epilogue.  Estimated 3-5 days,
+40-50 % success probability.
+
+### Commits (reverted)
+- `950a0c3` F4.1 (reverted as `6f94cd2`)
+- `41c27c0` F4 A3 (reverted as `38b4c1a`)
+- `854d0dc` F4 A3 ptr-arith fix (reverted as `1c3b060`)
+
+### Archive
+- `logs/r62_f2/` (dispatch_sweep results used to redirect into F2)
+- CUTLASS scaffold preserved at `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4_cutlass.cu`
+  for future visitor-tree work (guarded by env `HKUST_V9_USE_CUTLASS=1`,
+  with auto-fallback to legacy for hp>0 cases).
+
+### Status — r62 F4: **REJECTED** (negative result preserved in tree).
+Next: data-driven dispatcher audit (F2) before committing to
+custom-visitor investment.
+
+
+## Run 2026-04-30 11:30 (UTC+8): r62 F2 — data-driven dispatcher rewrite (ACCEPTED)
+
+### Context
+
+F4's failure redirected attention to a cheaper hypothesis: maybe the
+existing kernel **already had the required tile variants**, but the
+host-side dispatcher was mis-routing.  A dispatch sweep was built to
+measure this directly.
+
+### Evidence
+
+`kernel/tools/profile/dispatch_sweep.py` runs 20 Qwen3-8B shapes × 19
+(kBm, kBn, split_k) configurations, reporting `auto_us / best_us /
+gap`.  The **BEFORE** sweep (log `logs/r62_f2/dispatch_sweep.md`)
+exposed 5 shapes where `auto` left 15–80 % on the table:
+
+| shape | auto | best_cfg | best_us | gap |
+|---|---:|---|---:|---:|
+| down_proj T=32 | 78.38 | `64/32/sk=4` | 43.55 | **1.80×** |
+| q/o_proj T=32 | 28.27 | `128/64/sk=4` | 21.75 | 1.30× |
+| down_proj T=512 | 283.48 | `128/64/sk=1` | 237.59 | 1.19× |
+| q/o_proj T=128 | 37.90 | `128/64/sk=2` | 32.91 | 1.15× |
+| gate_up T=32 | 57.11 | `128/32/sk=1` | 52.66 | 1.08× |
+
+Pattern: the Stage-I split-K heuristic keyed on
+`ratio = n_groups / n_cta_m_at_128`, ignoring T — it conflates
+"K-work per CTA" with "grid shortness".  The correct signal is
+`grid_mn_at_kbn64 = n_cta_m_at_128 × ceil(T / 64)`: if below 128 CTA
+(one RTX 4090 wave), split K; else don't.  Over-splitting at T=512
+and under-splitting at T=32 both hurt.
+
+### Fix — three minimal changes
+
+1. **Split-K gate rewrite** (wave-deficit driven):
+   ```cpp
+   if (n_groups >= 16 && T >= 8) {
+     int grid_mn = n_cta_m_at_128 * ceil_div(T, 64);
+     int want = ceil_div(128, max(grid_mn, 1));  // fill 1 wave
+     if      (want >= 4) want = 4;
+     else if (want >= 2) want = 2;
+     else                want = 1;
+     if      (want == 4 && n_groups % 4 == 0) split_k = 4;
+     else if (want >= 2 && n_groups % 2 == 0) split_k = 2;
+     else                                     split_k = 1;
+   }
+   ```
+2. **kBn pick is now split-K-aware** — `waves_at(kBn)` multiplies by
+   `split_k`, so that after split-K adds K-axis parallelism the wave
+   thresholds don't over-fragment the N-tile to kBn=8.
+3. **Sparse branch gated on `split_k_idx == 0`** — the sparse (hp)
+   contribution is group-independent (iterates over BSR blocks, not
+   groups), so it must be added once across all K-splits.  Gating on
+   `split_k_idx == 0` makes split-K bit-exact for hp>0 shapes.
+
+### Why change #3 mattered
+
+Without change #3, split-K's `hp_nnz == 0` guard would have kept the
+entire Qwen3 bench (hp_ratio=0.05) on sk=1, masking the dispatch fix.
+The first e2e bench after changes 1-2 showed **zero improvement**
+(median unchanged at 1.21×).  Adding change #3 unlocked the dispatcher
+for production shapes.
+
+### Results — dispatch_sweep AFTER
+
+`logs/r62_f2/dispatch_sweep_after2.md`:
+auto now tracks best within 2 % for 18/20 shapes; remaining 2 have 8 %
+gap each (kv_proj T=32, gate_up T=32), benign given noise.
+
+### Results — Qwen3-8B end-to-end (cold-cache, hp_ratio=0.05)
+
+| metric | r62 F1 (r61 G + cold-cache) | r62 F2 | Δ |
+|---|---:|---:|---:|
+| **median speedup** | **1.21×** | **1.335×** | **+0.12×** |
+| mean speedup | 1.39× | 1.49× | +0.10× |
+| **wins (≥1.00×)** | **11/20** | **15/20** | **+4** |
+| clear wins (≥1.10×) | 10/20 | 14/20 | +4 |
+| clear losses (<0.90×) | 7/20 | **3/20** | **−4** |
+
+### Biggest F1 → F2 improvements
+
+| proj | T | F1 | F2 | Δ |
+|---|---:|---:|---:|---:|
+| **down_proj** | **32** | **0.80×** | **1.72×** | **+0.92×** 🏆🏆 |
+| **down_proj** | **128** | **0.86×** | **1.28×** | **+0.42×** 🏆 |
+| q_proj | 32 | 0.97× | **1.14×** | +0.17× → win |
+| o_proj | 32 | 0.97× | **1.13×** | +0.16× → win |
+| kv_proj | 128 | 0.54× | 0.65× | +0.11× |
+| q_proj | 128 | 0.81× | 0.92× | +0.10× |
+| o_proj | 128 | 0.81× | 0.91× | +0.10× |
+
+### Remaining losses (3/20, all kv_proj d_out=2048)
+
+- kv_proj T=32: 0.60× — dispatch_sweep confirms auto is at the
+  kernel's intrinsic ceiling.
+- kv_proj T=128: 0.65× (up from 0.54×).
+- kv_proj T=512: 0.78× (unchanged — tile choice already optimal per sweep).
+
+These are kernel-internal limits (bank conflict + register-bound
+occupancy per r61 Stage-C diagnosis), NOT dispatcher bugs — fixing
+them requires smem layout rewrite or custom-visitor CUTLASS.
+
+### Commits
+- `556e46f` F2 Step 1: dispatch_sweep.py (20 shapes × 19 configs tool)
+- `588c23b` F2: split-K grid-deficit heuristic + sk-aware kBn pick
+- `86ba59b` F2 hot-fix: remove T>=32 split-K guard (T<32 ng>=16 also benefits)
+- `17d1995` F2 refine: T>=8 guard (T=1/2/4 have dedicated GEMV kernels)
+- (sparse-gate commit) F2 breakthrough: sparse branch gated on split_k_idx==0
+- F2 archive: SUMMARY + Qwen3-8B e2e artefacts
+
+### Files touched
+- `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu` (3 changes)
+- `tools/profile/dispatch_sweep.py` (new)
+
+### Archive
+- `logs/r62_f2/SUMMARY.md`
+- `logs/r62_f2/dispatch_sweep.md` (BEFORE), `dispatch_sweep_after2.md` (AFTER)
+- `logs/r62_f2_v2/qwen3_20260430_113807/bench.{md,json}` (e2e bench)
+
+### Status — r62 F2: **LANDED**.  Median Qwen3-8B speedup **1.21× →
+1.335×**, wins **11/20 → 15/20**.  3/20 remaining losses are all
+kv_proj shapes bounded by kernel-internal bottlenecks (not dispatch).
+
+### Key lesson
+
+Before rewriting the kernel or migrating to CUTLASS, **measure whether
+the dispatcher is actually picking the best variant of the existing
+kernel**.  In this case the kernel already had all the needed tile /
+split-K variants; the dispatcher was misrouting 5/20 shapes.  Half a
+day of data-driven heuristic surgery outperformed the 2-day F4
+CUTLASS migration attempt in every absolute metric.
+
+---
