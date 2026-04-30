@@ -1265,6 +1265,27 @@ void launch(
         // Measured gain on RTX 4090 (r54 baseline):
         //   4096x14336x128 ng=112:   174.67 -> 140.43 us (1.24x)
         if (n_groups >= 64 && waves_at(64) >= 32) return 64;
+        // C.2b (r64, 2026-04-30 — logs/r64_path_c/c2_kbn_sweep.json):
+        //   For mid-T (T=32) shapes with wide d_out AND moderate n_groups
+        //   (16 ≤ n_g ≤ 63), kBn=64 is chosen by the wave rule but kBn=32
+        //   is 6-34% faster.  Root cause: at T=32 a kBn=64 CTA only fills
+        //   half its N-slice (32 out of 64), so the per-CTA workload
+        //   (n_g × 64 dequant fused-fold ops × 64 lanes) is fixed while
+        //   half the Tensor Core output is wasted.  kBn=32 keeps full
+        //   utilisation and doubles grid → more SMs share the work.
+        //   Concrete wins in C.2 sweep:
+        //     Qwen3-14B gate_up T=32 (d_out=34816, n_g=40): k64 285us → k32 189us (+34%)
+        //     Qwen3-4B  gate_up T=32 (d_out=18432, n_g=20): k64  36us → k32  30us (+17%)
+        //     Qwen3-14B down    T=32 (d_out= 5120, n_g=136, mid-d_in cliff): k64 → k32 (+12%)
+        //     Qwen3-8B  gate_up T=32 (d_out=24576, n_g=32): k64  57us → k32  53us (+6.6%)
+        //   Gate: T ∈ (8, 64] (mid-T) AND d_out ≥ 4096 (large enough to
+        //   amortise kBn=32 grid) AND n_groups ≤ 63 (exclude the large-ng
+        //   override above).  `waves_at(32) >= 64` kept so we don't
+        //   demote into starvation when the grid is already half-filled.
+        if (T > 8 && T <= 64 && d_out >= 4096 && n_groups <= 63
+            && waves_at(32) >= 64) {
+            return 32;
+        }
         if (waves_at(64) >= 128) return 64;
         if (waves_at(32) >= 64)  return 32;
         // C.2 (r64, 2026-04-30): prior fallback went directly to kBn=8
