@@ -243,8 +243,8 @@ void launch(
         /*M=*/d_out, /*N=*/T, /*K=*/BCOL
     };
 
-    auto* w_ptr = reinterpret_cast<cutlass::int4b_t*>(W_low.data_ptr<int8_t>());
-    auto* x_ptr = reinterpret_cast<cutlass::int4b_t*>(X_s4.data_ptr<int8_t>());
+    auto* w_ptr_i8 = W_low.data_ptr<int8_t>();
+    auto* x_ptr_i8 = X_s4.data_ptr<int8_t>();
 
     Int4Gemm gemm_op;
 
@@ -256,9 +256,16 @@ void launch(
     //          y_fp32 (overwrites on g==0, adds otherwise)
     //   then: finalize kernel scales by scale_x[t] and casts to fp16.
     //
-    // Per-group A/B pointers: each iteration advances the int4 operand
-    // pointers by BCOL nibbles (= BCOL/2 bytes, but pointer arithmetic
-    // on cutlass::int4b_t already handles the half-byte stride).
+    // IMPORTANT — int4b_t pointer arithmetic is broken in CUTLASS
+    //   because sizeof(cutlass::int4b_t) == 1 byte (the Storage type is
+    //   uint8_t), not 0.5 bytes.  Advancing an int4b_t* by N actually
+    //   moves 2N int4 elements in memory — the classic r60 Stage A1
+    //   off-by-2x bug.  Fix: do the stride arithmetic in BYTES on an
+    //   int8_t* base, then reinterpret to int4b_t* for CUTLASS.
+    //
+    //   For W_low (d_out, d_in/2) int8 row-major, the g-th 128-wide
+    //   K-slice starts at byte offset g * (BCOL/2) = g * 64 bytes of
+    //   each row.  X_s4 (T, d_in/2) has identical layout.
     // -----------------------------------------------------------------
     // Reusable contiguous contiguous tensors for the dequant helpers.
     auto scale_u4_c = scale_u4.contiguous();
@@ -267,10 +274,11 @@ void launch(
     auto scale_x_c  = scale_x.contiguous();
 
     for (int g = 0; g < n_groups; ++g) {
-        // Pointer arithmetic on int4b_t is bit-granular, so advancing by
-        // BCOL elements is exactly one (128-element) group in bytes=64.
-        auto* w_g = w_ptr + static_cast<int64_t>(g) * BCOL;
-        auto* x_g = x_ptr + static_cast<int64_t>(g) * BCOL;
+        // Byte offset of the g-th K-slice within each row: BCOL int4
+        // elements == BCOL/2 bytes.
+        const int64_t byte_off = static_cast<int64_t>(g) * (BCOL / 2);
+        auto* w_g = reinterpret_cast<cutlass::int4b_t*>(w_ptr_i8 + byte_off);
+        auto* x_g = reinterpret_cast<cutlass::int4b_t*>(x_ptr_i8 + byte_off);
 
         typename Int4Gemm::Arguments args{
             problem,
