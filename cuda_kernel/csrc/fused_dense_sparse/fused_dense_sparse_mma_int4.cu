@@ -767,6 +767,20 @@ fused_dense_sparse_mma_int4_kernel(
             float sumxn = sumxn_cache[in_sub][r & 1];  // R24: register cache
             float corrected = static_cast<float>(d_val) - z * sumxn;
             y_fp[im][in_sub][r] += corrected * s;  // R27: no sxn here
+            // D.1 DIAGNOSTIC (single-use, REVERT AFTER MEASUREMENT,
+            //   2026-04-30 HFMA2 stress test).
+            //   Hardcoded 8 extra HFMA in the critical path.  If cuda_us
+            //   rises by <20%, HFMA2 is NOT on critical path (ILP hides
+            //   it).  If >50%, HFMA2 IS critical => warp spec helps.
+            {
+                float acc = corrected * s;
+                #pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                    acc = fmaf(acc, s, corrected);  // genuine FP FMA dependency chain
+                }
+                // Prevent DCE: impossible sentinel write-back.
+                if (acc == 1e-37f) y_fp[im][in_sub][r] += acc * 0.0f;
+            }
         };
         run_mma_pass(buf, fold_dense, prefetch_dense, g_cache);
 
