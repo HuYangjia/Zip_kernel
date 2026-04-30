@@ -1291,13 +1291,14 @@ void launch(
         kbn_pick = 8;
     }
     // R44 bench hook: HKUST_V9_FUSED_FORCE_KBN overrides the pick.
-    //   "8" / "32" / "64" force that value.  Any other / unset uses
-    //   the auto pick above.
+    //   "8" / "16" / "32" / "64" force that value.  Any other / unset uses
+    //   the auto pick above.  ("16" added for C.2 mid-T sweep.)
     {
         const char* env_n = std::getenv("HKUST_V9_FUSED_FORCE_KBN");
         if (env_n != nullptr) {
             if      (env_n[0] == '6' && env_n[1] == '4') kbn_pick = 64;
             else if (env_n[0] == '3' && env_n[1] == '2') kbn_pick = 32;
+            else if (env_n[0] == '1' && env_n[1] == '6') kbn_pick = 16;
             else if (env_n[0] == '8' && env_n[1] == '\0') kbn_pick = 8;
         }
     }
@@ -1351,11 +1352,13 @@ void launch(
         auto kbm_c = std::integral_constant<int, 128>{};
         if      (kbn_pick == 64) launch_for_kbn(std::integral_constant<int, 64>{}, kbm_c);
         else if (kbn_pick == 32) launch_for_kbn(std::integral_constant<int, 32>{}, kbm_c);
+        else if (kbn_pick == 16) launch_for_kbn(std::integral_constant<int, 16>{}, kbm_c);
         else                     launch_for_kbn(std::integral_constant<int, 8>{},  kbm_c);
     } else {
         auto kbm_c = std::integral_constant<int, 64>{};
         if      (kbn_pick == 64) launch_for_kbn(std::integral_constant<int, 64>{}, kbm_c);
         else if (kbn_pick == 32) launch_for_kbn(std::integral_constant<int, 32>{}, kbm_c);
+        else if (kbn_pick == 16) launch_for_kbn(std::integral_constant<int, 16>{}, kbm_c);
         else                     launch_for_kbn(std::integral_constant<int, 8>{},  kbm_c);
     }
 
