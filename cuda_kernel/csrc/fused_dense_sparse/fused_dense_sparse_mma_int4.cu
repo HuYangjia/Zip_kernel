@@ -1267,6 +1267,22 @@ void launch(
         if (n_groups >= 64 && waves_at(64) >= 32) return 64;
         if (waves_at(64) >= 128) return 64;
         if (waves_at(32) >= 64)  return 32;
+        // C.2 (r64, 2026-04-30): prior fallback went directly to kBn=8
+        //   when a full half-wave at kBn=32 was not reachable.  Sweep
+        //   data (`logs/r64_path_c/c2_kbn_sweep.json`) showed that for
+        //   T=32 shapes with wide d_out (gate_up / down), kBn=32 is
+        //   still 17-29% faster than kBn=8 even at grid = 48 CTAs.
+        //   The per-CTA work is big enough that a quarter wave plus
+        //   intra-SM concurrency beats over-fragmented kBn=8.
+        //   Concrete wins recorded: Qwen3-0.6B gu T=32 +28.9%, Qwen3-14B
+        //   gu T=32 +26.5%, Qwen3-4B gu T=32 +17.7%.
+        //   Gate: T ∈ [16, 64] (the T=32 bucket in Qwen3 bench, with a
+        //   small buffer on either side) AND d_out >= 4096 (only wide
+        //   outputs have the per-CTA workload to absorb the smaller
+        //   grid) AND waves_at(32) >= 16 (at least a quarter wave).
+        if (T >= 16 && T <= 64 && d_out >= 4096 && waves_at(32) >= 16) {
+            return 32;
+        }
         return 8;
     };
     int kbn_pick = pick();
