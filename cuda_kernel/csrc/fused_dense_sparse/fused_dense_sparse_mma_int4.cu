@@ -94,8 +94,13 @@ __device__ __forceinline__ int swizzle_row_col(int row, int col_bytes) {
 //   4-way bank conflict is not fully eliminated, but ldmatrix already
 //   reduces the effective conflict because the HW combines the 8 lane
 //   base addresses into a single wavefront request.
+// Phase 4 D.3 (2026-04-30): `kInterleaveFold` template parameter is a
+// placeholder for the dual-issue PTX experiment.  MS-0 only adds the
+// scaffolding; MS-1 will implement the actual interleaved fold path
+// (pre-compute pr/zs, hoist into K-loop) and MS-3 benches it.  Default
+// `false` keeps r66 bit-exact.  See docs/PHASE4_D3_DUAL_ISSUE_DESIGN.md.
 template <int kBn, bool kUseGroupCache, int kBm = BROW, bool kUseCpAsync = false,
-          bool kUseLdmatrix = false>
+          bool kUseLdmatrix = false, bool kInterleaveFold = false>
 __global__ void
 // Stage D (REVERTED r55) — `__launch_bounds__(kBm, 3)` hint tried but
 // rejected: mixed result on sweep (2048x2048 +2%, 1024x1024 +4%,
