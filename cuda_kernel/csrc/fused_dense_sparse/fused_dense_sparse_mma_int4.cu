@@ -1041,9 +1041,27 @@ void launch(
     // i.e. auto was 15% slower than the clear-winner configuration.
     // Relaxing to `<= 64` lets the R44 gate catch T in {48, 64} at
     // d_out=4096 while still blocking T>=128 (which would be 32*4=128).
+    //
+    // C.3 (r64, 2026-04-30 — logs/r64_path_c/c3_gate_up_diagnose.log):
+    //   At T=128 with very wide d_out (>= 32768), kBm=64 wins over
+    //   kBm=128 by 17% despite the wave-count heuristic.  Root cause:
+    //   kBm=128 at d_out=34816 allocates grid_M=272; doubling to
+    //   kBm=64 → grid_M=544 gives finer SM load balance when combined
+    //   with the kBn=64 preference (MMA pipeline is under-fed at
+    //   kBm=128 because the M workload per CTA stresses register
+    //   lifetimes).  Measured on Qwen3-14B gate_up T=128:
+    //     auto (kBm=128, kBn=64)   420us
+    //     kBm=64,   kBn=64          349us   (-17.0%)
+    //   Guard: T=128 AND d_out >= 32768 AND d_in <= 8192 (excludes
+    //   LLaMA-70B d_in=28672 variants whose MMA pressure profile
+    //   differs; and excludes the Qwen3-8B gate_up d_out=24576 which
+    //   actually PREFERS kBm=128 by +28% if forced to kBm=64).
+    //   The wave-count check is bypassed for this branch since the
+    //   heuristic was precisely what was wrong here.
     const bool kbm64_gate_default =
-        r44_shape_ok &&
-        ((int64_t)n_cta_m_at_128 * ceil_div(T, 32) <= 64);
+        (r44_shape_ok &&
+         ((int64_t)n_cta_m_at_128 * ceil_div(T, 32) <= 64))
+        || (T == 128 && d_out >= 32768 && d_in <= 8192);
 
     // R42-P1 bench hook: HKUST_V9_FUSED_FORCE_KBM overrides the gate.
     //   "128"       : force kBm=128 (disable R41/R42/R43 opt-in).
