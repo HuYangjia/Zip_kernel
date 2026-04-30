@@ -32,6 +32,69 @@ Benchmark: `kernel/cuda_kernel/benchmarks/bench_qwen3_shapes.py`,
 Full per-shape table at
 [../logs/r62_f2_v2/qwen3_20260430_113807/bench.md](../logs/r62_f2_v2/qwen3_20260430_113807/bench.md).
 
+## 2.1 Full 80-shape bench across Qwen3 family + roofline analysis
+
+Delivered as r62 F2 Final: 4 models × 4 batch sizes = **80 shapes** with
+cold-cache FP16 baseline *and* RTX 4090 roofline cross-reference.
+
+Artefacts:
+- [../logs/r62_f2_final/SUMMARY.md](../logs/r62_f2_final/SUMMARY.md)
+- [../logs/r62_f2_final/qwen3_20260430_122555/bench.md](../logs/r62_f2_final/qwen3_20260430_122555/bench.md)
+- [../logs/r62_f2_final/qwen3_20260430_122555/roofline_report.md](../logs/r62_f2_final/qwen3_20260430_122555/roofline_report.md)
+
+| metric | value |
+|---|---:|
+| total shapes | 80 |
+| median speedup vs FP16 | **0.90×** |
+| mean speedup vs FP16 | **1.05×** |
+| wins (≥ 1.00×) | **35 / 80** (44 %) |
+| big wins (≥ 2.00×) | **8 / 80** |
+| peak | **3.25×** (Qwen3-8B gate_up_proj T=32) |
+
+Per-model:
+
+| model | median | wins | peak |
+|---|---:|---:|---:|
+| Qwen3-0.6B | 0.36× | 2 / 20 | 1.74× |
+| Qwen3-1.7B | 0.76× | 8 / 20 | 2.35× |
+| Qwen3-4B | 1.01× | 10 / 20 | 2.52× |
+| **Qwen3-8B** | **1.34×** | **15 / 20** | **3.25×** |
+
+Per-T across all models (decode = T=1 is the most important case for
+real inference):
+
+| T | median | wins | comment |
+|---:|---:|---:|---|
+| **1** | **1.55×** | **17 / 20** | decode, all models beat FP16 comfortably |
+| 32 | 0.68× | 7 / 20 | small-T prefill hit by overhead floor |
+| 128 | 0.68× | 4 / 20 | same |
+| 512 | 0.85× | 7 / 20 | GEMM re-dominates, recovery starts |
+
+### Key insight from roofline report §5 — the ~33 us overhead floor
+
+The worst 15 shapes by `cuda_efficiency` all share a single pattern:
+`cuda_us ≈ 30-34 us` regardless of problem size, while `cuda_roof` is
+only 1.5-4.2 us.  Decomposition (see `_analyze_floor.py`) shows that
+**`activation_quant` contributes ~16 us of that floor** on every shape
+— essentially `2 × 7-8 us kernel launch overhead`.  Of the 45 measured
+losses, **32 sit inside this 28-36 us band** where the quant launch
+cost dominates over the kernel time itself.
+
+### Physics ceiling
+
+Critical roofline result (§6): **80 / 80** shapes have
+`cuda_roof < fp16_roof`.  Every shape has room for a W4A4 win at the
+ceiling — **0 shapes are physics-bound losses**.  All 45 measured
+losses are therefore pure *implementation* gap.
+
+### INT4 efficiency (cuda_eff)
+
+```
+by T   : T=1 → 39%, T=32 → 19%, T=128 → 22%, T=512 → 31% (median)
+by proj: gate_up 45%, down 30%, q/o 25-27%, kv 18%  (median)
+peak   : 88% (Qwen3-8B gate_up T=32) — kernel can reach hardware limit
+```
+
 ## 3. Contributions by stage
 
 | stage | what shipped | median speedup | wins |
@@ -141,11 +204,34 @@ PYTHONPATH=. python -m kernel.cuda_kernel.benchmarks.bench_qwen3_shapes \
 
 ## 8. Next phase preview (Phase 4 candidate)
 
-- **F4v2 custom EpilogueVisitor** — directly target the 3 `kv_proj`
-  losses by removing the legacy kernel's bank-conflict / smem budget
-  constraints via CUTLASS 2.11's mainloop.  High-risk, high-reward.
-- **Kernel fusion with activation_quant** — P0 of r62 (skipped) — the
-  single largest Qwen3 small-T overhead not yet attacked (7us launch
-  cost → embed into fused kernel prologue).
-- **SM 90 / H100 port** — orthogonal to Ada-specific tuning; would
-  reset occupancy / bank-conflict analysis.
+Based on the full 80-shape roofline analysis (§2.1), the priority
+ordering has shifted significantly since Phase 3 kick-off:
+
+1. **🥇 `activation_quant` fusion into the main kernel prologue**
+   - **Evidence**: ~16 us floor on 32/80 shapes, killing T=32/128 on
+     small models.  Of the 45 measured losses, 32 are trapped under
+     this floor.
+   - **Expected gain**: removing ~16 us from e2e puts ~20-25 losing
+     shapes above 1.0×, lifts overall median from 0.90× toward ~1.10×.
+   - **Risk**: medium (requires carrying the per-token max-abs
+     reduction through the fused kernel's prologue and packing int4 in
+     shared memory).  Estimated 2-3 days.
+
+2. **🥈 `kv_proj` targeted tile (Phase 3 r62 F5 candidate)**
+   - 3 remaining Qwen3-8B losses all `kv_proj` (0.60× / 0.65× / 0.78×).
+   - Dispatch_sweep already confirms auto = best; kernel-internal
+     bottleneck, not dispatch.
+   - 1-2 days, ~70 % success probability, bounded to 3 shapes.
+
+3. **🥉 Custom CUTLASS EpilogueVisitor (F4v2)** — REJECTED.
+   Memory `ie8lp95b` documents the finding: CUTLASS 2.11 visitor
+   infrastructure is present but W4A4 per-group dequant cannot be
+   expressed in an epilogue (it must happen inside the MMA K-loop at
+   every 128-col tile).  Only a CUTLASS mainloop patch would work, at
+   ≥ 1 week cost and ~35 % success probability — not worth the ROI
+   against option 1.
+
+4. **SM 90 / H100 port** — orthogonal to Ada-specific tuning; cuTE's
+   `WarpSpecializedCooperative` schedule may natively support per-tile-k
+   epilogue hooks that could revisit option 3 at lower risk.  Deferred
+   as Phase 5+ material.
