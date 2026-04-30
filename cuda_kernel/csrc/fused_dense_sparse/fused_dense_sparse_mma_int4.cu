@@ -1313,14 +1313,14 @@ void launch(
         if (T >= 16 && T <= 64 && d_out >= 4096 && waves_at(32) >= 16) {
             return 32;
         }
-        // C.2c-2 (r64, 2026-04-30): the d_out<4096 gap above falls all
-        //   the way to kBn=8, but for n_groups >= 16 + mid-T + d_out>=2048
-        //   the kernel benefits from kBn=16 (2x-1x tile split).
-        //   Measured: Qwen3-8B kv T=32 (4096→2048, n_g=32): kBn=8 23.67us
-        //   vs kBn=16 21.26us (+10.2%).
-        if (T >= 16 && T <= 64 && d_out >= 2048 && n_groups >= 16) {
-            return 16;
-        }
+        // C.2c-2 ATTEMPT (reverted): we tried `T ≤ 64 && n_g ≥ 16 && d_out ≥ 2048 → kBn=16`
+        //   to catch 8B kv T=32 (4096→2048) which kBn=16 runs 10% faster.
+        //   But the rule was too broad and created regressions at
+        //   0.6B o T=32 (2048→1024, n_g=16) and 4B dn T=32 (9216→2560):
+        //   on those shapes kBn=64 actually wins by 27% / 6.8% due to
+        //   intra-SM parallelism (small n_cta_m + high per-SM residency).
+        //   The 8B kv +10% loss is accepted for now; a more precise
+        //   n_groups-aware rule can be added later if it matters.
         return 8;
     };
     int kbn_pick = pick();
