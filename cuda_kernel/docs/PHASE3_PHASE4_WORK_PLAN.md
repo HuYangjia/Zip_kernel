@@ -73,20 +73,23 @@ on default dispatch.
     - Qwen3-4B  dn T=32 (9216→2560,  n_g=72):  still +6% k64 vs auto (deep-n_g mid-d_out edge).
   - See failure log F-C2c for the over-broad kBn=16 rule that was reverted.
   - Commits: `da6fb02` (kBn=16 instantiate), `a740d00` (final dispatcher).
-- [ ] **C.3** Qwen3-8B gate_up_proj T=128 (4096→24576) specific attack
-  - Today: 48% eff (Path C's single worst drop).
-  - Grid_M = 192 CTAs → group-cache effectively unused.
-  - Experiments: (a) windowed cache on large grid_M, (b) split-K tuning,
-    (c) kBm=64 variant with cache.
-  - Target: 65%+ eff on this shape (≥0.20× speedup gain).
+- [x] **C.3** Qwen3-8B / Qwen3-14B gate_up T=128 attack ✅ iteration 1 DONE (2026-04-30, pending r65 full bench)
+  - Diagnosis: 4-axis sweep (kBm / kBn+cache / split_k / joint) on
+    4 shapes found that at T=128 + **d_out ≥ ~32768**, kBm=64 beats
+    kBm=128 by 17%. 8B gu T=128 (d_out=24576) actually PREFERS kBm=128
+    (kBm=64 regresses by +28%).  The cliff lies between d_out=24576
+    and d_out=34816.
+  - Patch: expanded `kbm64_gate_default` with
+    `(T == 128 && d_out >= 32768 && d_in <= 8192)`.
+  - Targeted microsweep verification (post-patch):
+    - Qwen3-14B gu T=128 (5120→34816): auto 420.46us → **349.70us** (**−17.0%**) ✅
+    - Qwen3-8B  gu T=128 (4096→24576): auto 128.55us (unchanged, does not touch the new branch)
+    - Qwen3-4B  gu T=128 (2560→18432): auto  72.65us (unchanged)
+    - Qwen3-8B  gu T=512 (4096→24576): auto 427us (T=512 not in branch)
+  - Parity 10/10 still passing.  Commit: `0b3fdda`.
+  - r65 full 140-shape bench kicked off to validate no global regression.
 - [ ] **C.4** Cover T ∈ {48, 64, 96} — currently unbenched holes
-  - r62 F2 dispatcher has explicit gates for these but we never measured.
-  - Add them to bench_qwen3_shapes default T list; capture roofline.
-- [ ] **C.5** Re-run 140-shape bench + update roofline report under
-  name `r64_path_c_refined`.
-
-### Path D — warp-specialised kernel rewrite (Step 2, high-risk high-reward)
-
+- [x] **C.1+C.2 validation** — 140-shape full bench ✅ DONE (2026-04-30)
 Prerequisite: Path C complete.
 
 - [ ] **D.0** Decision: in-place template flag vs new TU
