@@ -174,12 +174,108 @@ def _dist_table(pairs: List[tuple]) -> str:
 
 
 def render_report(rows: List[Row], source: str, title: str) -> str:
+    # Known parameter counts for scaling display in §0.1 / §4 / etc.
+    # Unknown models fall to the end (sentinel=10_000) and are ordered
+    # alphabetically after the known ones.
+    PARAMS_B = {
+        "Qwen3-0.6B": 0.6, "Qwen3-1.7B": 1.7, "Qwen3-4B": 4.0,
+        "Qwen3-8B": 8.0, "Qwen3-14B": 14.0,
+        "Qwen2.5-32B": 32.0, "LLaMA3-70B": 70.0,
+    }
+
+    def model_sort_key(m: str):
+        return (PARAMS_B.get(m, 10_000), m)
+
     L: List[str] = []
     L.append(f"# {title}")
     L.append("")
     L.append(f"Source: `{source}`")
     L.append("")
     L.append("GPU model: RTX 4090 (vendor spec, ACHIEVABLE_FRACTION=0.85)")
+    L.append("")
+
+    # =========================================================
+    # §0 Executive Summary (headline numbers up top)
+    # =========================================================
+    L.append("## §0 Executive Summary")
+    L.append("")
+    spd_all = [r.actual_speedup for r in rows]
+    ceff_all = [r.cuda_eff for r in rows]
+    feff_all = [r.fp16_eff for r in rows]
+    w10 = sum(1 for s in spd_all if s >= 1.0)
+    w11 = sum(1 for s in spd_all if s >= 1.1)
+    w20 = sum(1 for s in spd_all if s >= 2.0)
+    lo = sum(1 for s in spd_all if s < 0.9)
+    best = max(rows, key=lambda r: r.actual_speedup)
+    worst = min(rows, key=lambda r: r.actual_speedup)
+    L.append("| metric | value |")
+    L.append("|---|---:|")
+    L.append(f"| total shapes | **{len(rows)}** |")
+    L.append(f"| models | "
+             f"**{len(sorted({r.model for r in rows}))}** "
+             f"({', '.join(sorted({r.model for r in rows}))}) |")
+    L.append(f"| batch sizes (T) | "
+             f"{sorted({r.T for r in rows})} |")
+    L.append(f"| median speedup vs FP16 | "
+             f"**{statistics.median(spd_all):.3f}×** |")
+    L.append(f"| mean speedup vs FP16 | "
+             f"**{statistics.mean(spd_all):.3f}×** |")
+    L.append(f"| wins (≥ 1.00×) | "
+             f"**{w10} / {len(rows)}** ({w10*100//len(rows)} %) |")
+    L.append(f"| clear wins (≥ 1.10×) | {w11} / {len(rows)} |")
+    L.append(f"| big wins (≥ 2.00×) | **{w20} / {len(rows)}** |")
+    L.append(f"| losses (< 0.90×) | {lo} / {len(rows)} |")
+    L.append(f"| peak speedup | "
+             f"**{best.actual_speedup:.2f}×** — "
+             f"{best.model} {best.proj} T={best.T} "
+             f"({best.d_in}→{best.d_out}) |")
+    L.append(f"| worst speedup | {worst.actual_speedup:.2f}× — "
+             f"{worst.model} {worst.proj} T={worst.T} "
+             f"({worst.d_in}→{worst.d_out}) |")
+    L.append(f"| median INT4 eff (cuda_eff) | "
+             f"{statistics.median(ceff_all)*100:.1f}% |")
+    L.append(f"| peak INT4 eff | {max(ceff_all)*100:.1f}% |")
+    L.append(f"| median FP16 eff (cuBLAS vs its own roof) | "
+             f"{statistics.median(feff_all)*100:.1f}% |")
+    L.append("")
+
+    # Per-model table (only if >1 model)
+    models = sorted({r.model for r in rows})
+    if len(models) > 1:
+        L.append("### §0.1 Per-model scaling (ordered by parameter count)")
+        L.append("")
+        L.append("| model | params | N | median | mean | wins | peak |")
+        L.append("|:---|---:|---:|---:|---:|---:|---:|")
+        for m in sorted(models, key=model_sort_key):
+            mrows = [r for r in rows if r.model == m]
+            msp = [r.actual_speedup for r in mrows]
+            params = PARAMS_B.get(m)
+            p_str = f"{params:.1f}B" if params is not None else "—"
+            mwin = sum(1 for s in msp if s >= 1.0)
+            L.append(
+                f"| {m} | {p_str} | {len(msp)} | "
+                f"{statistics.median(msp):.2f}× | "
+                f"{statistics.mean(msp):.2f}× | "
+                f"{mwin} / {len(msp)} | "
+                f"{max(msp):.2f}× |"
+            )
+        L.append("")
+
+    # Per-T roll-up (quick companion to §3.1 below)
+    L.append("### §0.2 Per-T roll-up (across all models)")
+    L.append("")
+    L.append("| T | N | median | mean | wins |")
+    L.append("|---:|---:|---:|---:|---:|")
+    by_T = {}
+    for r in rows:
+        by_T.setdefault(r.T, []).append(r.actual_speedup)
+    for T in sorted(by_T):
+        sp = by_T[T]
+        wn = sum(1 for s in sp if s >= 1.0)
+        L.append(f"| {T} | {len(sp)} | "
+                 f"{statistics.median(sp):.2f}× | "
+                 f"{statistics.mean(sp):.2f}× | "
+                 f"{wn} / {len(sp)} |")
     L.append("")
 
     # §1
@@ -257,7 +353,7 @@ def render_report(rows: List[Row], source: str, title: str) -> str:
     L.append("Per-row: measured time, roofline time, efficiency, and "
              "actual-vs-roof speedup against FP16.")
     L.append("")
-    models = sorted({r.model for r in rows})
+    models = sorted({r.model for r in rows}, key=model_sort_key)
     for m in models:
         L.append(f"### {m}")
         L.append("")

@@ -37,7 +37,14 @@ Full per-shape table at
 Delivered as r62 F2 Final: 4 models × 4 batch sizes = **80 shapes** with
 cold-cache FP16 baseline *and* RTX 4090 roofline cross-reference.
 
-Artefacts:
+> **📌 Single combined deliverable covering all 7 models (0.6B→70B, 140 shapes)**:
+> [../logs/r63_combined/roofline_report.md](../logs/r63_combined/roofline_report.md)
+> — starts with §0 Executive Summary (headline, per-model scaling, per-T roll-up)
+> then §1 roofline formulas, §2-3 efficiency distributions, §4 per-shape
+> (7 models in ascending param order), §5 worst-15 implementation gap,
+> §6 physics gap, §7 conclusions.
+
+Per-round artefacts (source of the above):
 - [../logs/r62_f2_final/SUMMARY.md](../logs/r62_f2_final/SUMMARY.md)
 - [../logs/r62_f2_final/qwen3_20260430_122555/bench.md](../logs/r62_f2_final/qwen3_20260430_122555/bench.md)
 - [../logs/r62_f2_final/qwen3_20260430_122555/roofline_report.md](../logs/r62_f2_final/qwen3_20260430_122555/roofline_report.md)
