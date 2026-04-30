@@ -789,7 +789,17 @@ fused_dense_sparse_mma_int4_kernel(
     //   (upper/lower 64 rows) via half_row_off in issue_w_sparse_load.
     //   The legacy kBm==BROW path has kBsrPerCta=1 and half_row_off=0
     //   so it compiles to identical machine code.
-    {
+    //
+    // r62 F2: under Split-K (split_k > 1), the sparse branch does NOT
+    //   loop over groups — it iterates over BSR blocks indexed by bc
+    //   (col index in K), so its contribution is group-independent
+    //   and must be added exactly ONCE across all gridDim.z CTAs for
+    //   a given (m_tile, n_tile).  Gate on split_k_idx == 0 so only
+    //   the first K-split picks up the sparse contribution; the other
+    //   splits skip it.  This is safe for kBm=64 too because the
+    //   bsr_br/half_row_off remapping inside issue_w_sparse_load does
+    //   not depend on split_k_idx.
+    if (split_k_idx == 0) {
         const int blk_start = hp_row_offsets[bsr_br];
         const int blk_end   = hp_row_offsets[bsr_br + 1];
 
@@ -1185,7 +1195,14 @@ void launch(
     // sk=4 over-splits: the reduce kernel launch cost (~7us) exceeds
     // the split-K compute savings at such small N.  Gate split-K to
     // T >= 8 to avoid reporting sweep regressions for those cases.
-    if (hp_nnz == 0 && n_groups >= 16 && T >= 8) {
+    //
+    // r62 F2: split-K is now safe for hp>0 shapes too.  The sparse
+    //   branch inside the kernel is gated on split_k_idx==0 so the
+    //   sparse contribution is added exactly once across all K-splits.
+    //   Without this fix, auto dispatcher was forced to sk=1 on all
+    //   Qwen3 projections (hp_ratio=0.05), completely canceling the
+    //   F2 dispatch improvements measured in the dense-only sweep.
+    if (n_groups >= 16 && T >= 8) {
         const int grid_mn_at_kbn64 =
             n_cta_m_at_128 * ceil_div(T, 64);
         const int target_wave = 128;
