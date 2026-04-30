@@ -229,55 +229,61 @@ __global__ void fused_quant_dense_mma_int4_kernel(
     // PHASE 1 — per-token max-abs → s_scale_x[n_local]
     // =================================================================
     //
-    // Assign (n_local, warp_id) → partial max.  Warp w sees 128/4 = 32
-    // columns per kLanesPerGroup-wide chunk.  We stride D by 128.
+    // Thread remap for prologue: each 128-thread CTA covers
+    //   (n_local ∈ [0, kBn), col_quad ∈ [0, 4))
+    //     tid = n_local * 4 + col_quad      // 32 × 4 = 128
+    //     col_quad's 32 cols = col_quad*32 .. col_quad*32+31
     //
-    // For each of kBn tokens: every thread walks D columns in strides
-    // of kBm=128, accumulating local max-abs.  Then warp-reduce within
-    // each warp, write to s_max_partial, and let warp 0 finalise.
+    // Phase 1: thread walks its 32 cols per "k-chunk" of 128 cols,
+    // slides across D in strides of 128.  Each n_local=tid/4 accumulates
+    // max over its share; then 4-way shfl reduce (tid%4) across col_quad
+    // merges into a single per-token max.
     //
-    // A single thread t is mapped: its column index within D stride
-    // chunk is just `tid` (0..127).  Same mapping as activation_quant.
+    // The 4-way reduce lives inside one warp because (tid / 32) is
+    // the warp id and within a warp, lanes {0..3, 4..7, ..., 28..31}
+    // each form an independent 4-lane group owning (n_local, *).
     // -----------------------------------------------------------------
-    for (int n_local = 0; n_local < kBn; ++n_local) {
-        const int n_global = n_tile + n_local;
-        const bool n_active = (n_global < T);
+    const int qn_local  = tid >> 2;         // 0..31 (the n_local this thread serves)
+    const int qcol_quad = tid & 3;          // 0..3 (which 32-col chunk of the 128 stride)
+    const int n_global_for_q = n_tile + qn_local;
+    const bool n_active_q    = (n_global_for_q < T);
 
-        float local_max = 0.0f;
-        // tid 0..127 scans D with stride 128 (== kBm).
-        for (int d = tid; d < d_in; d += kBm) {
+    float local_max = 0.0f;
+    // Slide through D with stride 128.  Each thread handles
+    // 32 cols per 128-col chunk, starting at col_quad*32 + lane_in_chunk.
+    // Total cols per thread = D / 4 (= D/128 chunks × 32 cols).
+    for (int d_base = 0; d_base < d_in; d_base += BCOL) {
+        #pragma unroll
+        for (int k = 0; k < 32; ++k) {
+            int d = d_base + qcol_quad * 32 + k;
             int pidx = __ldg(perm + d);
             __half h(0);
-            if (n_active) {
-                h = __ldg(X + (int64_t)n_global * stride_x_t
+            if (n_active_q) {
+                h = __ldg(X + (int64_t)n_global_for_q * stride_x_t
                             + (int64_t)pidx * stride_x_d);
             }
             float v = __half2float(h);
             local_max = fmaxf(local_max, fabsf(v));
         }
-        float wmax = warp_max_abs_f(local_max);
-        if (lane == 0) s_max_partial[n_local][warp_id] = wmax;
     }
-    __syncthreads();
-
-    // Finalise per-token scale.  Use (tid < kBn * kWarpCount) threads
-    // to pick across warp partials; thread (n, 0) then reduces and
-    // writes the fp16-round-tripped scale.
-    if (tid < kBn) {
-        const int n_local = tid;
-        float gmax = 0.0f;
-        #pragma unroll
-        for (int w = 0; w < kWarpCount; ++w) {
-            gmax = fmaxf(gmax, s_max_partial[n_local][w]);
-        }
-        // Match activation_quant's scale chain: fp32 -> fp16 -> fp32.
-        float scale_fp32 = gmax / 7.0f;
+    // 4-way reduce across qcol_quad using warp shuffles.
+    //   threads (n_local*4+0 .. n_local*4+3) live in the same warp's
+    //   4-lane group; XOR 1 then XOR 2 composes the max.
+    {
+        float o = __shfl_xor_sync(0xFFFFFFFF, local_max, 1);
+        local_max = fmaxf(local_max, o);
+        o = __shfl_xor_sync(0xFFFFFFFF, local_max, 2);
+        local_max = fmaxf(local_max, o);
+    }
+    // Only lane with col_quad == 0 holds the final value.  Write to smem.
+    if (qcol_quad == 0) {
+        float scale_fp32 = local_max / 7.0f;
         __half scale_h   = __float2half(scale_fp32);
         float  scale_math = __half2float(scale_h);
         bool   iz = !(scale_math > 0.0f);
-        s_scale_x   [n_local] = scale_h;
-        s_scale_math[n_local] = iz ? 1.0f : scale_math;
-        s_scale_zero[n_local] = iz ? 1 : 0;
+        s_scale_x   [qn_local] = scale_h;
+        s_scale_math[qn_local] = iz ? 1.0f : scale_math;
+        s_scale_zero[qn_local] = iz ? 1 : 0;
     }
     __syncthreads();
 
@@ -312,73 +318,62 @@ __global__ void fused_quant_dense_mma_int4_kernel(
 
     // Quantize+pack+sum one group g into sX[buf][...] and s_sum_X[buf][...].
     //
-    // Thread layout: 128 threads cover 128 cols of ONE token at a time.
-    // Loop over kBn tokens in the outer dimension.
+    // Thread remap (same as Phase 1):
+    //   qn_local  = tid >> 2  ∈ [0, 32)   — token this thread serves
+    //   qcol_quad = tid & 3   ∈ [0, 4)    — 32-col chunk within the group
     //
-    // Packing contract (matches activation_quant_kernel):
-    //   Even lane k contributes low nibble, odd lane (k+1) contributes
-    //   high nibble of the SAME byte at sX[buf][n_local][k/2].
+    // Each thread handles 32 cols (k = 0..31) of one (token, group).
+    // For packing: within a thread's 32 cols, even-k and (k+1) form a
+    // nibble pair → thread packs its own byte (no cross-thread shfl needed!).
     //
-    // Per-group sum reduction: 128-wide sum of the quantized values,
-    // written to s_sum_X[buf][n_local] by thread 0 of warp 0.
+    // For per-(token, group) sum: 4 threads (same qn_local, different
+    // qcol_quad) need to be combined.  Their qcol_quad values are 0..3
+    // and they live in the SAME warp (because tid/32 = qn_local/8 is
+    // same for 8 consecutive qn_locals).  A 4-way shfl_xor with offs
+    // {1, 2} does the reduce.
     auto quant_one_group = [&](int g, int buf) {
-        // Per-lane scratch: each lane writes exactly 1 nibble; even lanes
-        // aggregate the packed byte and store it.  Because packing only
-        // needs the neighbour lane's nibble (lane ^ 1), a single
-        // __shfl_xor_sync does the merge without extra smem.
-        //
-        // Sum reduction: 4-warp reduction via a tiny smem slot (we reuse
-        // s_max_partial[n_local][warp_id] which is unused in Phase 2).
-        for (int n_local = 0; n_local < kBn; ++n_local) {
-            const int n_global = n_tile + n_local;
-            const bool n_active = (n_global < T);
-            const float scale_math = s_scale_math[n_local];
-            const bool  is_zero    = (s_scale_zero[n_local] != 0);
+        const int n_global = n_tile + qn_local;
+        const bool n_active = (n_global < T);
+        const float scale_math = s_scale_math[qn_local];
+        const bool  is_zero    = (s_scale_zero[qn_local] != 0);
 
-            int pidx_local = __ldg(perm + g * BCOL + tid);
-            __half h(0);
+        int thread_sum = 0;
+        // Each thread processes 32 consecutive cols within its col_quad.
+        // Pack pairs (k, k+1) into 1 byte at sX[buf][qn_local][col_quad*16 + k/2].
+        #pragma unroll
+        for (int k = 0; k < 32; k += 2) {
+            int d_lo = g * BCOL + qcol_quad * 32 + k;
+            int d_hi = d_lo + 1;
+            int p_lo = __ldg(perm + d_lo);
+            int p_hi = __ldg(perm + d_hi);
+            __half h_lo(0), h_hi(0);
             if (n_active) {
-                h = __ldg(X + (int64_t)n_global * stride_x_t
-                            + (int64_t)pidx_local * stride_x_d);
+                h_lo = __ldg(X + (int64_t)n_global * stride_x_t
+                               + (int64_t)p_lo * stride_x_d);
+                h_hi = __ldg(X + (int64_t)n_global * stride_x_t
+                               + (int64_t)p_hi * stride_x_d);
             }
-            float x = __half2float(h);
-            int q = quantize_one(x, scale_math, is_zero);
+            int q_lo = quantize_one(__half2float(h_lo), scale_math, is_zero);
+            int q_hi = quantize_one(__half2float(h_hi), scale_math, is_zero);
+            thread_sum += q_lo + q_hi;
 
-            // Per-group per-token sum: 128-wide reduction.
-            int wsum = warp_sum_i(q);       // warp-local sum (all lanes)
-            if (lane == 0) {
-                s_max_partial[n_local][warp_id] = static_cast<float>(wsum);
-            }
-            // We don't __syncthreads() inside the outer n_local loop
-            // yet — packing only needs lane-pair shuffle which is
-            // warp-local.  Sync happens once at the end.
-
-            // Packing: byte = (q_hi << 4) | (q_lo & 0x0F), where
-            //   q_lo = this thread (even lane)
-            //   q_hi = lane+1 via __shfl_xor_sync(..., 1)
-            int q_nb = __shfl_xor_sync(0xFFFFFFFF, q, 1);
-            if (n_active && (tid & 1) == 0) {
-                int lo = q      & 0x0F;
-                int hi = q_nb   & 0x0F;
-                int packed = (hi << 4) | lo;
-                // sX[buf][n_local][(g_base_in_group)/2 = tid/2]
+            if (n_active) {
+                int packed = ((q_hi & 0x0F) << 4) | (q_lo & 0x0F);
                 int8_t byte = static_cast<int8_t>(
                     packed >= 128 ? packed - 256 : packed);
-                sX[buf][n_local][tid >> 1] = static_cast<uint8_t>(byte);
+                // sX layout: sX[buf][qn_local][byte_in_group],
+                //   byte_in_group = qcol_quad*16 + (k/2).
+                sX[buf][qn_local][qcol_quad * 16 + (k >> 1)] =
+                    static_cast<uint8_t>(byte);
             }
         }
-        __syncthreads();
 
-        // Finalise per-(n_local, group) sum from s_max_partial.
-        // Layout: s_max_partial[n_local][warp_id] holds warp-local sums.
-        if (tid < kBn) {
-            const int n_local = tid;
-            int total = 0;
-            #pragma unroll
-            for (int w = 0; w < kWarpCount; ++w) {
-                total += static_cast<int>(s_max_partial[n_local][w]);
-            }
-            s_sum_X[buf][n_local] = total;
+        // 4-way reduce across qcol_quad for per-(token, group) sum.
+        thread_sum += __shfl_xor_sync(0xFFFFFFFF, thread_sum, 1);
+        thread_sum += __shfl_xor_sync(0xFFFFFFFF, thread_sum, 2);
+
+        if (qcol_quad == 0 && n_active) {
+            s_sum_X[buf][qn_local] = thread_sum;
         }
         __syncthreads();
     };
