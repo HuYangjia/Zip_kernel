@@ -1,0 +1,37 @@
+W0501 16:21:04.143000 9163 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0501 16:21:04.143000 9163 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+==========================================================================================
+C.6-v2 verify — WIN targets
+==========================================================================================
+shape                         region   sk=1 us   C6v2 us    delta
+  Qwen3-14B/q 5120→5120        A    163.51    154.47    -5.53%  WIN
+  Qwen3-14B/kv 5120→2048        A     61.83     57.76    -6.59%  WIN
+  Qwen3-14B/o 5120→5120        A    163.58    154.89    -5.31%  WIN
+  Qwen2.5-32B/kv 5120→2048        A     61.83     57.55    -6.91%  WIN
+  Qwen3-70B/kv 8192→2048      A+C     92.91     82.67   -11.02%  WIN
+  Qwen3-14B/dn 17408→5120        B    660.28    543.70   -17.66%  WIN
+  Qwen2.5-32B/dn 27648→5120        B   1132.23    916.87   -19.02%  WIN
+  LLaMA3-70B/dn 28672→8192        B   1444.31   1432.24    -0.84%  neutral
+  Qwen3-1.7B/dn 6144→2048        C     71.19     66.40    -6.73%  WIN
+
+==========================================================================================
+C.6-v2 excluded shapes (v1 regressed; v2 must NOT fire ⇒ sk=1≈C6 default)
+==========================================================================================
+shape                          sk=1 us   C6v2 us    delta  status    
+  Qwen3-8B/q 4096→4096       75.25     75.26    +0.02%  OK          (d_in=4096 ⇒ all regions fail)
+  Qwen3-8B/kv 4096→2048       48.91     48.91    -0.01%  OK          (d_in=4096 ⇒ excluded)
+  Qwen3-8B/o 4096→4096       75.24     75.32    +0.10%  OK          (d_in=4096 ⇒ excluded)
+  Qwen3-8B/gu 4096→24576     454.25    454.61    +0.08%  OK          (d_in=4096 + big d_out ⇒ excluded)
+  Qwen3-8B/dn 12288→4096      254.01    254.03    +0.01%  OK          (d_out>2048 + d_in<16384 ⇒ excluded)
+  Qwen3-4B/o 4096→2560       69.67     69.63    -0.05%  OK          (d_in=4096 ⇒ excluded)
+  Qwen3-4B/dn 9728→2560      171.21    171.15    -0.03%  OK          (d_out>2048 + d_in<16384 ⇒ excluded)
+  Qwen2.5-32B/gu 5120→55296    2544.58   2544.32    -0.01%  OK          (d_out>5120 ⇒ region A fails)
+  Qwen3-70B/q 8192→8192      360.50    360.55    +0.01%  OK          (d_out>5120 ⇒ A fails, d_out>2048 ⇒ C fails)
+  Qwen3-70B/o 8192→8192      360.44    360.60    +0.04%  OK          (d_out>5120 ⇒ excluded)
+  Qwen3-70B/gu 8192→57344    4337.46   4337.45    -0.00%  OK          (d_out huge ⇒ excluded)
+
+==========================================================================================
+SUMMARY
+==========================================================================================
+C.6-v2 WIN: 8/9  median uplift: +6.82%  mean: +9.85%
+C.6-v2 EXCLUDED regress: 0/11
