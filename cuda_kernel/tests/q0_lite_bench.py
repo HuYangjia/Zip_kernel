@@ -1,5 +1,17 @@
 """Q.0-lite — upper-bound probe for 3-stage cp.async.
 
+STATUS (2026-05-01): RUN ONCE, conclusions archived in
+  docs/PHASE4_Q0_LITE_UPPER_BOUND.md.
+  The `#ifndef HKUST_V9_PROBE_SKIP_WAIT` macros in the kernel
+  and the `-DHKUST_V9_PROBE_SKIP_WAIT` injection in ops.py were
+  BOTH REVERTED after the probe.  This bench script is KEPT as
+  a reproducibility tool: to re-run, first re-apply the four
+  `#ifndef` guards around `cp_async_wait_group<0>()` in
+  `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu`
+  and the env-to-NVCC-flag hook in `ops.py` (see the probe
+  doc for the exact diff).  Without those, setting
+  HKUST_V9_PROBE_SKIP_WAIT=1 has no effect.
+
 Idea:
   The current mainloop is 2-stage cp.async with wait<0> (wait-all)
   after each iteration.  A 3-stage (or deeper) pipeline lets the

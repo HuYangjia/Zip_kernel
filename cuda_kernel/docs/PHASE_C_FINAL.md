@@ -84,13 +84,45 @@ Cumulative contribution of dispatcher-only Phase C work:
 
 ## Phase 4 compute-bound T=512 region
 
-See `docs/PHASE4_D1_PIVOT.md` and `docs/PHASE4_D3_DUAL_ISSUE_DESIGN.md`.
-Source-level paths (D.1 warp-specialisation, D.3 dual-issue PTX) were
-diagnostically rejected after measurement confirmed nvcc schedules
-the current implementation close to the hardware ceiling.  The
-remaining compute-bound ceiling (T=512 median still 0.90×) can only
-be raised by a CUTLASS 3.x warp-specialised mainloop rewrite —
-7-9 days of engineering, not in current scope.
+See `docs/PHASE4_D1_PIVOT.md`, `docs/PHASE4_D3_DUAL_ISSUE_DESIGN.md`,
+and `docs/PHASE4_Q0_LITE_UPPER_BOUND.md`.
+
+All source-level deeper-pipeline paths have been diagnostically
+rejected:
+
+- **D.1 warp-specialisation**: blocked by INT4 MMA's inability
+  to accept pre-dequantised fp16 operands, forcing consumer
+  warps to still do per-group fold — shrinks the realistic
+  cuda_eff ceiling from 50% to ~40%, 6-8 days work for uncertain
+  gain.  Pivoted away.
+
+- **D.3 dual-issue PTX (fold interleave)**: three iterations
+  showed nvcc 12.x already schedules the fold loop to the
+  hardware ceiling; no additional uplift achievable at the
+  source level.
+
+- **Q.0-lite cp.async wait-upper-bound probe**: measured the
+  physical floor of what any deeper cp.async pipeline could
+  save.  Result: +5.7% on mid-d_in T=512, +13.5% on the
+  deepest-K dn shape, <3% elsewhere.  Since C.6-v2 already
+  split_k=2 the shapes where wait cost matters, stacking a
+  3-stage pipeline on top would deliver only +0.02 global
+  median for 2-3 days of work (worse ROI than Phase C).
+
+- **Q-c CUTLASS 3.x rewrite**: architecturally blocked on
+  sm_89 — 3.x warp-specialised mainloop requires wgmma + TMA +
+  cluster launch which are sm_90+ only.  Repo carries only
+  CUTLASS 2.11 and that's what 3.x falls back to on sm_89.
+
+The remaining compute-bound ceiling (T=512 median now 0.898×,
+up from 0.875× at r66_today) can only be raised by one of:
+
+1. Hardware upgrade to sm_90+ (H100) → unlocks CUTLASS 3.x
+   warp-spec → realistic ceiling ~1.10× on 70B-class shapes.
+2. Deep surgery on CUTLASS 2.11 `DefaultMma` to insert per-tile_k
+   dequant hooks (1-2 weeks, low success rate, not recommended).
+3. Move the win to the workload level: Qwen3 end-to-end inference
+   where the kernel-level gains compound into token/s.
 
 ## Status
 

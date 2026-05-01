@@ -1,0 +1,16 @@
+W0501 16:52:34.950000 11344 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0501 16:52:34.950000 11344 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+================================================================================
+Q.0-lite upper-bound probe — HKUST_V9_PROBE_SKIP_WAIT = 1
+                             (0=wait on, 1=wait DISABLED, kernel INCORRECT)
+================================================================================
+shape                                 us
+  14B gu T=512 (big)            1579.85
+  32B dn T=512 (big)             788.10
+  70B gu T=512 (huge)           4319.43
+  8B gu T=512 (mid)              416.76
+  14B q T=512 (small)            146.00
+  14B gu T=128                   348.39
+  0.6B gu T=512 (ng=8)            46.78
+
+Dumped results to /tmp/q0_lite_wait1.json

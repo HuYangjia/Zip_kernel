@@ -653,9 +653,7 @@ fused_dense_sparse_mma_int4_kernel(
         issue_x_load_async(g_start, 0);
         issue_sum_X_load(g_start, 0);
         cp_async_commit();
-#ifndef HKUST_V9_PROBE_SKIP_WAIT
         cp_async_wait_group<0>();   // wait for g=g_start before first MMA
-#endif
         __syncthreads();
     } else {
         issue_w_dense_load(g_start, 0);
@@ -776,9 +774,7 @@ fused_dense_sparse_mma_int4_kernel(
         // complete before the next iteration uses buf^1.
         if constexpr (kUseCpAsync) {
             if (g + 1 < n_groups) {
-#ifndef HKUST_V9_PROBE_SKIP_WAIT
                 cp_async_wait_group<0>();
-#endif
             }
         }
         __syncthreads();
@@ -813,9 +809,7 @@ fused_dense_sparse_mma_int4_kernel(
                 issue_w_sparse_load_async(blk_start, 0);
                 issue_x_load_async(bc0, 0);
                 cp_async_commit();
-#ifndef HKUST_V9_PROBE_SKIP_WAIT
                 cp_async_wait_group<0>();
-#endif
             } else {
                 issue_w_sparse_load(blk_start, 0);
                 issue_x_load(bc0, 0);
@@ -855,9 +849,7 @@ fused_dense_sparse_mma_int4_kernel(
 
                 if constexpr (kUseCpAsync) {
                     if (block_idx + 1 < blk_end) {
-#ifndef HKUST_V9_PROBE_SKIP_WAIT
                         cp_async_wait_group<0>();
-#endif
                     }
                 }
                 __syncthreads();

@@ -106,14 +106,6 @@ _NVCC_FLAGS = [
     "-Wno-deprecated-declarations",
 ]
 
-# Q.0-lite upper-bound probe: when HKUST_V9_PROBE_SKIP_WAIT=1, the
-# compiled kernel omits all cp.async wait_group<0>() calls.  Results
-# will be numerically INCORRECT (MMA reads pre-commit smem), but the
-# timing gives the physical lower bound of what a 3-stage cp.async
-# pipeline could ever save.  See docs/PHASE4_Q_FEASIBILITY.md.
-if os.environ.get("HKUST_V9_PROBE_SKIP_WAIT", "0") == "1":
-    _NVCC_FLAGS = _NVCC_FLAGS + ["-DHKUST_V9_PROBE_SKIP_WAIT"]
-
 _CXX_FLAGS = [
     "-O3",
     "-std=c++17",
