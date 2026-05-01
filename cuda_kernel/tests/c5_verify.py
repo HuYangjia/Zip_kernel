@@ -50,9 +50,19 @@ def bench_us(fn, warmup=500, outer=10, inner=200):
     return best
 
 
-# Load r66 baseline
-with open("/root/Zip_kernel/kernel/cuda_kernel/logs/r66_path_c/bench.json") as f:
-    r66 = json.load(f)
+# Load r66 baseline.  Path differs between local repo and autodl machine;
+# try both before giving up.
+import os.path
+for candidate in (
+    "/root/Zip_kernel/cuda_kernel/logs/r66_path_c/bench.json",
+    "/root/Zip_kernel/kernel/cuda_kernel/logs/r66_path_c/bench.json",
+):
+    if os.path.isfile(candidate):
+        with open(candidate) as f:
+            r66 = json.load(f)
+        break
+else:
+    raise FileNotFoundError("cannot locate r66_path_c/bench.json")
 r66_us = {}
 for r in r66["records"]:
     if r.get("kernel") == "end_to_end":
