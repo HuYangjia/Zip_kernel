@@ -1,0 +1,34 @@
+W0501 15:42:25.638000 6576 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0501 15:42:25.638000 6576 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+==========================================================================================
+P0 integration A/B: dense (hp=0), where P0 is active
+==========================================================================================
+shape                         legacy us     P0 us     delta   parity
+  0.6B q_proj T=32               29.78     32.74     +9.96%     PASS  REGRESS
+  0.6B o_proj T=32               34.42     37.29     +8.35%     PASS  REGRESS
+  1.7B q_proj T=32               34.27     37.23     +8.65%     PASS  REGRESS
+  1.7B kv_proj T=32              34.30     37.20     +8.44%     PASS  REGRESS
+  4B kv_proj T=32                 0.00      0.00     +0.00% FAIL mad=inf rel=inf
+  8B kv_proj T=32                34.61     37.63     +8.73%     PASS  REGRESS
+  8B q_proj T=32                 34.21     37.02     +8.21%     PASS  REGRESS
+  8B gu T=32                     64.80     64.84     +0.07%     PASS
+  0.6B q_proj T=128              30.67     33.41     +8.93%     PASS  REGRESS
+  1.7B q_proj T=128              34.36     37.26     +8.42%     PASS  REGRESS
+  4B q_proj T=128                34.60     37.42     +8.16%     PASS  REGRESS
+  4B o_proj T=128                36.70     37.12     +1.14%     PASS
+  8B q_proj T=128                44.48     44.49     +0.03%     PASS
+  8B gu T=128                   142.44    142.47     +0.03%     PASS
+  14B q_proj T=128               64.19     64.19     -0.00%     PASS
+  14B gu T=128                  363.07    362.93     -0.04%     PASS
+
+==========================================================================================
+P0 integration A/B: hp=0.05 (P0 gate should refuse, legacy path on both)
+==========================================================================================
+shape                         legacy us     P0 us     delta   parity
+  8B q_proj T=32 hp=5%           34.38     37.11     +7.96%     PASS  UNEXPECTED
+  8B q_proj T=128 hp=5%          46.85     46.85     +0.01%     PASS  OK(expected same)
+
+==========================================================================================
+SUMMARY
+==========================================================================================
+P0 did not achieve ≥5% win on any shape
