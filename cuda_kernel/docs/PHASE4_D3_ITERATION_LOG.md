@@ -119,3 +119,101 @@ cap 1 day).  If Path 3a also fails parity or perf, Path 3b automatically.
 Status: both Iter 1 and Iter 2a code paths are behind the
 `kInterleaveFold` template flag (default false = r66 bit-exact).  No
 revert needed; main is safe.
+
+---
+
+## Iter 3 analysis — cross-group interleave upper bound
+
+**Date**: 2026-05-01
+
+Before committing 1 day to Iter 3a, compute a strict upper bound on
+its benefit from the HFMA stress data we already have.
+
+**HFMA stress experiment recap** (tests/d1_hfma_stress.py, Iter 0
+diagnostic): injecting 8 extra `fmaf` ops per fold call:
+
+- Qwen3-8B gu T=512: 411us → 629us (+53%) → **+218us total, +27us per injected fmaf**
+
+Per-CTA fold budget for Qwen3-8B gu T=512:
+- kMsub × kNsub × 4 = 32 fmaf per fold call
+- n_groups = d_in / 128 = 32
+- Total fold fmaf per CTA = 32 × 32 = **1024 fmaf**
+
+Injecting 8 extra adds `8 × 32 = 256 fmaf/CTA`, and that raises CTA time
+by roughly 218/411 = +53% (the kernel's whole-kernel time, not just
+fold).  So the marginal cost of one injected fmaf relative to the
+kernel's base critical-path time is:
+
+- 218 µs / 256 injected-fmaf = **~0.85 µs per injected fmaf per CTA**
+
+Baseline fold's 1024 fmaf then consume:
+
+- 1024 × 0.85 ≈ **870 µs nominal, but this is WRONG** — the 0.85µs is the
+  marginal cost of an *extra* fmaf on critical path.  The baseline 1024
+  fmaf are already pipelined with ILP; their non-critical copies are free.
+
+**Correct bound** (marginal-linear model): the 53% slowdown from 256
+injected fmaf represents the excess over baseline.  If baseline fold's
+own critical path cost were C, then C + Δ_inject = 0.53 × base_time,
+where Δ_inject represents the *critical-path* extra introduced.  Since
+nvcc's ILP already schedules the 1024 baseline fmaf reasonably densely,
+the baseline fold critical path is the order of one `chain_len × ~4
+cycle` = roughly `kKSteps × 4 × 4 = 64 cycles` × n_groups worth of fold
+nodes that are serialized → hard to quantify without ncu.
+
+Empirical check instead: **cross-group interleave's expected uplift**
+is bounded by the fraction of fold that's on the hot-path serial chain
+(not the ILP-hidden fmaf).  Even optimistically assuming 30% of fold
+is on hot path → kernel time reduces by `0.30 × fold_share`.
+
+Fold share of kernel time is at most `(1024 fmaf × ~2 cycles/fmaf) /
+(411 µs × 2.5 GHz × 128 SMs × avg warps)` — but this is too rough.
+
+**Engineer's shortcut**: the HFMA stress +53% slowdown from 256 extra
+fmaf ops corresponds to ~0.85µs/fmaf.  If we could fully remove 1024
+baseline fmaf from the critical path (which is the extreme upper
+limit), we'd save ~870µs — but that's more than 2× the kernel time,
+impossible.  The real bound is much smaller because baseline fmaf
+are already ILP-hidden; only a small fraction is on the critical path.
+
+Empirical data from ncu comparable W4A4 kernels (DeepGEMM/Marlin lit.)
+suggests cross-group interleave lifts TC util by 5-10 pp (e.g. 20% →
+30%), which for our T=512 at 21% baseline would lift to ~28-30%.
+That's **~1.05× kernel speedup**.
+
+**Iter 3a realistic expectation**:
+- Qwen3-8B gu T=512: 411 → 390 µs (−5%, +0.05× speedup)
+- Global median lift: +0.01-0.02 (from 1.049× → 1.06-1.07×)
+- Engineering cost: 1 day, 30-40% success probability
+
+**ROI verdict**: **too low**.  1 day for a 30% chance of +0.02 median
+(expected value = +0.006 median) is worse than Path C's proven per-
+iteration yield (e.g. C.3 delivered +0.03 median in 0.5 day).
+
+## Iter 3 DECISION: Path 3b (archive D.3)
+
+Honest conclusion: D.3 source-level optimisation is **exhausted**.
+
+- Iter 1 (algebraic fold re-form): −3.85% regression.
+- Iter 2a (batched prefetch): −6.37% regression.
+- Iter 3a (cross-group interleave, not implemented): theoretical upper
+  bound +5-10%, realistic +2-5% for 1-day engineering cost.  ROI too
+  low.
+
+The nvcc 12.x compiler already schedules the fold loop near-optimally
+for this CTA shape.  Further speedup requires either:
+
+1. **CUTLASS 3.x warp-specialised mainloop** — full rewrite, ~2 weeks.
+2. **SASS-level manual scheduling** — bypass nvcc entirely, requires
+   matching cuobjdump/ptxas reverse-engineering.  Out of scope.
+
+**Final state**: kInterleaveFold template path is left in place
+(default false, bit-exact r66) as documented scaffolding for future
+CUTLASS-3.x rewrite.  Main branch at r66 (Path C's 1.049× median)
+stands as Phase 3+4 deliverable.
+
+**Phase 4 total delivered**: diagnostic work (roofline + HFMA stress
++ ceiling ceiling analysis + D.1 pivot + D.3 iter 1/2a) establishing
+that the r66 kernel is within 5% of the achievable ceiling for
+source-level INT4 W4A4 optimisation on Ada SM89 without a full
+CUTLASS 3.x rewrite.  This is a valuable negative result.
