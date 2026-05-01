@@ -770,8 +770,39 @@ fused_dense_sparse_mma_int4_kernel(
             // R23 sxn cache + R27: sxn factored out of g-loop, applied
             //   once after both dense and sparse branches complete.
             float sumxn = sumxn_cache[in_sub][r & 1];  // R24: register cache
-            float corrected = static_cast<float>(d_val) - z * sumxn;
-            y_fp[im][in_sub][r] += corrected * s;  // R27: no sxn here
+            if constexpr (kInterleaveFold) {
+                // Phase 4 D.3 Iter 1 (2026-05-01): algebraic re-form of the
+                // fold to shorten the per-element critical-path dep chain.
+                //
+                //   original:  corrected = float(d) - z*sumxn         (fmul + fsub,
+                //                          y_fp += corrected * s       possibly fused to
+                //                                                     fma(-z,sumxn,d) + fma = 8c)
+                //   re-formed: nzs       = -(z*sumxn) * s              (2 fmul, hoistable to
+                //                                                     im/in_sub scope)
+                //              y_fp     += fmaf(float(d), s, nzs) + nzs-if-DCE
+                //                                                     (single 4c fma)
+                //
+                // Per fold element the dep chain shrinks from ~8c to ~4c.  The
+                // extra fmul cost (computing nzs) executes once per (im, in_sub, r)
+                // combination like the original dequant — no net FP op increase,
+                // but re-orders them so the final fmaf that updates y_fp has a
+                // shorter, independent dep chain.
+                //
+                // Note: the fmaf form lets nvcc/ptxas pick the standard FMA pipe
+                // while the nzs precompute uses the FMUL issue slot; on Ada
+                // SM89 these can overlap via the warp scheduler dual-issue
+                // dispatcher (TC pipe stays free for the next mma in adjacent
+                // groups, which is the B1/HFMA-starvation win we measured
+                // +53% to +63% in the HFMA stress test).
+                float nzs = -(z * sumxn) * s;
+                y_fp[im][in_sub][r] = fmaf(static_cast<float>(d_val), s,
+                                           y_fp[im][in_sub][r] + nzs);
+            } else {
+                // r66 baseline: original 2-op fold.  Kept bit-exact for the
+                // default kInterleaveFold=false instantiation.
+                float corrected = static_cast<float>(d_val) - z * sumxn;
+                y_fp[im][in_sub][r] += corrected * s;  // R27: no sxn here
+            }
         };
         run_mma_pass(buf, fold_dense, prefetch_dense, g_cache);
 
@@ -1167,8 +1198,42 @@ void launch(
             const char* e = std::getenv("HKUST_V9_LDMATRIX");
             return e ? std::atoi(e) : 0;
         }();
+        // Phase 4 D.3 (2026-05-01): HKUST_V9_INTERLEAVE env var enables
+        //   the kInterleaveFold=true kernel instantiation, which uses a
+        //   re-formed fold (y_fp += fmaf(d, s, nzs)) with nzs = -(z*sumxn)*s
+        //   to shorten the per-element critical path from ~8c to ~4c on
+        //   Ada SM89.  Default (unset/0) → original r66 bit-exact fold.
+        //   See docs/PHASE4_D3_DUAL_ISSUE_DESIGN.md.
+        static const int interleave_env = []() {
+            const char* e = std::getenv("HKUST_V9_INTERLEAVE");
+            return e ? std::atoi(e) : 0;
+        }();
         if (ldmatrix_env) {
             fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync, true><<<grid, block, 0, stream>>>(
+                reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
+                reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
+                reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
+                reinterpret_cast<const __half*>(zero_u4.data_ptr<at::Half>()),
+                sum_X.data_ptr<int>(),
+                reinterpret_cast<const __half*>(scale_x.data_ptr<at::Half>()),
+                reinterpret_cast<const uint8_t*>(W_high_blocks.data_ptr<int8_t>()),
+                hp_row_offsets.data_ptr<int>(),
+                hp_col_indices.data_ptr<int>(),
+                reinterpret_cast<__half*>(Y_total.data_ptr<at::Half>()),
+                (split_k > 1) ? Y_partial_ptr : nullptr,
+                d_out, d_in, T, n_groups, split_k,
+                W_low.stride(0), W_low.stride(1),
+                X_s4.stride(0), X_s4.stride(1),
+                scale_u4.stride(0), scale_u4.stride(1),
+                zero_u4.stride(0), zero_u4.stride(1),
+                sum_X.stride(0), sum_X.stride(1),
+                W_high_blocks.stride(0), W_high_blocks.stride(1), W_high_blocks.stride(2),
+                Y_total.stride(0), Y_total.stride(1)
+            );
+            return;
+        }
+        if (interleave_env) {
+            fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync, false, true><<<grid, block, 0, stream>>>(
                 reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
                 reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
                 reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
