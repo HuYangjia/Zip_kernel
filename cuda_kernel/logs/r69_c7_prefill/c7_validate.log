@@ -1,0 +1,25 @@
+W0501 21:56:25.270000 23792 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0501 21:56:25.270000 23792 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+========================================================================================================================
+C.7 validation A/B — verify dispatcher behaviour before/after the new rule
+========================================================================================================================
+
+### TARGET shapes (C.7 should now route to sk=2; default must match forced sk=2)
+  shape                      fp16   default  force sk=1  force sk=2  default_sp   sk1_sp   sk2_sp    fix?
+  14B gu T=2048           4456.27  4280.41    5865.49    4331.03      1.041x   0.760x   1.029x       ✓
+  14B gu T=4096           9142.05  8537.82   11380.16    8550.80      1.071x   0.803x   1.069x       ✓
+  14B gu T=8192           19953.44  16996.69   23187.76   17008.98      1.174x   0.861x   1.173x       ✓
+  14B gu T=512            1288.22  1191.60    1413.90    1191.86      1.081x   0.911x   1.081x       ✓
+
+### GUARD shapes (C.7 must not change their behaviour)
+  shape                          fp16   default  force sk=1  force sk=2  default_sp   sk1_sp   sk2_sp  note                          
+  32B gu T=2048 (guard)       7388.07  10101.74   10105.80   10639.74      0.731x   0.731x   0.694x  default = sk=1 (OK)
+  70B gu T=2048 (guard)       12143.03  17145.08   17145.02   19420.41      0.708x   0.708x   0.625x  default = sk=1 (OK)
+  8B gu T=2048 (guard)        2560.46  1711.03    1717.87    2526.60      1.496x   1.490x   1.013x  default = sk=1 (OK)
+  4B q T=2048 (guard)         269.51   209.49     211.17     312.51      1.286x   1.276x   0.862x  default = sk=1 (OK)
+  14B q T=2048 (guard)        697.01   666.41     499.02     667.91      1.046x   1.397x   1.044x  default = sk=2 (C.6v2 rule, OK)
+  32B dn T=2048 (guard)       3816.37  3543.12    3490.53    3547.07      1.077x   1.093x   1.076x  sk=1 == sk=2 (ambiguous)
+
+========================================================================================================================
+If TARGETS all show ✓ and GUARDS show no 'DEFAULT DIVERGED', C.7 is safe to ship.
+========================================================================================================================

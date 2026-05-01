@@ -1,0 +1,16 @@
+W0501 22:12:34.196000 24469 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0501 22:12:34.196000 24469 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+======================================================================================================================================================
+Bench methodology audit: FP16 flush-cost calibration — is it accurate?
+======================================================================================================================================================
+
+  shape                       cuda (probe, no flush)     cuda (probe, flush)    fp16 bench_qwen3   fp16 (probe no flush)      fp16 (probe flush)  flush cost  fp16 NET (flush-cost)
+  Qwen3-14B kv T=2048                        262.48                 296.95             252.84                 265.92                 281.76      11.40               270.36
+  Qwen2.5-32B kv T=2048                      266.88                 301.55             256.67                 267.74                 285.08      11.57               273.51
+  Qwen3-14B kv T=4096                        568.67                 581.87             571.01                 613.07                 634.32      12.08               622.23
+  Qwen3-8B gu T=2048                        1695.42                1762.95            2578.74                2621.00                2650.23      11.89              2638.34
+
+Interpretation:
+  - If 'fp16 bench_qwen3' << 'fp16 (probe flush)', bench is undercounting flush cost.
+  - If 'fp16 bench_qwen3' ≈ 'fp16 (probe no flush)', bench isn't actually flushing L2.
+  - If 'fp16 bench_qwen3' ≈ 'fp16 NET (flush-cost)', bench is accurate.
