@@ -1326,12 +1326,31 @@ void launch(
     //   (d_out too big) and B (d_in too small).  Adding it would
     //   require a hard-coded special case; not worth the fragility
     //   given the shape is an 8-shape-only loser.
+    //
+    // C.7 (2026-05-01 — tests/phase_r_beta_slim.py, 6-knob × 20-shape
+    //   smart-pruned scan).  β-scan confirmed that Qwen3-14B gu is
+    //   rescued by sk=2 across T∈{2048, 4096, 8192}:
+    //     14B gu T=2048 (5120→34816): 0.761× → 1.038×  (-26.7%, win)
+    //     14B gu T=4096 (5120→34816): 0.786× → 1.067×  (-26.3%, win)
+    //     14B gu T=8192 (5120→34816): 0.862× → 1.171×  (-26.4%, win)
+    //   But 32B gu (d_out=55296) and 70B gu (d_in=8192) DO NOT benefit
+    //   from sk=2 (measured +4-12% regress on both), and winners like
+    //   8B gu (d_in=4096) and 4B q (d_in=2560) would regress +44-52%
+    //   if accidentally included.  The rule must therefore be tight:
+    //     (D) d_out IN [32768, 44000] AND d_in == 5120:
+    //           14B gu family exclusively — captures the "known miss"
+    //           from C.6 v2 region-gap note above.  d_out ≤ 44000
+    //           excludes 32B gu (d_out=55296); d_in == 5120 excludes
+    //           8B gu (d_in=4096) and 70B gu (d_in=8192).  The β-scan
+    //           data leaves no room for a safer widening.
     if (split_k == 1 && T >= 256 && n_groups >= 32 && (n_groups % 2) == 0) {
         const bool c6_region_A =
             (d_out <= 5120 && d_in >= 5120 && d_in <= 8192);
         const bool c6_region_B = (d_in >= 16384);
         const bool c6_region_C = (d_out <= 2048 && d_in >= 6144);
-        if (c6_region_A || c6_region_B || c6_region_C) {
+        const bool c7_region_D =
+            (d_in == 5120 && d_out >= 32768 && d_out <= 44000);
+        if (c6_region_A || c6_region_B || c6_region_C || c7_region_D) {
             split_k = 2;
         }
     }
