@@ -1,50 +1,43 @@
-"""C-probe: scan kBn × kBm × cache config for r66 loser shapes.
+"""C-probe v2: scan kBn × kBm × cache config with REALISTIC hp_ratio=0.05.
 
-Targets: shapes where r66 speedup < 1.0× at T=128 (most promising for
-dispatcher-level rescue; the T=512 losers are mostly architectural and
-not dispatcher-fixable per Phase 4 analysis).
-
-For each target shape, measure cuda_us under:
-  - default dispatcher (no env overrides) — our baseline
-  - all combinations of kBn ∈ {8, 16, 32, 64} × kBm ∈ {default, 64, 128}
-    × cache ∈ {default, 0, 1}
-
-Report: best config per shape, uplift vs default.  If any shape has
->= +5% uplift from a non-default config, we have a dispatcher win.
+v1 used hp=0 (dense only) which does NOT match r66 bench conditions
+(bench_qwen3_shapes.py uses hp_ratio=0.05).  r66's dispatcher was tuned
+against hp=0.05 and R52 gate comment explicitly documents
+"d_out=4096 at T=128 with kBm=64 is 0.95x at hp=0.05".  Re-probe at
+hp=0.05 to get actionable dispatcher-tuning data.
 """
 import os
 import statistics
 
 import torch
 import kernel.cuda_kernel.ops as ops
+from kernel.cuda_kernel.benchmarks.bench_qwen3_shapes import make_inputs
 
 
 dev = torch.device("cuda:0")
 
 
-def prep(T, d_in, d_out, seed=0):
-    torch.manual_seed(seed)
-    X = torch.randn(T, d_in, dtype=torch.float16, device=dev) * 0.1
-    perm = torch.randperm(d_in, device=dev).to(torch.int32)
-    W = torch.randint(0, 16, (d_out, d_in // 2), dtype=torch.int8, device=dev)
-    n_g = d_in // 128
-    su = (torch.rand(d_out, n_g, dtype=torch.float16, device=dev) * 0.01 + 0.001).contiguous()
-    zu = (torch.rand(d_out, n_g, dtype=torch.float16, device=dev) * 14.0).contiguous()
-    hpb = torch.zeros((0, 128, 64), dtype=torch.int8, device=dev)
-    hpro = torch.zeros((d_out // 128) + 1, dtype=torch.int32, device=dev)
-    hpci = torch.zeros(0, dtype=torch.int32, device=dev)
-    X_s4, sx, sum_X = ops.activation_quant_cuda(X, perm)
-    return W, hpb, hpro, hpci, X_s4, su, zu, sum_X, sx
+def prep(T, d_in, d_out, hp_ratio=0.05, seed=0):
+    return make_inputs(T, d_out, d_in, hp_ratio=hp_ratio, device="cuda", seed=seed)
 
 
 def run(bundle, d_out, d_in):
-    W, hpb, hpro, hpci, X_s4, su, zu, sum_X, sx = bundle
     return ops.fused_dense_sparse_cuda_int4(
-        W, hpb, hpro, hpci, X_s4, su, zu, sum_X, sx, d_out, d_in,
+        bundle["W_low_packed"],
+        bundle["W_high_packed"],
+        bundle["hp_row_offsets"],
+        bundle["hp_col_indices"],
+        bundle["X_s4"],
+        bundle["scale_u4"],
+        bundle["zero_u4"],
+        bundle["sum_X"],
+        bundle["scale_x"],
+        d_out,
+        d_in,
     )
 
 
-def bench_us(fn, warmup=500, outer=10, inner=200):
+def bench_us(fn, warmup=300, outer=5, inner=100):
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
@@ -61,37 +54,33 @@ def bench_us(fn, warmup=500, outer=10, inner=200):
     return best
 
 
-# Target shapes: r66 T=128 losers where dispatcher might be wrong
 TARGETS = [
     (128, 4096, 4096,  "8B q_proj T=128",  0.91),
-    (128, 4096, 4096,  "8B o_proj T=128",  0.91),  # same as q but keep as separate probe
+    (128, 4096, 4096,  "8B o_proj T=128",  0.91),
     (128, 2560, 4096,  "4B q_proj T=128",  0.79),
     (128, 4096, 2560,  "4B o_proj T=128",  0.70),
     (128, 6144, 2048,  "1.7B down T=128",  0.81),
-    (128, 2048, 2048,  "1.7B q_proj T=128", 0.39),  # extreme loser
+    (128, 2048, 2048,  "1.7B q_proj T=128", 0.39),
     (128, 2560, 2048,  "4B kv_proj T=128", 0.45),
 ]
 
-# Config space
 CONFIGS = [
-    # (label, kbn_env, kbm_env, cache_env)
-    ("default",     None, None, None),
-    ("kBn=64",      "64", None, None),
-    ("kBn=32",      "32", None, None),
-    ("kBn=16",      "16", None, None),
-    ("kBn=8",        "8", None, None),
-    ("kBm=64",      None, "64", None),
-    ("kBm=64 kBn=32", "32","64", None),
-    ("kBm=64 kBn=16", "16","64", None),
-    ("cache=1",     None, None, "1"),
-    ("cache=0",     None, None, "0"),
-    ("kBn=16 cache=1",  "16", None, "1"),
-    ("kBn=32 cache=1",  "32", None, "1"),
-    ("kBm=64 kBn=32 cache=1", "32", "64", "1"),
+    ("default",             None, None, None),
+    ("kBn=64",              "64", None, None),
+    ("kBn=32",              "32", None, None),
+    ("kBn=16",              "16", None, None),
+    ("kBm=64",              None, "64", None),
+    ("kBm=64 kBn=32",       "32", "64", None),
+    ("kBm=64 kBn=16",       "16", "64", None),
+    ("cache=1",             None, None, "1"),
+    ("cache=0",             None, None, "0"),
+    ("kBm=64 cache=1",      None, "64", "1"),
+    ("kBm=64 cache=0",      None, "64", "0"),
+    ("kBm=128 kBn=32 cache=1", "32", "128", "1"),
 ]
 
 
-def apply_env(label, kbn, kbm, cache):
+def apply_env(kbn, kbm, cache):
     os.environ.pop("HKUST_V9_FUSED_FORCE_KBN", None)
     os.environ.pop("HKUST_V9_FUSED_FORCE_KBM", None)
     os.environ.pop("HKUST_V9_FUSED_FORCE_CACHE", None)
@@ -104,7 +93,7 @@ def apply_env(label, kbn, kbm, cache):
 
 
 print("=" * 90)
-print("C-probe: dispatcher config scan for T=128 loser shapes")
+print("C-probe v2 (hp=0.05): dispatcher scan for T=128 loser shapes")
 print("=" * 90)
 
 all_results = []
@@ -112,16 +101,15 @@ all_results = []
 for T, d_in, d_out, label, r66_sp in TARGETS:
     print()
     print(f"## {label}  d_in={d_in} d_out={d_out}  r66 sp={r66_sp:.2f}x")
-    bundle = prep(T, d_in, d_out, seed=T + d_in + d_out)
+    bundle = prep(T, d_in, d_out)
 
     def _run():
         run(bundle, d_out, d_in)
 
-    # Per config: 3 independent trials, median
     config_us = {}
     for cfg_label, kbn, kbm, cache in CONFIGS:
-        apply_env(cfg_label, kbn, kbm, cache)
-        trials = [bench_us(_run, warmup=300, outer=5, inner=100) for _ in range(3)]
+        apply_env(kbn, kbm, cache)
+        trials = [bench_us(_run) for _ in range(3)]
         config_us[cfg_label] = statistics.median(trials)
 
     default_us = config_us["default"]
@@ -146,10 +134,9 @@ for T, d_in, d_out, label, r66_sp in TARGETS:
         "best_cfg": best_cfg, "best_us": best_us,
     })
 
-# Summary
 print()
 print("=" * 90)
-print("SUMMARY")
+print("SUMMARY (hp=0.05)")
 print("=" * 90)
 print(f"{'shape':<24}  {'default_us':>10}  {'best_cfg':<28} {'best_us':>8}  {'uplift':>8}")
 total_uplift = 0
