@@ -607,23 +607,32 @@ def _p0_fused_quant_supported(T: int, d_in: int, d_out: int,
       * d_in  % 128 == 0       (BCOL=128)
       * hp_col_indices empty   (sparse branch not yet ported; P0.3)
 
-    Beyond those, we further gate on T in a band where the launch-floor
-    saving is measurable:
-      * T in [2, 128]          (kBn=32 fixed; T=512 doesn't benefit much
-                                because the two-step path already
-                                amortises the ~16us quant launch over a
-                                much heavier MMA kernel at T=512 but the
-                                P0.2 lacks cp.async / group-cache so it
-                                loses the amortisation; re-enable for
-                                T=512 in P0.4 once those land.)
+    DEFAULT GATE (2026-05-01, based on p0_integration_bench.py A/B):
+      P0.2 is **disabled by default** because it regresses every
+      tested shape by 0-10% vs legacy two-step.  Root cause:
+        * P0.2 lacks cp.async, group-cache, and split-K; the ~16us
+          activation_quant launch-floor saving is overwhelmed by the
+          less-optimised kernel mainloop.  On small-n_groups shapes
+          the absence of group-cache costs ~2-3us per group; on
+          large-n_groups shapes the absence of cp.async leaves HBM
+          latency exposed.
+        * Parity is 10/10 bit-identical (within fp16 ulp), so the
+          kernel is correct — it's just not faster than the sum of
+          its parts.
+      P0.4 is needed to recover the expected saving (add cp.async +
+      group-cache).  Until then, production dispatcher stays on
+      legacy path.
 
     env_force:
-      * 0  → default gate (above).
-      * 1  → force P0 path wherever P0 hard requirements allow (debug).
-      * -1 → disable P0 entirely (fall back to legacy two-step).
+      * 0  → default gate: P0 disabled (conservative, matches A/B data).
+      * 1  → force P0 wherever hard requirements allow (for P0.4
+             development / regression testing).
+      * -1 → disable P0 entirely (same as 0 for now, but semantically
+             distinct — "explicitly off" vs "off by policy").
     """
     if env_force == -1:
         return False
+    # Hard requirements
     if T < 2:
         return False
     if d_out % 128 != 0:
@@ -634,11 +643,9 @@ def _p0_fused_quant_supported(T: int, d_in: int, d_out: int,
         return False
     if env_force == 1:
         return True
-    # Default band: the launch-floor amortisation win is strongest at
-    # small / mid T, where activation_quant ~16us dominates.  At T>=512
-    # the P0.2 kernel's lack of cp.async / group-cache cancels the
-    # saving, so gate it off.  T=256 is borderline but conservative.
-    return (2 <= T <= 128)
+    # env_force == 0: default policy = disable (P0.2 regresses vs
+    # legacy in all tested shapes).
+    return False
 
 
 def fused_dense_sparse_e2e_cuda(
