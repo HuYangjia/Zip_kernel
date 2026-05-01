@@ -1204,7 +1204,12 @@ void launch(
         //   to shorten the per-element critical path from ~8c to ~4c on
         //   Ada SM89.  Default (unset/0) → original r66 bit-exact fold.
         //   See docs/PHASE4_D3_DUAL_ISSUE_DESIGN.md.
-        static const int interleave_env = []() {
+        //
+        //   NOTE: re-read per call rather than via `static const` cache so
+        //   that A/B bench harnesses can toggle the flag in-process
+        //   without spawning a fresh subprocess.  Cost is one getenv per
+        //   kernel launch (~100ns), negligible vs kernel time.
+        int interleave_env = []() {
             const char* e = std::getenv("HKUST_V9_INTERLEAVE");
             return e ? std::atoi(e) : 0;
         }();
