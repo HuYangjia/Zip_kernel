@@ -1,0 +1,76 @@
+W0501 16:02:43.386000 7582 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0501 16:02:43.386000 7582 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+==========================================================================================
+T=512 FAST probe — 6 shapes × 6 configs (single trial each)
+==========================================================================================
+
+## [1/6] G1 8B kv  d_in=4096 d_out=2048
+    default            52.35us
+    sk=2               53.29us
+    kBm=64             67.35us
+    kBn=32             76.11us
+    cache=1            49.27us
+    cache=0            48.30us
+  -> best='cache=0'  48.30us  uplift=+7.73%  WIN
+
+## [2/6] G1 14B kv  d_in=5120 d_out=2048
+    default            61.73us
+    sk=2               58.14us
+    kBm=64             79.22us
+    kBn=32            100.87us
+    cache=1            63.70us
+    cache=0            61.70us
+  -> best='sk=2'  58.14us  uplift=+5.80%  WIN
+
+## [3/6] G2 14B gu  d_in=5120 d_out=34816
+    default          1447.35us
+    sk=2             1172.08us
+    kBm=64           1442.52us
+    kBn=32           2666.93us
+    cache=1          1441.59us
+    cache=0          1448.11us
+  -> best='sk=2'  1172.08us  uplift=+19.02%  WIN
+
+## [4/6] G2 70B gu  d_in=8192 d_out=57344
+    default          4337.55us
+    sk=2             4891.30us
+    kBm=64           4286.71us
+    kBn=32          10136.06us
+    cache=1          4306.82us
+    cache=0          4336.96us
+  -> best='kBm=64'  4286.71us  uplift=+1.17%
+
+## [5/6] G3 32B dn  d_in=27648 d_out=5120
+    default          1133.60us
+    sk=2              918.95us
+    kBm=64           1180.51us
+    kBn=32           1534.19us
+    cache=1          1156.08us
+    cache=0          1137.44us
+  -> best='sk=2'  918.95us  uplift=+18.94%  WIN
+
+## [6/6] G4 14B q  d_in=5120 d_out=5120
+    default           164.72us
+    sk=2              155.44us
+    kBm=64            207.51us
+    kBn=32            261.28us
+    cache=1           161.39us
+    cache=0           164.80us
+  -> best='sk=2'  155.44us  uplift=+5.63%  WIN
+
+==========================================================================================
+SUMMARY
+==========================================================================================
+shape             default best_cfg      best_us   uplift
+  G1 8B kv         52.35  cache=0        48.30    +7.73%  WIN
+  G1 14B kv        61.73  sk=2           58.14    +5.80%  WIN
+  G2 14B gu      1447.35  sk=2         1172.08   +19.02%  WIN
+  G2 70B gu      4337.55  kBm=64       4286.71    +1.17%
+  G3 32B dn      1133.60  sk=2          918.95   +18.94%  WIN
+  G4 14B q        164.72  sk=2          155.44    +5.63%  WIN
+
+Wins ≥2%: 5/6  avg uplift: +11.42%
+
+Winner config distribution:
+  sk=2            4 shape(s)
+  cache=0         1 shape(s)

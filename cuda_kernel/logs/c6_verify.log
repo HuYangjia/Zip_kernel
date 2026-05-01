@@ -1,0 +1,26 @@
+W0501 16:08:28.925000 8213 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0501 16:08:28.925000 8213 miniconda3/envs/zip/lib/python3.10/site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+==========================================================================================
+C.6 verify v1 — in-process A/B (sk=1 forced vs C.6 auto)
+==========================================================================================
+
+shape                                          sk=1 us     C6 us    delta
+  Qwen3-14B/gate_up_proj T=512 5120→34816    1461.30   1187.17   -18.76%  WIN
+  Qwen2.5-32B/down_proj T=512 27648→5120     1128.11    918.77   -18.56%  WIN
+  Qwen3-14B/kv_proj T=512 5120→2048       61.97     58.46    -5.66%  WIN
+  Qwen3-14B/q_proj T=512 5120→5120      164.27    155.28    -5.47%  WIN
+
+==========================================================================================
+C.6 guards (C.6 should NOT fire ⇒ sk=1 and default should be equal)
+==========================================================================================
+shape                                          sk=1 us     C6 us    delta
+  Qwen3-8B/q_proj T=128 4096→4096       38.94     35.13    -9.80%  UNEXPECTED WIN (investigate)
+  Qwen3-8B/q_proj T=32 4096→4096       31.65     19.59   -38.09%  UNEXPECTED WIN (investigate)
+  Qwen3-0.6B/q_proj T=512 1024→2048       21.60     21.60    -0.01%  OK
+  Qwen3-1.7B/q_proj T=512 2048→2048       27.78     27.78    -0.01%  OK
+
+==========================================================================================
+SUMMARY
+==========================================================================================
+C.6 WIN: 4/4  median uplift: +12.11%  mean: +12.11%
+C.6 GUARD regress: 0/4
