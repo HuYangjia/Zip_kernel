@@ -1,0 +1,56 @@
+================================================================================================
+r63_combined → r68_multiT_survey comparison
+================================================================================================
+Shapes in intersection: 120
+
+## Global
+metric                                   r63        r68      delta
+median cuda_speedup_vs_fp16          1.1231x   1.1392x   +0.0161
+mean cuda_speedup_vs_fp16            1.2749x   1.2864x   +0.0115
+wins (sp >= 1.0x)                     70/120      76/120     +6
+big wins (sp >= 2.0x)                 19/120      19/120     +0
+
+## By T bucket
+   T    N     med r63    med r68      Δ sp    wins r63   wins r68
+   1   30      2.016x     1.995x    -0.021    29/30     29/30  
+  32   30      1.190x     1.175x    -0.015    19/30     18/30  
+ 128   30      0.957x     1.002x    +0.045    12/30     15/30  
+ 512   30      0.934x     0.962x    +0.028    10/30     14/30  
+
+## By model bucket (ordered by param count)
+model           params    N     med r63    med r68      Δ sp    wins r63   wins r68
+Qwen3-1.7B        1.7B   20      0.761x     0.787x    +0.026     8/20      8/20  
+Qwen3-4B          4.0B   20      1.008x     1.008x    +0.000    10/20     10/20  
+Qwen3-8B          8.0B   20      1.341x     1.350x    +0.009    15/20     15/20  
+Qwen3-14B        14.0B   20      1.147x     1.196x    +0.050    12/20     15/20  
+Qwen2.5-32B      32.0B   20      1.006x     1.039x    +0.032    10/20     12/20  
+LLaMA3-70B       70.0B   20      1.180x     1.171x    -0.009    15/20     16/20  
+
+## Top 10 improvements (largest cuda_us reduction vs r63)
+  shape                                           T      us63      us68     delta
+  Qwen3-14B/gate_up_proj 5120->34816    32   299.79   217.09   -27.59%
+  Qwen2.5-32B/down_proj 27648->5120    512  1310.84  1064.47   -18.79%
+  Qwen3-14B/gate_up_proj 5120->34816   128   477.28   398.23   -16.56%
+  Qwen3-4B/gate_up_proj 2560->19456    32    46.89    40.33   -13.98%
+  Qwen3-14B/down_proj 17408->5120    512   734.52   656.31   -10.65%
+  Qwen3-1.7B/down_proj 6144->2048    128    48.38    44.21    -8.63%
+  LLaMA3-70B/kv_proj 8192->2048    128    60.71    55.83    -8.05%
+  Qwen3-8B/gate_up_proj 4096->24576    32    73.37    68.36    -6.83%
+  LLaMA3-70B/kv_proj 8192->2048    512   112.86   106.08    -6.01%
+  Qwen2.5-32B/gate_up_proj 5120->55296   128   703.64   662.05    -5.91%
+
+## Top 10 regressions (largest cuda_us increase vs r63)
+  Qwen2.5-32B/down_proj 27648->5120     32   300.95   327.21    +8.72%
+  Qwen3-14B/gate_up_proj 5120->34816     1   183.08   191.22    +4.45%
+  Qwen3-14B/kv_proj 5120->2048    128    41.06    42.82    +4.29%
+  Qwen3-8B/q_proj 4096->4096     32    34.23    35.59    +3.97%
+  Qwen2.5-32B/kv_proj 5120->2048    128    41.28    42.85    +3.82%
+  Qwen3-4B/kv_proj 2560->2048     32    34.15    35.23    +3.15%
+  Qwen3-4B/kv_proj 2560->2048    128    34.19    35.22    +3.02%
+  Qwen3-4B/q_proj 2560->4096    512    58.72    60.47    +2.98%
+  Qwen3-8B/kv_proj 4096->2048    128    34.20    35.19    +2.91%
+  Qwen3-1.7B/gate_up_proj 2048->12288    32    34.20    35.16    +2.81%
+
+## Material changes (|Δ us| >= 3%)
+  improvements (>=3% faster): 18 / 120
+  regressions  (>=3% slower): 7 / 120
