@@ -1283,6 +1283,31 @@ void launch(
         else if (want_sk >= 2 && n_groups % 2 == 0) split_k = 2;
         else                                        split_k = 1;
     }
+    // C.6 (2026-05-01 — tests/t512_dispatch_probe_fast.py):
+    //   The wave-count split-K rule above (r62 F2) only upgrades to sk=2/4
+    //   when the grid is *under-filled*; for large-grid T=512 shapes the
+    //   rule always picks sk=1.  But deep K-loops (n_groups >= 32) then
+    //   run a long serial accumulation inside each CTA that hurts ILP
+    //   and register-lifetime pressure in the MMA pipeline.  Halving
+    //   the per-CTA K-loop via sk=2 shortens the dependency chain and
+    //   is measured +5-19% on the deep-K T=512 shapes that previously
+    //   stuck at sk=1:
+    //     Qwen3-14B gu  T=512 (d_in=5120,  n_g=40):  1447 → 1172us (+19.02%)
+    //     Qwen2.5-32B dn T=512 (d_in=27648, n_g=216): 1134 →  919us (+18.94%)
+    //     Qwen3-14B kv  T=512 (d_in=5120,  n_g=40):    61.7 → 58.1us (+5.80%)
+    //     Qwen3-14B q   T=512 (d_in=5120,  n_g=40):   164.7 → 155.4us (+5.63%)
+    //   Guard: only when sk was still 1 after the wave rule AND T is
+    //   large (>= 256, i.e. the 'compute-bound' T=512 region, and a
+    //   bit of cushion) AND n_groups is both deep (>= 32) and even
+    //   (so sk=2 divides cleanly).
+    //
+    //   NOT applied for small T (compute-bound ceiling is different
+    //   there; the wave rule already catches those correctly via the
+    //   under-wave branch above) or for n_g < 32 (K-loop too short
+    //   to benefit from halving).
+    if (split_k == 1 && T >= 256 && n_groups >= 32 && (n_groups % 2) == 0) {
+        split_k = 2;
+    }
     // Override for testing (read here too so pick() below sees the
     // override-adjusted split_k).
     {
