@@ -1049,7 +1049,22 @@ void launch(
      // R52: T=128 with 512<=d_out<=2048 and d_in>=2048 benefits from kBm=64.
      //   d_out<512 or d_in<2048 (ng<16): overhead > benefit.
      //   d_out=4096 at T=128: 0.95x with kBm=64, excluded.
-     || ( (T == 128) && (d_out >= 512) && (d_out <= 2048) && (d_in >= 2048) );    // R45: the `< 64` threshold was too strict.  Probe data for T=48
+     || ( (T == 128) && (d_out >= 512) && (d_out <= 2048) && (d_in >= 2048) )
+     // C.5 (2026-05-01 — tests/c_probe_loser_shapes.py v2 hp=0.05):
+     //   Re-probed T=128 medium-shape region that R52 had excluded as
+     //   "d_out=4096 T=128 kBm=64 → 0.95x".  Under current kernel
+     //   (ldmatrix + group-cache + cp.async tuned at r66) the result is:
+     //     Qwen3-8B  q/o (d_in=4096,d_out=4096): kBm=64 = -14.1% / -5.8%
+     //     Qwen3-4B  q   (d_in=2560,d_out=4096): kBm=64 = -12.3%
+     //     Qwen3-4B  o   (d_in=4096,d_out=2560): kBm=64 = -10.3%
+     //   R52's old data was likely from a pre-ldmatrix revision; we now
+     //   add the band d_out in [2560,4096] AND d_in in [2560,4096] to
+     //   pick up these four wins.  Guards:
+     //     d_in  >= 2560 excludes Qwen3-0.6B (1024→2048).
+     //     d_in  <= 4096 excludes 6144+ (down_proj) and 8192+ (70B kv).
+     //     d_out >= 2560 leaves R52's 512..2048 band untouched.
+     || ( (T == 128) && (d_out >= 2560) && (d_out <= 4096)
+          && (d_in >= 2560) && (d_in <= 4096) );    // R45: the `< 64` threshold was too strict.  Probe data for T=48
     // d=4096 (n_cta_m_at_128=32, ceil(T/32)=2 → product = 64) showed:
     //     kBm=64 kBn=8 : 40.94us  (best)
     //     R44 auto     : 47.25us  (took kBm=128 because 64 not <64)
