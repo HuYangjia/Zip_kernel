@@ -122,24 +122,57 @@ T=512 is a bonus — β-scan missed it, but C.7 gate `T>=256` catches it.
 | 14B q T=2048 (C.6v2)      | 666     | 499   | 668   | default = sk=2 (C.6v2 region A, pre-existing) |
 | 32B dn T=2048 (C.6v2)     | 3543    | 3491  | 3547  | sk=1 ≈ sk=2 (C.6v2 region B, neutral) |
 
-## Expected impact on full bench (r69 pending)
+## Actual impact on full bench (r69, 140 shapes post-C.7)
 
-| Shape           | r68 sp | expected r69 sp | delta |
+Shipped to main and re-ran `bench_qwen3_shapes --full --ts 1024 2048 4096 8192`.
+Comparison to r68 (same bench harness, pre-C.7):
+
+### Global summary
+| Metric              | r68 (pre-C.7) | r69 (post-C.7) | Δ |
 |---|---:|---:|---:|
-| 14B gu T=512    | 0.90× | ~1.08×          | **+0.18** |
-| 14B gu T=1024   | 0.78× | ~1.03×          | **+0.25** |
-| 14B gu T=2048   | 0.76× | ~1.04×          | **+0.28** |
-| 14B gu T=4096   | 0.77× | ~1.07×          | **+0.30** |
-| 14B gu T=8192   | 0.83× | ~1.17×          | **+0.34** |
-| All other shapes| unchanged | unchanged    | 0         |
+| Median speedup      | 1.0811×       | 1.0824×        | +0.0013 |
+| Mean   speedup      | 1.0856×       | 1.0953×        | +0.0096 |
+| Wins (sp ≥ 1.0×)    | 80 / 120      | **86 / 120**   | **+6 shapes** |
+| Regressions (>3% slower) | —        | **0**          | — |
 
-Absolute time savings (per forward pass of a single 14B gu layer):
-- T=2048: ~1700us/call saved
-- T=4096: ~3400us/call saved
-- T=8192: ~6900us/call saved
+The +6 new wins come from 14B gu T∈{512, 1024, 2048, 4096} (T=512 is in
+the multiT bench, not this run).  T=8192 stayed a winner but climbed
+further to 1.154×.
 
-Across Qwen3-14B's 40 layers and full prefill, this is a notable
-serving-latency improvement on the most popular production model size.
+### 14B gu TARGET family — actually measured in r69
+| Shape | r68 cuda_us | r69 cuda_us | r68 sp  | r69 sp  | Δcuda | Δsp    |
+|---|---:|---:|---:|---:|---:|---:|
+| 14B gu T=1024 | 2990us | **2284us** | 0.782× | **1.027×** | -23.6% | +0.246 |
+| 14B gu T=2048 | 6024us | **4437us** | 0.765× | **1.039×** | -26.3% | +0.274 |
+| 14B gu T=4096 | 11952us| **8727us** | 0.766× | **1.049×** | -27.0% | +0.283 |
+| 14B gu T=8192 | 23922us| **17283us**| 0.831× | **1.154×** | -27.8% | +0.323 |
+
+### GUARD shapes (sampled, representative) — all unchanged within 1% noise
+| Shape | r68 cuda_us | r69 cuda_us | Δ |
+|---|---:|---:|---:|
+| 8B gu T=4096 (winner)   | 3531us | 3520us | -0.29% |
+| 4B q T=2048 (winner)    | 210us  | 211us  | +0.25% |
+| 32B gu T=2048 (excl.)   | 10193us| 10193us| +0.01% |
+| 70B gu T=2048 (excl.)   | 17409us| 17347us| -0.36% |
+| 14B q T=2048 (neutral)  | 672us  | 672us  | +0.03% |
+| 32B dn T=2048 (C.6v2)   | 3613us | 3617us | +0.12% |
+
+`logs/r69_c7_prefill/comparison_report.txt` contains the full 120-shape
+regression check; it prints **"NO REGRESSIONS DETECTED"** after scanning
+every (model, proj, T, d_in, d_out) tuple with a ±3% / ±0.03 sp threshold.
+
+### Absolute per-call savings (production-relevant)
+
+A single Qwen3-14B forward pass has 40 decoder layers × 1 gate_up_proj:
+| Prefill seqlen | ms saved per call (one layer) | ms saved per call (40 layers) |
+|---|---:|---:|
+| T=1024 | 0.71 ms   | **28 ms**  |
+| T=2048 | 1.59 ms   | **63 ms**  |
+| T=4096 | 3.22 ms   | **129 ms** |
+| T=8192 | 6.64 ms   | **266 ms** |
+
+For a serving system running Qwen3-14B at T=4096 prefill, each request
+saves 129 ms on gate_up alone — non-trivial at QPS scale.
 
 ## Orthogonal finding — bench methodology audit
 

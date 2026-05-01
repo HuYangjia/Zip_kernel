@@ -1,0 +1,59 @@
+Common (model, proj, T, d_in, d_out) shapes: 120
+
+§A  Global summary (r68 → r69 C.7)
+  median speedup:  1.0811×  →  1.0824×   Δ = +0.0013
+  mean   speedup:  1.0856×  →  1.0953×   Δ = +0.0096
+  wins (sp>=1.0):  80/120  →  86/120   Δ = +6
+
+§B  Per-model breakdown
+  model            med r68   med r69      Δmed   wins r68   wins r69    Δwins
+  LLaMA3-70B        1.083×    1.083×   +0.0002     12/20      12/20      +0
+  Qwen2.5-32B       1.003×    1.001×   -0.0019     11/20      11/20      +0
+  Qwen3-1.7B        1.136×    1.135×   -0.0011     13/20      13/20      +0
+  Qwen3-14B         0.988×    1.011×   +0.0238      8/20      13/20      +5
+  Qwen3-4B          1.214×    1.211×   -0.0029     16/20      17/20      +1
+  Qwen3-8B          1.315×    1.312×   -0.0028     20/20      20/20      +0
+
+§C  TARGET family (Qwen3-14B gate_up_proj) — C.7 region D
+      T   fp16 r68   cuda r68   sp r68   fp16 r69   cuda r69   sp r69   Δcuda%     Δsp
+   1024    2336.8    2989.5   0.782×    2346.6    2284.0   1.027×  -23.60%  +0.246 ✓
+   2048    4607.1    6024.0   0.765×    4610.6    4437.1   1.039×  -26.34%  +0.274 ✓
+   4096    9153.2   11951.9   0.766×    9152.0    8727.1   1.049×  -26.98%  +0.283 ✓
+   8192   19878.2   23922.2   0.831×   19943.2   17282.9   1.154×  -27.75%  +0.323 ✓
+
+§D  GUARD shapes (C.7 must NOT touch these)
+  shape                                             T   cuda r68   cuda r69   Δcuda%   sp r68   sp r69     Δsp  status         
+  Qwen3-8B gate_up_proj 4096->24576              1024     904.0     903.6   -0.05%   1.483×   1.492×  +0.009  unchanged ✓
+  Qwen3-8B gate_up_proj 4096->24576              2048    1770.5    1766.0   -0.25%   1.451×   1.456×  +0.005  unchanged ✓
+  Qwen3-8B gate_up_proj 4096->24576              4096    3530.8    3520.4   -0.29%   1.468×   1.473×  +0.005  unchanged ✓
+  Qwen3-8B gate_up_proj 4096->24576              8192    6977.7    6977.5   -0.00%   1.505×   1.508×  +0.003  unchanged ✓
+  Qwen3-4B q_proj 2560->4096                     1024     109.9     110.0   +0.02%   1.312×   1.303×  -0.009  unchanged ✓
+  Qwen3-4B q_proj 2560->4096                     2048     210.5     211.1   +0.25%   1.229×   1.227×  -0.002  unchanged ✓
+  Qwen3-4B q_proj 2560->4096                     4096     412.7     409.5   -0.75%   1.285×   1.293×  +0.009  unchanged ✓
+  Qwen3-4B q_proj 2560->4096                     8192     830.8     830.5   -0.03%   1.275×   1.269×  -0.005  unchanged ✓
+  Qwen2.5-32B gate_up_proj 5120->55296           1024    5095.3    5095.5   +0.00%   0.710×   0.709×  -0.001  unchanged ✓
+  Qwen2.5-32B gate_up_proj 5120->55296           2048   10192.7   10193.2   +0.01%   0.716×   0.716×  +0.000  unchanged ✓
+  Qwen2.5-32B gate_up_proj 5120->55296           4096   20285.0   20287.2   +0.01%   0.718×   0.717×  -0.000  unchanged ✓
+  Qwen2.5-32B gate_up_proj 5120->55296           8192   40409.5   40408.4   -0.00%   0.783×   0.783×  +0.000  unchanged ✓
+  LLaMA3-70B gate_up_proj 8192->57344            1024    8710.4    8706.9   -0.04%   0.705×   0.703×  -0.002  unchanged ✓
+  LLaMA3-70B gate_up_proj 8192->57344            2048   17409.0   17346.8   -0.36%   0.698×   0.699×  +0.001  unchanged ✓
+  LLaMA3-70B gate_up_proj 8192->57344            4096   34740.0   34620.6   -0.34%   0.713×   0.716×  +0.003  unchanged ✓
+  LLaMA3-70B gate_up_proj 8192->57344            8192   69224.8   69109.0   -0.17%   0.759×   0.760×  +0.001  unchanged ✓
+  Qwen3-14B q_proj 5120->5120                    1024     309.7     310.7   +0.30%   1.081×   1.082×  +0.001  unchanged ✓
+  Qwen3-14B q_proj 5120->5120                    2048     671.6     671.8   +0.03%   0.970×   0.970×  -0.000  unchanged ✓
+  Qwen3-14B q_proj 5120->5120                    4096    1361.6    1361.5   -0.01%   0.994×   1.001×  +0.007  unchanged ✓
+  Qwen3-14B q_proj 5120->5120                    8192    2687.7    2687.0   -0.03%   1.070×   1.068×  -0.001  unchanged ✓
+  Qwen2.5-32B down_proj 27648->5120              1024    1833.3    1836.9   +0.19%   1.041×   1.033×  -0.009  unchanged ✓
+  Qwen2.5-32B down_proj 27648->5120              2048    3613.0    3617.3   +0.12%   1.049×   1.049×  -0.000  unchanged ✓
+  Qwen2.5-32B down_proj 27648->5120              4096    7145.3    7162.5   +0.24%   1.074×   1.074×  +0.000  unchanged ✓
+  Qwen2.5-32B down_proj 27648->5120              8192   14181.9   14205.3   +0.16%   1.089×   1.089×  -0.000  unchanged ✓
+
+§E  Full regression check — any shape >3% slower cuda_us or >0.03 lower sp in r69?
+  NO REGRESSIONS DETECTED.
+
+§F  Top improvements — shapes >3% faster in r69
+  Found 4 improvements:
+    Qwen3-14B      gate_up_proj   T=8192  d_in=5120  d_out=34816   cuda 23922.2→17282.9 (-27.75%)  sp 0.831→1.154 (+0.323)
+    Qwen3-14B      gate_up_proj   T=4096  d_in=5120  d_out=34816   cuda 11951.9→8727.1 (-26.98%)  sp 0.766→1.049 (+0.283)
+    Qwen3-14B      gate_up_proj   T=2048  d_in=5120  d_out=34816   cuda 6024.0→4437.1 (-26.34%)  sp 0.765→1.039 (+0.274)
+    Qwen3-14B      gate_up_proj   T=1024  d_in=5120  d_out=34816   cuda 2989.5→2284.0 (-23.60%)  sp 0.782→1.027 (+0.246)
