@@ -613,29 +613,71 @@ fused_dense_sparse_mma_int4_kernel(
         // Round 22b: per-m-row prefetch of any (z, s, scale_block, ...) that
         // the fold function will consume.  This eliminates redundant
         // __half2float calls that NVCC cannot hoist out of a lambda boundary.
-        #pragma unroll
-        for (int im = 0; im < kMsubPerWarp; ++im) {
-            int msub_base = warp_id * 32 + im * 16;
-            int mrow0 = msub_base + (lane >> 2);
-            int mrow1 = mrow0 + 8;
-            // Prefetch closure returns per-row scalars; ABI is fold-specific.
-            auto pr = prefetch_fn(mrow0, mrow1, g_or_bc);
+        //
+        // Phase 4 D.3 Iter 2a (2026-05-01): when kInterleaveFold=true we
+        //   batch-prefetch first (all im), then do the fold loop.  This lets
+        //   the warp scheduler issue prefetch[im=1]'s smem reads concurrently
+        //   with fold[im=0]'s fmaf chain, hiding smem-read latency behind
+        //   independent FP ops.  No register-pressure cost since `pr_cache`
+        //   is 4 floats × kMsubPerWarp = 8 floats/thread (kMsub=2 typical).
+        //   kInterleaveFold=false path is unchanged → r66 bit-exact.
+        if constexpr (kInterleaveFold) {
+            using PR = decltype(prefetch_fn(0, 0, 0));
+            PR pr_cache[kMsubPerWarp];
             #pragma unroll
-            for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
-                int nsub_base = in_sub * 8;
+            for (int im = 0; im < kMsubPerWarp; ++im) {
+                int msub_base = warp_id * 32 + im * 16;
+                int mrow0 = msub_base + (lane >> 2);
+                int mrow1 = mrow0 + 8;
+                pr_cache[im] = prefetch_fn(mrow0, mrow1, g_or_bc);
+            }
+            #pragma unroll
+            for (int im = 0; im < kMsubPerWarp; ++im) {
+                int msub_base = warp_id * 32 + im * 16;
                 #pragma unroll
-                for (int r = 0; r < 4; ++r) {
-                    int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
-                    int col_local = (lane & 3) * 2 + (r & 1);
-                    int m_local = msub_base + row_local;
-                    int m_global = m_tile + m_local;
-                    int n_local = nsub_base + col_local;
-                    if (n_local >= kBn) continue;
-                    int n_global = n_tile + n_local;
-                    if (m_global >= d_out) continue;
-                    if (n_global >= T) continue;
-                    fold_fn(d_acc[im][in_sub][r], m_global, m_local, n_local,
-                            g_or_bc, im, in_sub, r, buf, pr);
+                for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+                    int nsub_base = in_sub * 8;
+                    #pragma unroll
+                    for (int r = 0; r < 4; ++r) {
+                        int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
+                        int col_local = (lane & 3) * 2 + (r & 1);
+                        int m_local = msub_base + row_local;
+                        int m_global = m_tile + m_local;
+                        int n_local = nsub_base + col_local;
+                        if (n_local >= kBn) continue;
+                        int n_global = n_tile + n_local;
+                        if (m_global >= d_out) continue;
+                        if (n_global >= T) continue;
+                        fold_fn(d_acc[im][in_sub][r], m_global, m_local, n_local,
+                                g_or_bc, im, in_sub, r, buf, pr_cache[im]);
+                    }
+                }
+            }
+        } else {
+            #pragma unroll
+            for (int im = 0; im < kMsubPerWarp; ++im) {
+                int msub_base = warp_id * 32 + im * 16;
+                int mrow0 = msub_base + (lane >> 2);
+                int mrow1 = mrow0 + 8;
+                // Prefetch closure returns per-row scalars; ABI is fold-specific.
+                auto pr = prefetch_fn(mrow0, mrow1, g_or_bc);
+                #pragma unroll
+                for (int in_sub = 0; in_sub < kNsubPerCta; ++in_sub) {
+                    int nsub_base = in_sub * 8;
+                    #pragma unroll
+                    for (int r = 0; r < 4; ++r) {
+                        int row_local = (lane >> 2) + ((r >> 1) ? 8 : 0);
+                        int col_local = (lane & 3) * 2 + (r & 1);
+                        int m_local = msub_base + row_local;
+                        int m_global = m_tile + m_local;
+                        int n_local = nsub_base + col_local;
+                        if (n_local >= kBn) continue;
+                        int n_global = n_tile + n_local;
+                        if (m_global >= d_out) continue;
+                        if (n_global >= T) continue;
+                        fold_fn(d_acc[im][in_sub][r], m_global, m_local, n_local,
+                                g_or_bc, im, in_sub, r, buf, pr);
+                    }
                 }
             }
         }
