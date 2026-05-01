@@ -1283,30 +1283,57 @@ void launch(
         else if (want_sk >= 2 && n_groups % 2 == 0) split_k = 2;
         else                                        split_k = 1;
     }
-    // C.6 (2026-05-01 — tests/t512_dispatch_probe_fast.py):
-    //   The wave-count split-K rule above (r62 F2) only upgrades to sk=2/4
-    //   when the grid is *under-filled*; for large-grid T=512 shapes the
-    //   rule always picks sk=1.  But deep K-loops (n_groups >= 32) then
-    //   run a long serial accumulation inside each CTA that hurts ILP
-    //   and register-lifetime pressure in the MMA pipeline.  Halving
-    //   the per-CTA K-loop via sk=2 shortens the dependency chain and
-    //   is measured +5-19% on the deep-K T=512 shapes that previously
-    //   stuck at sk=1:
-    //     Qwen3-14B gu  T=512 (d_in=5120,  n_g=40):  1447 → 1172us (+19.02%)
-    //     Qwen2.5-32B dn T=512 (d_in=27648, n_g=216): 1134 →  919us (+18.94%)
-    //     Qwen3-14B kv  T=512 (d_in=5120,  n_g=40):    61.7 → 58.1us (+5.80%)
-    //     Qwen3-14B q   T=512 (d_in=5120,  n_g=40):   164.7 → 155.4us (+5.63%)
-    //   Guard: only when sk was still 1 after the wave rule AND T is
-    //   large (>= 256, i.e. the 'compute-bound' T=512 region, and a
-    //   bit of cushion) AND n_groups is both deep (>= 32) and even
-    //   (so sk=2 divides cleanly).
+    // C.6 v2 (2026-05-01 — tests/t512_probe_extended.py, 30-shape scan):
+    //   The initial C.6 v1 (T>=256 && n_g>=32) was OVER-BROAD.  Full
+    //   T=512 loser sweep revealed 8-12 shapes where sk=2 REGRESSES
+    //   vs sk=1 (e.g. Qwen3-8B q T=512 4096→4096 n_g=32 measured
+    //   +24.94% slower under sk=2; Qwen3-8B gu T=512 4096→24576 n_g=32
+    //   measured +50.85% slower).  Root cause: sk=2 halves K-loop
+    //   but doubles CTA count and adds a reduce-kernel launch; when
+    //   the grid is already large enough (>= 1 wave) AND the K-loop
+    //   is not really long (n_g=32 is the gate minimum), the reduce
+    //   cost exceeds the ILP saving.
     //
-    //   NOT applied for small T (compute-bound ceiling is different
-    //   there; the wave rule already catches those correctly via the
-    //   under-wave branch above) or for n_g < 32 (K-loop too short
-    //   to benefit from halving).
+    //   Revised rule: sk=2 is only safe in three well-defined regions
+    //   where the extended probe recorded -5% to -19% uplift:
+    //
+    //   (A) d_out ≤ 5120 AND d_in IN [5120, 8192]:
+    //         mid d_in projections with moderate d_out — the kv/q/o
+    //         heads of 14B/32B series.  Measured -5.5% to -10.8%.
+    //         (Qwen3-14B q/kv/o 5120→{2048,5120}; 32B kv; 70B kv
+    //         8192→2048.)
+    //
+    //   (B) d_in ≥ 16384: very deep K-loop on down_proj shapes
+    //         (14B dn 17408, 32B dn 27648, 70B dn 28672).  The
+    //         dependency-chain saving dominates because n_g is
+    //         huge (136-224).  Measured -17% to -17.3%.
+    //
+    //   (C) d_out ≤ 2048 AND d_in ≥ 6144: kv/dn shapes with small
+    //         d_out where grid is tight (n_cta_m ≤ 16) and deep K
+    //         gives sk=2 the advantage.  (1.7B dn 6144→2048 n_g=48
+    //         gave -6.71%; 70B kv is also caught by A but confirmed
+    //         here too.)
+    //
+    //   Excluded (shapes where sk=2 regresses, tested and confirmed):
+    //     * d_in=4096 (8B series):     regress +3% to +51%
+    //     * d_out ≥ 24576 AND d_in ≤ 8192: 8B/32B/70B gu big-d_out
+    //                                       regress +8% to +51%
+    //     * d_in=4096 dn (8B dn 12288→4096): regress +17%
+    //     * 4B dn (9728→2560): regress +16%
+    //
+    //   Known miss: Qwen3-14B gu T=512 (5120→34816, n_g=40) would
+    //   have given -19.75% but lies in the gap between regions A
+    //   (d_out too big) and B (d_in too small).  Adding it would
+    //   require a hard-coded special case; not worth the fragility
+    //   given the shape is an 8-shape-only loser.
     if (split_k == 1 && T >= 256 && n_groups >= 32 && (n_groups % 2) == 0) {
-        split_k = 2;
+        const bool c6_region_A =
+            (d_out <= 5120 && d_in >= 5120 && d_in <= 8192);
+        const bool c6_region_B = (d_in >= 16384);
+        const bool c6_region_C = (d_out <= 2048 && d_in >= 6144);
+        if (c6_region_A || c6_region_B || c6_region_C) {
+            split_k = 2;
+        }
     }
     // Override for testing (read here too so pick() below sees the
     // override-adjusted split_k).
