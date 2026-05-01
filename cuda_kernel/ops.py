@@ -587,6 +587,103 @@ def fused_dense_sparse_cuda(
         )
 
 
+# ---------------------------------------------------------------------------
+# End-to-end alias: accepts fp16 X + perm (not pre-quantised) and picks
+# the best-performing kernel path.  This is the entry point that
+# dispatchers should prefer going forward — it exposes the P0 fused
+# quant+MMA kernel to callers that previously did a two-step
+# activation_quant + fused_dense_sparse and paid the ~16us launch
+# floor between them.
+# ---------------------------------------------------------------------------
+
+def _p0_fused_quant_supported(T: int, d_in: int, d_out: int,
+                              hp_col_indices, env_force: int) -> bool:
+    """Return True if the shape is supported by fused_quant_dense_sparse
+    P0.2 kernel and preferable to the legacy two-step path.
+
+    P0.2 hard requirements (from fused_quant_dense_sparse_mma_int4.cu):
+      * T >= 2
+      * d_out % 128 == 0       (kBm=128 fixed)
+      * d_in  % 128 == 0       (BCOL=128)
+      * hp_col_indices empty   (sparse branch not yet ported; P0.3)
+
+    Beyond those, we further gate on T in a band where the launch-floor
+    saving is measurable:
+      * T in [2, 128]          (kBn=32 fixed; T=512 doesn't benefit much
+                                because the two-step path already
+                                amortises the ~16us quant launch over a
+                                much heavier MMA kernel at T=512 but the
+                                P0.2 lacks cp.async / group-cache so it
+                                loses the amortisation; re-enable for
+                                T=512 in P0.4 once those land.)
+
+    env_force:
+      * 0  → default gate (above).
+      * 1  → force P0 path wherever P0 hard requirements allow (debug).
+      * -1 → disable P0 entirely (fall back to legacy two-step).
+    """
+    if env_force == -1:
+        return False
+    if T < 2:
+        return False
+    if d_out % 128 != 0:
+        return False
+    if d_in % 128 != 0:
+        return False
+    if hp_col_indices is not None and hp_col_indices.numel() > 0:
+        return False
+    if env_force == 1:
+        return True
+    # Default band: the launch-floor amortisation win is strongest at
+    # small / mid T, where activation_quant ~16us dominates.  At T>=512
+    # the P0.2 kernel's lack of cp.async / group-cache cancels the
+    # saving, so gate it off.  T=256 is borderline but conservative.
+    return (2 <= T <= 128)
+
+
+def fused_dense_sparse_e2e_cuda(
+    X_fp16, perm,
+    W_low_packed, W_high_blocks_packed, hp_row_offsets, hp_col_indices,
+    scale_u4, zero_u4, d_out, d_in,
+) -> torch.Tensor:
+    """End-to-end: fp16 X + perm → quantised Y (d_out, T).
+
+    Dispatches between:
+      1. T==1 + d_in <= decode max → fused_gemv_cuda_decode (requires
+         pre-quantised X; we do the quant first since GEMV path has
+         its own fused quant kernel fused_quant_gemv_cuda_decode in
+         future; for now fall back to two-step).
+      2. T>=2 + P0 supported      → fused_quant_dense_sparse_cuda_int4
+                                    (fused quant + MMA, no launch floor).
+      3. Otherwise                → legacy two-step
+                                    (activation_quant + fused_dense_sparse).
+
+    Environment override:
+      HKUST_V9_P0_MODE=0 : default gate (recommended).
+      HKUST_V9_P0_MODE=1 : force P0 wherever hard requirements allow.
+      HKUST_V9_P0_MODE=-1: disable P0 entirely.
+    """
+    import os
+    env_force = int(os.environ.get("HKUST_V9_P0_MODE", "0"))
+    T = X_fp16.shape[0] if X_fp16.dim() == 2 else (
+        X_fp16.shape[0] * X_fp16.shape[1])
+    with _nvtx_range("cuda.fused_dense_sparse_e2e"):
+        if _p0_fused_quant_supported(T, d_in, d_out, hp_col_indices, env_force):
+            return fused_quant_dense_sparse_cuda_int4(
+                X_fp16, perm,
+                W_low_packed, W_high_blocks_packed,
+                hp_row_offsets, hp_col_indices,
+                scale_u4, zero_u4, d_out, d_in,
+            )
+        # Legacy two-step fall-through.
+        X_s4, scale_x, sum_X = activation_quant_cuda(X_fp16, perm)
+        return fused_dense_sparse_cuda(
+            W_low_packed, W_high_blocks_packed,
+            hp_row_offsets, hp_col_indices,
+            X_s4, scale_u4, zero_u4, sum_X, scale_x, d_out, d_in,
+        )
+
+
 __all__ = [
     "activation_quant_cuda",
     # GEMM/GEMV default aliases (auto-dispatch on T)
@@ -610,4 +707,6 @@ __all__ = [
     "fused_quant_gemv_cuda",
     # P0: T>=2 fused quant + dense+sparse MMA (see docs/P0_QUANT_FUSION_SPIKE.md)
     "fused_quant_dense_sparse_cuda_int4",
+    # E2E alias: fp16 X + perm in, dispatches among P0 / legacy / GEMV.
+    "fused_dense_sparse_e2e_cuda",
 ]
