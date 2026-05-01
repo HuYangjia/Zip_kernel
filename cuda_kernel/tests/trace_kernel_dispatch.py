@@ -46,11 +46,13 @@ def trace_one(T, d_in, d_out, label):
         torch.cuda.synchronize()
 
     print(f"=== {label}: T={T} shape={d_in}->{d_out} ===")
-    events = [e for e in prof.key_averages()
-              if e.device_type == torch._C._autograd.DeviceType.CUDA
-              and "aten" not in e.key]
-    for e in events:
-        print(f"  {e.key:<70}  count={e.count} total_us={e.cuda_time_total:.1f}")
+    for e in prof.key_averages():
+        # Try both APIs (older/newer torch): cuda_time_total / device_time_total
+        t = getattr(e, 'device_time_total', None)
+        if t is None:
+            t = getattr(e, 'cuda_time_total', 0)
+        if t > 0 and not e.key.startswith('aten::'):
+            print(f"  {e.key:<70}  count={e.count} total_us={t:.1f}")
     print()
 
 
