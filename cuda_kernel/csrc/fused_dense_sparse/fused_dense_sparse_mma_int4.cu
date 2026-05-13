@@ -22,7 +22,94 @@
 namespace hkust_v9 {
 namespace fused_dense_sparse_mma_int4 {
 
-// Stage I: Split-K reduce kernel.
+// ---------------------------------------------------------------------------
+// Probe-D: cp.async wait-group bisection (r73, diagnostic only).
+//
+//   HKUST_PROBE_D=0 (default): production — calls hkust_v9::cp_async_wait_group<N>().
+//   HKUST_PROBE_D=1 (wait-off): issues cp.async.wait_group 99 (no-op;
+//                               never actually waits).  Downstream smem
+//                               reads may observe stale / partially-filled
+//                               bytes → DATA IS INCORRECT, only use for
+//                               timing upper bound.  kernel will NOT hang.
+//
+// Hot-path identity: when macro is undefined the inlined asm is identical
+// to the production cp_async_wait_group<N> — zero codegen drift.
+// ---------------------------------------------------------------------------
+#if !defined(HKUST_PROBE_D)
+#define HKUST_PROBE_D 0
+#endif
+
+template <int N>
+__device__ __forceinline__ void cp_async_wait_group_probe() {
+#if HKUST_PROBE_D == 1
+    // no-op: wait for "at most 99 pending groups" — always satisfied.
+    asm volatile("cp.async.wait_group 99;\n" ::);
+#else
+    hkust_v9::cp_async_wait_group<N>();
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Probe-G: named-barrier synchronisation overhead calibration (r77, diagnostic).
+//
+// Models the WORST-CASE per-g-iter synchronisation cost that a future
+// warp-specialised (1P+3C) rewrite would incur via producer↔consumer
+// handshakes.  Inserts N extra full-CTA `bar.sync id, 128` barriers immediately
+// before the existing dense-branch `__syncthreads()` at each g-iter.
+//
+// Chosen to be UPPER BOUND because:
+//   (a) uses thread_count=128 (all CTA threads) — real warp-spec handshake
+//       between 1 producer warp (32) and 3 consumer warps (96) typically uses
+//       partial barriers (participant count 96 or 128 across 2 pair-wise
+//       barriers); but named bar.sync with the full CTA is a strict upper
+//       bound on stall cost.
+//   (b) inserted serially (no useful work in between) — a real warp-spec
+//       kernel would overlap producer fetches with consumer MMA between
+//       barriers; here the barriers just stack.
+//
+// Semantics:
+//   HKUST_PROBE_G = 0 (default): NO extra barriers — byte-identical to baseline.
+//   HKUST_PROBE_G = N (1..8): inserts N additional `bar.sync id, 128` per dense
+//                             g-iter.  Kernel output remains CORRECT
+//                             (barriers are synchronisation-only, no data
+//                             movement).  Uses barrier ids 3..(3+N-1) — ids 0-2
+//                             are reserved for __syncthreads / future warp-spec.
+//
+// Hot-path identity: when macro == 0 (or undefined), `probe_g_sync_overhead()`
+// expands to an empty inline function → zero codegen drift vs r72 baseline.
+// ---------------------------------------------------------------------------
+#if !defined(HKUST_PROBE_G)
+#define HKUST_PROBE_G 0
+#endif
+
+__device__ __forceinline__ void probe_g_sync_overhead() {
+#if HKUST_PROBE_G >= 1
+    asm volatile("bar.sync 3, 128;\n" ::);
+#endif
+#if HKUST_PROBE_G >= 2
+    asm volatile("bar.sync 4, 128;\n" ::);
+#endif
+#if HKUST_PROBE_G >= 3
+    asm volatile("bar.sync 5, 128;\n" ::);
+#endif
+#if HKUST_PROBE_G >= 4
+    asm volatile("bar.sync 6, 128;\n" ::);
+#endif
+#if HKUST_PROBE_G >= 5
+    asm volatile("bar.sync 7, 128;\n" ::);
+#endif
+#if HKUST_PROBE_G >= 6
+    asm volatile("bar.sync 8, 128;\n" ::);
+#endif
+#if HKUST_PROBE_G >= 7
+    asm volatile("bar.sync 9, 128;\n" ::);
+#endif
+#if HKUST_PROBE_G >= 8
+    asm volatile("bar.sync 10, 128;\n" ::);
+#endif
+}
+
+
 // Sums split_k fp32 partial buffers and writes fp16 to Y.
 // Y_partial: [split_k, d_out, T] fp32
 // Y:         [d_out, T] fp16
@@ -95,7 +182,7 @@ __device__ __forceinline__ int swizzle_row_col(int row, int col_bytes) {
 //   reduces the effective conflict because the HW combines the 8 lane
 //   base addresses into a single wavefront request.
 template <int kBn, bool kUseGroupCache, int kBm = BROW, bool kUseCpAsync = false,
-          bool kUseLdmatrix = false>
+          bool kUseLdmatrix = false, int kStages = 2>
 __global__ void
 // Stage D (REVERTED r55) — `__launch_bounds__(kBm, 3)` hint tried but
 // rejected: mixed result on sweep (2048x2048 +2%, 1024x1024 +4%,
@@ -133,6 +220,10 @@ fused_dense_sparse_mma_int4_kernel(
     constexpr int kKSteps = kBk / kMmaK;
     constexpr int kMsubPerWarp = 2;
     constexpr int kNsubPerCta = (kBn + 7) / 8;
+    // C.11-A: ring depth must be >=2 and <=3; kStages=3 requires cp.async.
+    static_assert(kStages >= 2 && kStages <= 3, "kStages must be 2 or 3");
+    static_assert(kStages == 2 || kUseCpAsync,
+                  "kStages=3 requires kUseCpAsync=true");
 
     const int tid = threadIdx.x;
     const int warp_id = tid >> 5;
@@ -178,8 +269,11 @@ fused_dense_sparse_mma_int4_kernel(
     // Correct fix path: Stage C (ldmatrix for A/B loads). ldmatrix uses
     // a different smem addressing model that allows XOR-swizzled layouts,
     // which can be made conflict-free without alignment constraints.
-    __shared__ alignas(16) uint8_t sW[2][kBm][bytes_per_group];
-    __shared__ alignas(16) uint8_t sX[2][kBn][bytes_per_group];
+    // C.11-A: ring depth = kStages (2 = original double-buffer,
+    //          3 = 3-stage cp.async pipeline for kBm=128 T>=512 loser cluster).
+    //   Indexing uses `g % kStages` everywhere (see dense + sparse loops).
+    __shared__ alignas(16) uint8_t sW[kStages][kBm][bytes_per_group];
+    __shared__ alignas(16) uint8_t sX[kStages][kBn][bytes_per_group];
     // Stage F (r57) — smem bank-conflict fix for scale/zero cache.
     //
     // s_scale_u4[kBm][kGrpBuf] is __half (2 bytes/element).  With
@@ -195,11 +289,26 @@ fused_dense_sparse_mma_int4_kernel(
     // smem overhead: +1 fp16 × kBm × 2 arrays = +512 bytes total.
     // This is negligible vs the 17-34 KB already used.
     static constexpr int kScalePad = kUseGroupCache ? 1 : 0;
+#if defined(HKUST_PROBE_F)
+    // r75 / Probe-F: pack scale & zero into a single __half2 slot so that
+    //   the fold_dense scale/zero fetch becomes a single ld.shared.b32
+    //   instead of two ld.shared.b16 (half the smem-load instructions and
+    //   half the IMAD address arithmetic).  Layout: s_sz_u4[m][g].x = zero,
+    //   s_sz_u4[m][g].y = scale.  smem bytes identical to baseline
+    //   (kBm * (kGrpBuf + pad) * 4B == 2 * kBm * (kGrpBuf + pad) * 2B).
+    //
+    //   The bank-conflict pad stays at 1 half2 (= 4 bytes) per row so that
+    //   consecutive rows still land on different bank sets (row stride
+    //   (kGrpBuf+1)*4 bytes is not a multiple of 128 for the loser-cluster
+    //   configs kGrpBuf=32 -> 33*4=132 bytes, 132 % 128 = 4).
+    __shared__ alignas(16) __half2 s_sz_u4[kBm][kUseGroupCache ? kGrpBuf + kScalePad : 1];
+#else
     __shared__ alignas(16) __half s_scale_u4[kBm][kUseGroupCache ? kGrpBuf + kScalePad : 1];
     __shared__ alignas(16) __half s_zero_u4 [kBm][kUseGroupCache ? kGrpBuf + kScalePad : 1];
+#endif
     __shared__ __half s_scale_x[kBn];
     __shared__ __half s_scale_block[kBm];               // per BSR block
-    __shared__ int s_sum_X[2][kBn];
+    __shared__ int s_sum_X[kStages][kBn];
 
     // Round 39: keep the original <=32 cache path always on, but only
     // extend the windowed 33..64-group cache to modest-M grids.  On very
@@ -221,6 +330,17 @@ fused_dense_sparse_mma_int4_kernel(
             int g_local = idx - m_local * g_count;
             int g = g_base + g_local;
             int m = m_tile + m_local;
+#if defined(HKUST_PROBE_F)
+            if (m < d_out) {
+                __half z = zero_u4 [(int64_t)m * stride_zu_m
+                                  + (int64_t)g * stride_zu_g];
+                __half s = scale_u4[(int64_t)m * stride_su_m
+                                  + (int64_t)g * stride_su_g];
+                s_sz_u4[m_local][g_local] = __halves2half2(z, s);
+            } else {
+                s_sz_u4[m_local][g_local] = __halves2half2(__half(0), __half(0));
+            }
+#else
             if (m < d_out) {
                 s_scale_u4[m_local][g_local] = scale_u4[(int64_t)m * stride_su_m
                                                       + (int64_t)g * stride_su_g];
@@ -230,6 +350,7 @@ fused_dense_sparse_mma_int4_kernel(
                 s_scale_u4[m_local][g_local] = __half(0);
                 s_zero_u4 [m_local][g_local] = __half(0);
             }
+#endif
         }
     };
 
@@ -645,21 +766,57 @@ fused_dense_sparse_mma_int4_kernel(
             issue_sz_window_load(g_start - (g_start % kGrpBuf));
         }
     }
-    // Stage A2: use cp.async for W/X loads so that group g+1's HBM fetch
-    // overlaps with group g's MMA computation (2-stage async pipeline).
+    // Stage A2 / C.11-A: use cp.async for W/X loads so that later groups'
+    // HBM fetches overlap with current group's MMA computation.
+    //   - kStages=2: original double-buffer behavior (1 prefetch in flight).
+    //   - kStages=3: C.11-A 3-stage pipeline — prologue issues kStages-1=2
+    //     groups, mainloop issues g+(kStages-1) each iter, wait_group<kStages-2>
+    //     keeps at most 1 in-flight load at MMA time.
     // sum_X is small (kBn ints) and stays on the synchronous path.
-    if constexpr (kUseCpAsync) {
-        issue_w_dense_load_async(g_start, 0);
-        issue_x_load_async(g_start, 0);
-        issue_sum_X_load(g_start, 0);
-        cp_async_commit();
-        cp_async_wait_group<0>();   // wait for g=g_start before first MMA
-        __syncthreads();
+    //
+    // NOTE (C.11-A post-mortem): to guarantee ZERO codegen change on the
+    //   kStages=2 hot path, we keep the original hard-coded `& 1`/`^ 1`
+    //   expressions under an `if constexpr (kStages == 2)` branch and only
+    //   activate the generic `% kStages` / `+(kStages-1)` logic for kStages>=3.
+    //   Early A/B showed the generic form added ~2x slowdown on the 32B/70B
+    //   gu loser cluster (extra IMAD on every cp.async address), so the 2-stage
+    //   arm is pinned to the original expressions.
+    if constexpr (kStages == 2) {
+        if constexpr (kUseCpAsync) {
+            issue_w_dense_load_async(g_start, 0);
+            issue_x_load_async(g_start, 0);
+            issue_sum_X_load(g_start, 0);
+            cp_async_commit();
+cp_async_wait_group_probe<0>();
+            __syncthreads();
+        } else {
+            issue_w_dense_load(g_start, 0);
+            issue_x_load(g_start, 0);
+            issue_sum_X_load(g_start, 0);
+            __syncthreads();
+        }
     } else {
-        issue_w_dense_load(g_start, 0);
-        issue_x_load(g_start, 0);
-        issue_sum_X_load(g_start, 0);
-        __syncthreads();
+        // kStages>=3 generic path (currently disabled in dispatcher; see r72).
+        if constexpr (kUseCpAsync) {
+            #pragma unroll
+            for (int s = 0; s < kStages - 1; ++s) {
+                int gs = g_start + s;
+                if (gs < g_end) {
+                    int bs = gs % kStages;
+                    issue_w_dense_load_async(gs, bs);
+                    issue_x_load_async(gs, bs);
+                    issue_sum_X_load(gs, bs);
+                    cp_async_commit();
+                }
+            }
+cp_async_wait_group_probe<kStages - 2>();
+            __syncthreads();
+        } else {
+            issue_w_dense_load(g_start, 0);
+            issue_x_load(g_start, 0);
+            issue_sum_X_load(g_start, 0);
+            __syncthreads();
+        }
     }
 
     // Round 23: pre-convert s_scale_x[n_local] (fp16 -> fp32) once per CTA.
@@ -693,19 +850,37 @@ fused_dense_sparse_mma_int4_kernel(
             }
         }
 
-        const int buf = g & 1;
-        if (g + 1 < g_end) {
+        // C.11-A post-mortem: pin kStages=2 to the original hard-coded `& 1`
+        //   / `^ 1` expressions. The generic `% kStages` form caused ~2x
+        //   slowdown on the 32B/70B gu loser cluster due to IMAD spill on
+        //   every cp.async address computation.
+        int buf;
+        int g_ahead;
+        if constexpr (kStages == 2) {
+            buf = g & 1;
+            g_ahead = g + 1;
+        } else {
+            buf = g % kStages;
+            g_ahead = g + (kStages - 1);
+        }
+        if (g_ahead < g_end) {
+            int buf_ahead;
+            if constexpr (kStages == 2) {
+                buf_ahead = buf ^ 1;
+            } else {
+                buf_ahead = g_ahead % kStages;
+            }
             if constexpr (kUseCpAsync) {
-                // Stage A2: issue g+1 loads asynchronously so they overlap
-                // with the MMA computation for group g below.
-                issue_w_dense_load_async(g + 1, buf ^ 1);
-                issue_x_load_async(g + 1, buf ^ 1);
-                issue_sum_X_load(g + 1, buf ^ 1);   // sum_X stays sync (small)
+                // Stage A2 / C.11-A: issue g_ahead loads asynchronously so they
+                // overlap with MMA for group g below.
+                issue_w_dense_load_async(g_ahead, buf_ahead);
+                issue_x_load_async(g_ahead, buf_ahead);
+                issue_sum_X_load(g_ahead, buf_ahead);   // sum_X stays sync (small)
                 cp_async_commit();
             } else {
-                issue_w_dense_load(g + 1, buf ^ 1);
-                issue_x_load(g + 1, buf ^ 1);
-                issue_sum_X_load(g + 1, buf ^ 1);
+                issue_w_dense_load(g_ahead, buf_ahead);
+                issue_x_load(g_ahead, buf_ahead);
+                issue_sum_X_load(g_ahead, buf_ahead);
             }
         }
 
@@ -734,6 +909,20 @@ fused_dense_sparse_mma_int4_kernel(
             struct { float z0, s0, z1, s1; } v{0.0f, 0.0f, 0.0f, 0.0f};
             if constexpr (kUseGroupCache) {
                 if (cache_sz) {
+#if defined(HKUST_PROBE_F)
+                    // r75 / Probe-F: one ld.shared.b32 per row (vs two
+                    //   ld.shared.b16 baseline).  .x = zero, .y = scale.
+                    if (mrow0 < kBm) {
+                        __half2 zs0 = s_sz_u4[mrow0][gg];
+                        v.z0 = __half2float(__low2half (zs0));
+                        v.s0 = __half2float(__high2half(zs0));
+                    }
+                    if (mrow1 < kBm) {
+                        __half2 zs1 = s_sz_u4[mrow1][gg];
+                        v.z1 = __half2float(__low2half (zs1));
+                        v.s1 = __half2float(__high2half(zs1));
+                    }
+#else
                     if (mrow0 < kBm) {
                         v.z0 = __half2float(s_zero_u4 [mrow0][gg]);
                         v.s0 = __half2float(s_scale_u4[mrow0][gg]);
@@ -742,6 +931,7 @@ fused_dense_sparse_mma_int4_kernel(
                         v.z1 = __half2float(s_zero_u4 [mrow1][gg]);
                         v.s1 = __half2float(s_scale_u4[mrow1][gg]);
                     }
+#endif
                     return v;
                 }
             }
@@ -760,6 +950,19 @@ fused_dense_sparse_mma_int4_kernel(
 
         auto fold_dense = [&](int d_val, int m_global, int m_local, int n_local,
                               int gg, int im, int in_sub, int r, int bb, auto pr) {
+#if defined(HKUST_PROBE_B)
+            // PROBE-B (v2): keep all upstream loads live (z/s/sumxn read
+            //   from smem/regs) so that dead-code elimination does NOT
+            //   kill the scale/zero prefetch pipeline. The only thing we
+            //   cut is the scalar FMA at the tail. `* 0.0f + ...` is
+            //   enough to force nvcc to materialise the loads.
+            float z = (r >> 1) ? pr.z1 : pr.z0;
+            float s = (r >> 1) ? pr.s1 : pr.s0;
+            float sumxn = sumxn_cache[in_sub][r & 1];
+            // Keep the inputs "used" for codegen: add with zero weight.
+            float probe_keep = (z + s + sumxn) * 0.0f;
+            y_fp[im][in_sub][r] += static_cast<float>(d_val) + probe_keep;
+#else
             float z = (r >> 1) ? pr.z1 : pr.z0;
             float s = (r >> 1) ? pr.s1 : pr.s0;
             // R23 sxn cache + R27: sxn factored out of g-loop, applied
@@ -767,16 +970,20 @@ fused_dense_sparse_mma_int4_kernel(
             float sumxn = sumxn_cache[in_sub][r & 1];  // R24: register cache
             float corrected = static_cast<float>(d_val) - z * sumxn;
             y_fp[im][in_sub][r] += corrected * s;  // R27: no sxn here
+#endif
         };
         run_mma_pass(buf, fold_dense, prefetch_dense, g_cache);
 
-        // Stage A2: wait for the g+1 cp.async loads (issued above) to
-        // complete before the next iteration uses buf^1.
+        // Stage A2 / C.11-A: wait so that at most kStages-2 in-flight groups
+        //   remain (keeps buffer for the *next* iteration's MMA ready).
         if constexpr (kUseCpAsync) {
             if (g + 1 < n_groups) {
-                cp_async_wait_group<0>();
+cp_async_wait_group_probe<kStages - 2>();
             }
         }
+        // r77 Probe-G: synthetic per-g-iter bar.sync overhead (UPPER BOUND on
+        //   warp-spec handshake cost).  No-op when HKUST_PROBE_G == 0.
+        probe_g_sync_overhead();
         __syncthreads();
     }
 
@@ -799,36 +1006,86 @@ fused_dense_sparse_mma_int4_kernel(
     //   splits skip it.  This is safe for kBm=64 too because the
     //   bsr_br/half_row_off remapping inside issue_w_sparse_load does
     //   not depend on split_k_idx.
-    if (split_k_idx == 0) {
+    //
+    // r74 / Probe-E: compile-time skip of the entire sparse branch.
+    //   HKUST_PROBE_E=1  -> kernel output is INCORRECT for shapes with
+    //                       hp_blocks > 0 (we drop W_high·X).  Used
+    //                       only to measure dense-only timing upper
+    //                       bound.  Macro undefined => byte-identical
+    //                       to baseline (constant-folded bool).
+#if defined(HKUST_PROBE_E)
+    constexpr bool kProbeSkipSparse = true;
+#else
+    constexpr bool kProbeSkipSparse = false;
+#endif
+    if (!kProbeSkipSparse && split_k_idx == 0) {
         const int blk_start = hp_row_offsets[bsr_br];
         const int blk_end   = hp_row_offsets[bsr_br + 1];
 
         if (blk_start < blk_end) {
-            int bc0 = __ldg(&hp_col_indices[blk_start]);
-            if constexpr (kUseCpAsync) {
-                issue_w_sparse_load_async(blk_start, 0);
-                issue_x_load_async(bc0, 0);
-                cp_async_commit();
-                cp_async_wait_group<0>();
+            if constexpr (kStages == 2) {
+                if constexpr (kUseCpAsync) {
+                    int bc0 = __ldg(&hp_col_indices[blk_start]);
+                    issue_w_sparse_load_async(blk_start, 0);
+                    issue_x_load_async(bc0, 0);
+                    cp_async_commit();
+cp_async_wait_group_probe<0>();
+                } else {
+                    int bc0 = __ldg(&hp_col_indices[blk_start]);
+                    issue_w_sparse_load(blk_start, 0);
+                    issue_x_load(bc0, 0);
+                }
             } else {
-                issue_w_sparse_load(blk_start, 0);
-                issue_x_load(bc0, 0);
+                // kStages>=3 generic path (currently disabled in dispatcher).
+                if constexpr (kUseCpAsync) {
+                    #pragma unroll
+                    for (int s = 0; s < kStages - 1; ++s) {
+                        int idx = blk_start + s;
+                        if (idx < blk_end) {
+                            int bc_s = __ldg(&hp_col_indices[idx]);
+                            int bs = s % kStages;
+                            issue_w_sparse_load_async(idx, bs);
+                            issue_x_load_async(bc_s, bs);
+                            cp_async_commit();
+                        }
+                    }
+cp_async_wait_group_probe<kStages - 2>();
+                } else {
+                    int bc0 = __ldg(&hp_col_indices[blk_start]);
+                    issue_w_sparse_load(blk_start, 0);
+                    issue_x_load(bc0, 0);
+                }
             }
             __syncthreads();
 
             for (int block_idx = blk_start; block_idx < blk_end; ++block_idx) {
                 const int bc = __ldg(&hp_col_indices[block_idx]);
-                const int buf = (block_idx - blk_start) & 1;
-                if (block_idx + 1 < blk_end) {
-                    int bc_next = __ldg(&hp_col_indices[block_idx + 1]);
+                // C.11-A post-mortem: pin kStages=2 to original `& 1` / `^ 1`.
+                int buf;
+                int idx_ahead;
+                if constexpr (kStages == 2) {
+                    buf = (block_idx - blk_start) & 1;
+                    idx_ahead = block_idx + 1;
+                } else {
+                    buf = (block_idx - blk_start) % kStages;
+                    idx_ahead = block_idx + (kStages - 1);
+                }
+                if (idx_ahead < blk_end) {
+                    int bc_ahead = __ldg(&hp_col_indices[idx_ahead]);
+                    int buf_ahead;
+                    if constexpr (kStages == 2) {
+                        buf_ahead = buf ^ 1;
+                    } else {
+                        buf_ahead = (idx_ahead - blk_start) % kStages;
+                    }
                     if constexpr (kUseCpAsync) {
-                        // Stage A2.5: overlap next block's HBM load with MMA.
-                        issue_w_sparse_load_async(block_idx + 1, buf ^ 1);
-                        issue_x_load_async(bc_next, buf ^ 1);
+                        // Stage A2.5 / C.11-A: overlap next block's HBM load with MMA.
+                        issue_w_sparse_load_async(idx_ahead, buf_ahead);
+                        issue_x_load_async(bc_ahead, buf_ahead);
                         cp_async_commit();
                     } else {
-                        issue_w_sparse_load(block_idx + 1, buf ^ 1);
-                        issue_x_load(bc_next, buf ^ 1);
+                        issue_w_sparse_load(idx_ahead, buf_ahead);
+                        issue_x_load(bc_ahead, buf_ahead);
                     }
                 }
                 issue_scale_block_load(bc);
@@ -849,7 +1106,7 @@ fused_dense_sparse_mma_int4_kernel(
 
                 if constexpr (kUseCpAsync) {
                     if (block_idx + 1 < blk_end) {
-                        cp_async_wait_group<0>();
+cp_async_wait_group_probe<kStages - 2>();
                     }
                 }
                 __syncthreads();
@@ -1088,25 +1345,66 @@ void launch(
     //   actually PREFERS kBm=128 by +28% if forced to kBm=64).
     //   The wave-count check is bypassed for this branch since the
     //   heuristic was precisely what was wrong here.
-    const bool kbm64_gate_default =
-        (r44_shape_ok &&
-         ((int64_t)n_cta_m_at_128 * ceil_div(T, 32) <= 64))
-        || (T == 128 && d_out >= 32768 && d_in <= 8192);
+    // C.8.1 (2026-05-02 — Adaptive kBm for Loser Shapes)
+    //   Problem: kBm=128/64 binary choice creates extreme grid sizes for
+    //   outlier d_out values. Original two failure modes:
+    //     (a) d_out > 30000 (32B/70B gu): kBm=64 → grid_M=864-896 → 28K CTAs
+    //         Each CTA has too little work, launch overhead dominates.
+    //     (b) d_out <= 2560 && T>=1024 (70B kv, 1.7B/4B dn): kBm=128 →
+    //         grid_M=16-20 → 256-320 CTAs → SM starvation (2-2.5 CTA/SM).
+    //   Solution: force kBm=128 for (a) to halve grid.  The (b) sub-rule
+    //   was REVERTED in C.8.3 (see below).
+    //
+    //   Shapes targeted (retained):
+    //     (a) Qwen2.5-32B gu (5120→55296, T=2048): grid 864→432
+    //         LLaMA3-70B gu  (8192→57344, T=2048): grid 896→448
+    //
+    // C.8.3 (2026-05-02 — REVERT of C.8.1(b))
+    //   The 140-shape regression bench (r70_c8_full vs r69_c7_prefill)
+    //   proved C.8.1(b) hurts rather than helps at T=512/1024:
+    //       70B kv T=1024  cuda 245.7us -> 279.0us   sp 0.794x -> 0.695x
+    //       1.7B dn T=1024 cuda 176.1us -> 207.1us   sp 0.886x -> 0.753x
+    //       70B kv T=512                             sp  drop -0.087
+    //       1.7B dn T=512                            sp  drop -0.152
+    //   Root cause: assumption "kBm=128 gives grid_M=16 → SM starvation"
+    //   was wrong; at T=1024 the grid_T dimension (1024/32=32) already
+    //   multiplies total CTAs to 16x32=512 = 4.7 waves on 108 SM — kBm=128
+    //   actually gives the better per-CTA arithmetic intensity.  Only at
+    //   T<=128 does grid_M=16 become wave-count limiting, but those
+    //   shapes are ALREADY winners under the legacy gate (T=1 70B kv:
+    //   sp=1.49x; T=1 1.7B dn: sp=1.49x), so forcing kBm=64 there gives
+    //   no marginal improvement and risks new regressions.
+    //   Verdict: drop (b); keep (a) (zero net impact but cheap) and keep
+    //   C.8.2 split_k=2 (independent, gives 4B dn T=1024 +3.4% sp).
 
-    // R42-P1 bench hook: HKUST_V9_FUSED_FORCE_KBM overrides the gate.
-    //   "128"       : force kBm=128 (disable R41/R42/R43 opt-in).
-    //   "64"        : force kBm=64 (ignore T/d_out gate).
-    //   unset/other : use the default gate above.
-    bool kbm64_gate = kbm64_gate_default;
-    {
-        const char* env = std::getenv("HKUST_V9_FUSED_FORCE_KBM");
-        if (env != nullptr) {
-            if (env[0] == '1' && env[1] == '2' && env[2] == '8') kbm64_gate = false;
-            else if (env[0] == '6' && env[1] == '4')             kbm64_gate = true;
-        }
+    int adaptive_kBm = 128;  // default
+
+    // (a) Large d_out: force kBm=128 (was getting kBm=64 from default gate)
+    //     This halves grid_M and doubles per-CTA work.
+    if (d_out > 30000 && T >= 512) {
+        adaptive_kBm = 128;
     }
+    // Normal shapes: use existing R44/C.3/C.5 gate logic
+    else {
+        const bool kbm64_gate_default =
+            (r44_shape_ok &&
+             ((int64_t)n_cta_m_at_128 * ceil_div(T, 32) <= 64))
+            || (T == 128 && d_out >= 32768 && d_in <= 8192);
+
+        // R42-P1 bench hook: HKUST_V9_FUSED_FORCE_KBM overrides the gate.
+        bool kbm64_gate = kbm64_gate_default;
+        {
+            const char* env = std::getenv("HKUST_V9_FUSED_FORCE_KBM");
+            if (env != nullptr) {
+                if (env[0] == '1' && env[1] == '2' && env[2] == '8') kbm64_gate = false;
+                else if (env[0] == '6' && env[1] == '4')             kbm64_gate = true;
+            }
+        }
+        adaptive_kBm = kbm64_gate ? 64 : 128;
+    }
+
     (void)hp_empty;  // R42-P1: retained for debug/future gates.
-    const int kbm_pick = kbm64_gate ? 64 : 128;
+    const int kbm_pick = adaptive_kBm;
     const int n_cta_m = ceil_div(d_out, kbm_pick);
     // Stage F (r61) — occupancy-aware cache gate (F.1 experiment-driven).
     //
@@ -1177,8 +1475,33 @@ void launch(
             const char* e = std::getenv("HKUST_V9_LDMATRIX");
             return e ? std::atoi(e) : 0;
         }();
+        // C.11-A: 3-stage cp.async pipeline opt-in.
+        //   HKUST_V9_FUSED_FORCE_STAGES=3 → force kStages=3 (requires cp.async).
+        //   HKUST_V9_FUSED_FORCE_STAGES=2 / unset → original 2-stage.
+        //   Auto rule (planned for landing): kBm==128 && kUseCpAsync.
+        static const int stages_env = []() {
+            const char* e = std::getenv("HKUST_V9_FUSED_FORCE_STAGES");
+            return e ? std::atoi(e) : 2;
+        }();
+        // C.11-A NOT LANDED (2026-05-02, r72 post-C.10):
+        //   Intended to instantiate kStages=3 under `kUseCpAsync && kBmLocal==128`.
+        //   Actual measurement showed SMEM=54912 B per CTA (0xd680) vs 49152 B
+        //   static cap (0xc000) — overshoot by 5.76 KB.
+        //   Dynamic SMEM opt-in path would force occupancy from 2 CTA/SM
+        //   down to 1 CTA/SM (102400 B shared / 54912 = 1.86), losing 50%
+        //   of SM-level latency-hiding capacity — net regression almost
+        //   guaranteed.
+        //   Decision: keep the kStages template machinery and
+        //   HKUST_V9_FUSED_FORCE_STAGES env var as research scaffolding but
+        //   DO NOT instantiate kStages=3; leave the 3-stage arm disabled.
+        //   Re-enable path requires one of:
+        //     (a) split scale/zero cache to kGrpBuf=16 (+ template param)
+        //     (b) move sW only to extern __shared__ dynamic + 3-stage,
+        //         keep occupancy at 2 CTA/SM
+        //     (c) pivot to C.11-B (LOP3/PRMT fast dequant) — recommended.
+        //   See docs/PHASE4_C11A_3STAGE_PIPELINE.md for full post-mortem.
         if (ldmatrix_env) {
-            fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync, true><<<grid, block, 0, stream>>>(
+            fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync, true, 2><<<grid, block, 0, stream>>>(
                 reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
                 reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
                 reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
@@ -1201,7 +1524,8 @@ void launch(
             );
             return;
         }
-        fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync, false><<<grid, block, 0, stream>>>(
+        // C.11-A disabled — see comment above. Always fall through to kStages=2.
+        fused_dense_sparse_mma_int4_kernel<kBn, kUseGroupCache, kBmLocal, kUseCpAsync, false, 2><<<grid, block, 0, stream>>>(
             reinterpret_cast<const uint8_t*>(W_low.data_ptr<int8_t>()),
             reinterpret_cast<const uint8_t*>(X_s4.data_ptr<int8_t>()),
             reinterpret_cast<const __half*>(scale_u4.data_ptr<at::Half>()),
@@ -1350,7 +1674,17 @@ void launch(
         const bool c6_region_C = (d_out <= 2048 && d_in >= 6144);
         const bool c7_region_D =
             (d_in == 5120 && d_out >= 32768 && d_out <= 44000);
-        if (c6_region_A || c6_region_B || c6_region_C || c7_region_D) {
+        // C.8.2 (2026-05-02): rescue Qwen3-4B dn (9728→2560, T=1024).
+        //   This shape falls in the gap: d_out=2560 > region C ceiling (2048),
+        //   d_in=9728 < region B floor (16384), and it's not 14B gu (D).
+        //   Probe motivation: at kBm=64 (from C.8.1), grid_M=40, grid_N=16,
+        //   total CTAs=640 (5/SM) — reasonable but K-loop is 76 groups deep.
+        //   sk=2 halves K-loop to 38, doubling ILP per mainloop iteration.
+        //   Guard: d_out in (2048, 3072] to avoid accidentally pulling in
+        //   wider shapes; d_in in [9000, 12000] locks to 4B dn family only.
+        const bool c8_region_E =
+            (d_out > 2048 && d_out <= 3072 && d_in >= 9000 && d_in <= 12000);
+        if (c6_region_A || c6_region_B || c6_region_C || c7_region_D || c8_region_E) {
             split_k = 2;
         }
     }
@@ -1361,6 +1695,29 @@ void launch(
         if (env_sk != nullptr) {
             int sk = atoi(env_sk);
             if (sk >= 1 && sk <= 32) split_k = sk;
+        }
+    }
+
+    // Workspace-cap guard (2026-05-06): the split-K code path allocates
+    //   Y_partial[split_k, d_out, T] in fp32, i.e. split_k * d_out * T * 4 bytes.
+    // The split_k heuristics above were calibrated on decode T <= 8192,
+    // where Y_partial stays <= ~2.3 GB even at d_out=34816.  Under prefill
+    // T = 32768 / 65536 the linear growth in T inflates Y_partial to
+    // 9.1 GB / 18.2 GB on 14B gate_up_fused (d_out=34816), which triggers
+    // illegal memory access (bs=16) or cudaMalloc failure (bs=32) on
+    // RTX 4090 24 GB.  Cap the partial-sum workspace at 2 GB: if the
+    // chosen split_k would exceed the cap, fall back to split_k=1.
+    // sk=1 is always safe because no Y_partial is allocated — the kernel
+    // writes directly into Y_total.  The cap is conservative for 4090;
+    // revisit if running on smaller cards (16 GB) or much larger (80 GB).
+    // This guard is deliberately placed AFTER the env-override so
+    // HKUST_V9_FUSED_FORCE_SPLITK=N can still be clamped for safety.
+    if (split_k > 1) {
+        const int64_t partial_bytes =
+            (int64_t)split_k * (int64_t)d_out * (int64_t)T * 4;
+        constexpr int64_t kPartialCapBytes = 2LL * 1024 * 1024 * 1024; // 2 GB
+        if (partial_bytes > kPartialCapBytes) {
+            split_k = 1;
         }
     }
 

@@ -1,0 +1,97 @@
+W0502 19:10:44.587000 28182 site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0502 19:10:44.587000 28182 site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+====================================================================================================
+r77 Probe-G v2 (in-process, interleaved trials)
+warmup=500 outer=5 inner=100 trials=3
+====================================================================================================
+[build] loading hkust_v9_cuda_probeG0 (HKUST_PROBE_G=0, build_dir=/root/.cache/hkust_v9_cuda_probeG0)
+W0502 19:10:44.769000 28182 site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0502 19:10:44.769000 28182 site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+[build] loading hkust_v9_cuda_probeG2 (HKUST_PROBE_G=2, build_dir=/root/.cache/hkust_v9_cuda_probeG2)
+W0502 19:10:44.815000 28182 site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0502 19:10:44.815000 28182 site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+[build] loading hkust_v9_cuda_probeG4 (HKUST_PROBE_G=4, build_dir=/root/.cache/hkust_v9_cuda_probeG4)
+W0502 19:10:44.863000 28182 site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0502 19:10:44.863000 28182 site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+[build] loading hkust_v9_cuda_probeG8 (HKUST_PROBE_G=8, build_dir=/root/.cache/hkust_v9_cuda_probeG8)
+W0502 19:10:44.902000 28182 site-packages/torch/utils/cpp_extension.py:2425] TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+W0502 19:10:44.902000 28182 site-packages/torch/utils/cpp_extension.py:2425] If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'] to specific architectures.
+
+[parity] checking Probe-G barriers do not alter output ...
+   OK: all levels bit-identical to N=0 baseline.
+
+[trial 1/3] level order: [0, 2, 4, 8]
+   32B gu T=2048    N=0  us=10146.51
+   32B gu T=2048    N=2  us=10147.70
+   32B gu T=2048    N=4  us=10134.39
+   32B gu T=2048    N=8  us=10086.99
+   70B gu T=2048    N=0  us=17141.67
+   70B gu T=2048    N=2  us=17159.76
+   70B gu T=2048    N=4  us=17166.76
+   70B gu T=2048    N=8  us=17215.00
+   8B  q  T=512     N=0  us=76.68
+   8B  q  T=512     N=2  us=76.94
+   8B  q  T=512     N=4  us=76.68
+   8B  q  T=512     N=8  us=76.75
+   14B q  T=512     N=0  us=156.31
+   14B q  T=512     N=2  us=157.39
+   14B q  T=512     N=4  us=158.77
+   14B q  T=512     N=8  us=160.77
+
+[trial 2/3] level order: [2, 4, 8, 0]
+   32B gu T=2048    N=2  us=10147.00
+   32B gu T=2048    N=4  us=10133.72
+   32B gu T=2048    N=8  us=10082.79
+   32B gu T=2048    N=0  us=10143.92
+   70B gu T=2048    N=2  us=17161.41
+   70B gu T=2048    N=4  us=17167.26
+   70B gu T=2048    N=8  us=17218.84
+   70B gu T=2048    N=0  us=17142.45
+   8B  q  T=512     N=2  us=76.69
+   8B  q  T=512     N=4  us=76.83
+   8B  q  T=512     N=8  us=76.75
+   8B  q  T=512     N=0  us=76.82
+   14B q  T=512     N=2  us=157.23
+   14B q  T=512     N=4  us=158.75
+   14B q  T=512     N=8  us=160.72
+   14B q  T=512     N=0  us=156.33
+
+[trial 3/3] level order: [4, 8, 0, 2]
+   32B gu T=2048    N=4  us=10130.40
+   32B gu T=2048    N=8  us=10087.39
+   32B gu T=2048    N=0  us=10149.24
+   32B gu T=2048    N=2  us=10148.01
+   70B gu T=2048    N=4  us=17167.33
+   70B gu T=2048    N=8  us=17218.45
+   70B gu T=2048    N=0  us=17144.50
+   70B gu T=2048    N=2  us=17161.20
+   8B  q  T=512     N=4  us=76.68
+   8B  q  T=512     N=8  us=76.65
+   8B  q  T=512     N=0  us=76.82
+   8B  q  T=512     N=2  us=76.77
+   14B q  T=512     N=4  us=158.78
+   14B q  T=512     N=8  us=160.65
+   14B q  T=512     N=0  us=156.25
+   14B q  T=512     N=2  us=157.27
+
+====================================================================================================
+PER-SHAPE MEDIAN TABLE
+====================================================================================================
+label              cluster     us_N=0     us_N=2     us_N=4     us_N=8    d_N=2    d_N=4    d_N=8    us/bar
+  32B gu T=2048      loser     10146.51   10147.70   10133.72   10086.99   +0.01%   -0.13%   -0.59%   -7.439us
+  70B gu T=2048      loser     17142.45   17161.20   17167.26   17218.45   +0.11%   +0.14%   +0.44%    9.500us
+  8B  q  T=512       winner       76.82      76.77      76.68      76.75   -0.07%   -0.19%   -0.09%   -0.009us
+  14B q  T=512       winner      156.31     157.27     158.77     160.72   +0.61%   +1.57%   +2.82%    0.551us
+
+[raw] /root/Zip_kernel/kernel/cuda_kernel/logs/probe_g_v2_raw.json
+
+====================================================================================================
+r77 WARP-SPEC GO/NO-GO GATE  (worst-case loser delta at N=2)
+====================================================================================================
+  worst loser delta @ N=2: +0.11%
+  median per-bar-sync cost: 0.551us
+
+  VERDICT: GREEN — PROCEED with r77 warp-spec spike
+  Rationale: full-CTA bar.sync cost is cheap enough that the
+  r77 1P+3C handshake will not eat pipeline gains.  Day-1 gate
+  remains >=5% loser speed-up on 32B gu T=2048.

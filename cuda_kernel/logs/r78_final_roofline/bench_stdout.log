@@ -1,0 +1,255 @@
+/root/miniconda3/envs/zip/lib/python3.10/runpy.py:110: RuntimeWarning: kernel.cuda_kernel.ops JIT build failed (ModuleNotFoundError: No module named 'kernel'); CPU-only pure-Python modules under kernel.cuda_kernel.tools.* remain importable, GPU code paths will raise on first use.
+  __import__(pkg_name)
+20:10:18 INFO bench_qwen3 output dir: cuda_kernel/logs/r78_final_roofline/qwen3_20260502_201018
+20:10:18 INFO bench_qwen3 device: NVIDIA GeForce RTX 4090
+20:10:18 INFO bench_qwen3 pytorch 2.8.0+cu126  triton 3.4.0
+20:10:18 INFO bench_qwen3 hp_ratio: 0.050
+20:10:18 INFO bench_qwen3 flush_l2_fp16: True
+20:10:22 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=1    [ 1024-> 2048] e2e: fp16=   7.3  triton= 194.2  cuda=  10.1  cuda/fp16=0.72x  cuda/triton=19.22x
+20:10:26 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=8    [ 1024-> 2048] e2e: fp16=   8.1  triton= 135.3  cuda=  30.9  cuda/fp16=0.26x  cuda/triton=4.38x
+20:10:29 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=32   [ 1024-> 2048] e2e: fp16=   8.1  triton= 135.3  cuda=  30.6  cuda/fp16=0.27x  cuda/triton=4.43x
+20:10:33 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=128  [ 1024-> 2048] e2e: fp16=   7.4  triton= 136.7  cuda=  30.7  cuda/fp16=0.24x  cuda/triton=4.45x
+20:10:36 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=512  [ 1024-> 2048] e2e: fp16=  11.1  triton= 136.2  cuda=  30.5  cuda/fp16=0.37x  cuda/triton=4.47x
+20:10:41 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=1024 [ 1024-> 2048] e2e: fp16=  22.6  triton= 152.5  cuda=  32.6  cuda/fp16=0.69x  cuda/triton=4.67x
+20:10:47 INFO bench_qwen3 Qwen3-0.6B  q_proj       T=2048 [ 1024-> 2048] e2e: fp16=  49.7  triton= 151.0  cuda=  61.1  cuda/fp16=0.81x  cuda/triton=2.47x
+20:10:47 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=1    [ 1024-> 2048] e2e: fp16=   8.1  triton= 135.0  cuda=   7.6  cuda/fp16=1.08x  cuda/triton=17.85x
+20:10:48 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=8    [ 1024-> 2048] e2e: fp16=   8.4  triton= 135.8  cuda=  31.0  cuda/fp16=0.27x  cuda/triton=4.38x
+20:10:48 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=32   [ 1024-> 2048] e2e: fp16=   8.1  triton= 135.8  cuda=  30.9  cuda/fp16=0.26x  cuda/triton=4.40x
+20:10:48 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=128  [ 1024-> 2048] e2e: fp16=   6.9  triton= 135.8  cuda=  30.9  cuda/fp16=0.22x  cuda/triton=4.39x
+20:10:49 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=512  [ 1024-> 2048] e2e: fp16=  11.0  triton= 135.4  cuda=  30.7  cuda/fp16=0.36x  cuda/triton=4.42x
+20:10:49 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=1024 [ 1024-> 2048] e2e: fp16=  22.6  triton= 151.4  cuda=  32.7  cuda/fp16=0.69x  cuda/triton=4.64x
+20:10:50 INFO bench_qwen3 Qwen3-0.6B  kv_proj      T=2048 [ 1024-> 2048] e2e: fp16=  49.7  triton= 152.2  cuda=  61.2  cuda/fp16=0.81x  cuda/triton=2.49x
+20:10:53 INFO bench_qwen3 Qwen3-0.6B  o_proj       T=1    [ 2048-> 1024] e2e: fp16=   7.3  triton= 145.6  cuda=   7.6  cuda/fp16=0.96x  cuda/triton=19.22x
+20:10:57 INFO bench_qwen3 Qwen3-0.6B  o_proj       T=8    [ 2048-> 1024] e2e: fp16=   6.9  triton= 136.0  cuda=  34.6  cuda/fp16=0.20x  cuda/triton=3.93x
+20:11:00 INFO bench_qwen3 Qwen3-0.6B  o_proj       T=32   [ 2048-> 1024] e2e: fp16=   6.5  triton= 136.2  cuda=  34.9  cuda/fp16=0.19x  cuda/triton=3.90x
+20:11:04 INFO bench_qwen3 Qwen3-0.6B  o_proj       T=128  [ 2048-> 1024] e2e: fp16=   7.8  triton= 135.1  cuda=  34.9  cuda/fp16=0.22x  cuda/triton=3.86x
+20:11:07 INFO bench_qwen3 Qwen3-0.6B  o_proj       T=512  [ 2048-> 1024] e2e: fp16=  11.4  triton= 135.2  cuda=  34.9  cuda/fp16=0.33x  cuda/triton=3.88x
+20:11:13 INFO bench_qwen3 Qwen3-0.6B  o_proj       T=1024 [ 2048-> 1024] e2e: fp16=  31.0  triton= 150.0  cuda=  36.5  cuda/fp16=0.85x  cuda/triton=4.11x
+20:11:18 INFO bench_qwen3 Qwen3-0.6B  o_proj       T=2048 [ 2048-> 1024] e2e: fp16=  47.8  triton= 150.5  cuda=  58.8  cuda/fp16=0.81x  cuda/triton=2.56x
+20:11:21 INFO bench_qwen3 Qwen3-0.6B  gate_up_proj T=1    [ 1024-> 6144] e2e: fp16=  16.3  triton= 138.0  cuda=   9.5  cuda/fp16=1.71x  cuda/triton=14.54x
+20:11:25 INFO bench_qwen3 Qwen3-0.6B  gate_up_proj T=8    [ 1024-> 6144] e2e: fp16=  15.7  triton= 135.1  cuda=  30.9  cuda/fp16=0.51x  cuda/triton=4.38x
+20:11:28 INFO bench_qwen3 Qwen3-0.6B  gate_up_proj T=32   [ 1024-> 6144] e2e: fp16=  15.6  triton= 135.4  cuda=  30.7  cuda/fp16=0.51x  cuda/triton=4.40x
+20:11:32 INFO bench_qwen3 Qwen3-0.6B  gate_up_proj T=128  [ 1024-> 6144] e2e: fp16=  17.2  triton= 135.4  cuda=  30.7  cuda/fp16=0.56x  cuda/triton=4.41x
+20:11:35 INFO bench_qwen3 Qwen3-0.6B  gate_up_proj T=512  [ 1024-> 6144] e2e: fp16=  45.7  triton= 136.4  cuda=  51.8  cuda/fp16=0.88x  cuda/triton=2.63x
+20:11:39 INFO bench_qwen3 Qwen3-0.6B  gate_up_proj T=1024 [ 1024-> 6144] e2e: fp16=  75.6  triton= 151.9  cuda=  79.9  cuda/fp16=0.95x  cuda/triton=1.90x
+20:11:43 INFO bench_qwen3 Qwen3-0.6B  gate_up_proj T=2048 [ 1024-> 6144] e2e: fp16= 156.8  triton= 261.6  cuda= 149.4  cuda/fp16=1.05x  cuda/triton=1.75x
+20:11:47 INFO bench_qwen3 Qwen3-0.6B  down_proj    T=1    [ 3072-> 1024] e2e: fp16=   9.0  triton= 137.0  cuda=   9.8  cuda/fp16=0.92x  cuda/triton=14.00x
+20:11:50 INFO bench_qwen3 Qwen3-0.6B  down_proj    T=8    [ 3072-> 1024] e2e: fp16=   9.7  triton= 137.4  cuda=  34.9  cuda/fp16=0.28x  cuda/triton=3.94x
+20:11:54 INFO bench_qwen3 Qwen3-0.6B  down_proj    T=32   [ 3072-> 1024] e2e: fp16=   9.2  triton= 137.2  cuda=  35.1  cuda/fp16=0.26x  cuda/triton=3.91x
+20:11:57 INFO bench_qwen3 Qwen3-0.6B  down_proj    T=128  [ 3072-> 1024] e2e: fp16=  10.9  triton= 137.6  cuda=  35.0  cuda/fp16=0.31x  cuda/triton=3.93x
+20:12:01 INFO bench_qwen3 Qwen3-0.6B  down_proj    T=512  [ 3072-> 1024] e2e: fp16=  17.1  triton= 136.7  cuda=  38.3  cuda/fp16=0.45x  cuda/triton=3.57x
+20:12:06 INFO bench_qwen3 Qwen3-0.6B  down_proj    T=1024 [ 3072-> 1024] e2e: fp16=  37.1  triton= 153.8  cuda=  52.0  cuda/fp16=0.71x  cuda/triton=2.95x
+20:12:12 INFO bench_qwen3 Qwen3-0.6B  down_proj    T=2048 [ 3072-> 1024] e2e: fp16=  82.0  triton= 168.8  cuda=  84.0  cuda/fp16=0.98x  cuda/triton=2.01x
+20:12:15 INFO bench_qwen3 Qwen3-1.7B  q_proj       T=1    [ 2048-> 2048] e2e: fp16=  11.1  triton= 136.8  cuda=   7.4  cuda/fp16=1.50x  cuda/triton=18.37x
+20:12:19 INFO bench_qwen3 Qwen3-1.7B  q_proj       T=8    [ 2048-> 2048] e2e: fp16=  11.6  triton= 136.1  cuda=  35.1  cuda/fp16=0.33x  cuda/triton=3.88x
+20:12:22 INFO bench_qwen3 Qwen3-1.7B  q_proj       T=32   [ 2048-> 2048] e2e: fp16=  11.5  triton= 136.1  cuda=  35.0  cuda/fp16=0.33x  cuda/triton=3.89x
+20:12:26 INFO bench_qwen3 Qwen3-1.7B  q_proj       T=128  [ 2048-> 2048] e2e: fp16=  13.2  triton= 136.3  cuda=  35.1  cuda/fp16=0.38x  cuda/triton=3.89x
+20:12:29 INFO bench_qwen3 Qwen3-1.7B  q_proj       T=512  [ 2048-> 2048] e2e: fp16=  20.2  triton= 137.9  cuda=  34.9  cuda/fp16=0.58x  cuda/triton=3.95x
+20:12:33 INFO bench_qwen3 Qwen3-1.7B  q_proj       T=1024 [ 2048-> 2048] e2e: fp16=  48.9  triton= 152.6  cuda=  50.4  cuda/fp16=0.97x  cuda/triton=3.03x
+20:12:37 INFO bench_qwen3 Qwen3-1.7B  q_proj       T=2048 [ 2048-> 2048] e2e: fp16= 106.5  triton= 192.2  cuda=  96.7  cuda/fp16=1.10x  cuda/triton=1.99x
+20:12:37 INFO bench_qwen3 Qwen3-1.7B  kv_proj      T=1    [ 2048-> 2048] e2e: fp16=  11.1  triton= 136.1  cuda=   7.5  cuda/fp16=1.48x  cuda/triton=18.25x
+20:12:38 INFO bench_qwen3 Qwen3-1.7B  kv_proj      T=8    [ 2048-> 2048] e2e: fp16=  11.7  triton= 136.5  cuda=  35.0  cuda/fp16=0.33x  cuda/triton=3.90x
+20:12:38 INFO bench_qwen3 Qwen3-1.7B  kv_proj      T=32   [ 2048-> 2048] e2e: fp16=  11.5  triton= 135.9  cuda=  34.8  cuda/fp16=0.33x  cuda/triton=3.91x
+20:12:38 INFO bench_qwen3 Qwen3-1.7B  kv_proj      T=128  [ 2048-> 2048] e2e: fp16=  13.2  triton= 135.7  cuda=  35.0  cuda/fp16=0.38x  cuda/triton=3.88x
+20:12:39 INFO bench_qwen3 Qwen3-1.7B  kv_proj      T=512  [ 2048-> 2048] e2e: fp16=  20.4  triton= 136.4  cuda=  34.9  cuda/fp16=0.58x  cuda/triton=3.90x
+20:12:39 INFO bench_qwen3 Qwen3-1.7B  kv_proj      T=1024 [ 2048-> 2048] e2e: fp16=  48.8  triton= 152.1  cuda=  50.4  cuda/fp16=0.97x  cuda/triton=3.01x
+20:12:40 INFO bench_qwen3 Qwen3-1.7B  kv_proj      T=2048 [ 2048-> 2048] e2e: fp16= 106.6  triton= 191.5  cuda=  96.4  cuda/fp16=1.11x  cuda/triton=1.99x
+20:12:40 INFO bench_qwen3 Qwen3-1.7B  o_proj       T=1    [ 2048-> 2048] e2e: fp16=  11.2  triton= 134.7  cuda=   7.5  cuda/fp16=1.50x  cuda/triton=18.06x
+20:12:41 INFO bench_qwen3 Qwen3-1.7B  o_proj       T=8    [ 2048-> 2048] e2e: fp16=  11.6  triton= 135.9  cuda=  34.8  cuda/fp16=0.33x  cuda/triton=3.90x
+20:12:41 INFO bench_qwen3 Qwen3-1.7B  o_proj       T=32   [ 2048-> 2048] e2e: fp16=  11.6  triton= 135.5  cuda=  35.3  cuda/fp16=0.33x  cuda/triton=3.84x
+20:12:41 INFO bench_qwen3 Qwen3-1.7B  o_proj       T=128  [ 2048-> 2048] e2e: fp16=  13.2  triton= 136.3  cuda=  34.7  cuda/fp16=0.38x  cuda/triton=3.93x
+20:12:42 INFO bench_qwen3 Qwen3-1.7B  o_proj       T=512  [ 2048-> 2048] e2e: fp16=  20.3  triton= 136.3  cuda=  35.0  cuda/fp16=0.58x  cuda/triton=3.90x
+20:12:42 INFO bench_qwen3 Qwen3-1.7B  o_proj       T=1024 [ 2048-> 2048] e2e: fp16=  48.8  triton= 152.8  cuda=  50.5  cuda/fp16=0.97x  cuda/triton=3.03x
+20:12:43 INFO bench_qwen3 Qwen3-1.7B  o_proj       T=2048 [ 2048-> 2048] e2e: fp16= 106.4  triton= 192.2  cuda=  96.6  cuda/fp16=1.10x  cuda/triton=1.99x
+20:12:47 INFO bench_qwen3 Qwen3-1.7B  gate_up_proj T=1    [ 2048->12288] e2e: fp16=  58.7  triton= 135.6  cuda=  25.5  cuda/fp16=2.30x  cuda/triton=5.32x
+20:12:50 INFO bench_qwen3 Qwen3-1.7B  gate_up_proj T=8    [ 2048->12288] e2e: fp16=  56.9  triton= 136.5  cuda=  34.8  cuda/fp16=1.64x  cuda/triton=3.93x
+20:12:54 INFO bench_qwen3 Qwen3-1.7B  gate_up_proj T=32   [ 2048->12288] e2e: fp16=  57.8  triton= 136.4  cuda=  34.8  cuda/fp16=1.66x  cuda/triton=3.92x
+20:12:57 INFO bench_qwen3 Qwen3-1.7B  gate_up_proj T=128  [ 2048->12288] e2e: fp16=  65.5  triton= 137.4  cuda=  42.8  cuda/fp16=1.53x  cuda/triton=3.21x
+20:13:01 INFO bench_qwen3 Qwen3-1.7B  gate_up_proj T=512  [ 2048->12288] e2e: fp16= 150.3  triton= 271.3  cuda= 123.6  cuda/fp16=1.22x  cuda/triton=2.20x
+20:13:06 INFO bench_qwen3 Qwen3-1.7B  gate_up_proj T=1024 [ 2048->12288] e2e: fp16= 300.0  triton= 495.5  cuda= 234.7  cuda/fp16=1.28x  cuda/triton=2.11x
+20:13:13 INFO bench_qwen3 Qwen3-1.7B  gate_up_proj T=2048 [ 2048->12288] e2e: fp16= 631.6  triton= 961.6  cuda= 467.0  cuda/fp16=1.35x  cuda/triton=2.06x
+20:13:16 INFO bench_qwen3 Qwen3-1.7B  down_proj    T=1    [ 6144-> 2048] e2e: fp16=  31.2  triton= 139.6  cuda=  20.7  cuda/fp16=1.51x  cuda/triton=6.74x
+20:13:20 INFO bench_qwen3 Qwen3-1.7B  down_proj    T=8    [ 6144-> 2048] e2e: fp16=  30.8  triton= 144.3  cuda=  34.7  cuda/fp16=0.89x  cuda/triton=4.16x
+20:13:24 INFO bench_qwen3 Qwen3-1.7B  down_proj    T=32   [ 6144-> 2048] e2e: fp16=  30.9  triton= 163.1  cuda=  39.7  cuda/fp16=0.78x  cuda/triton=4.11x
+20:13:27 INFO bench_qwen3 Qwen3-1.7B  down_proj    T=128  [ 6144-> 2048] e2e: fp16=  35.2  triton= 164.5  cuda=  44.0  cuda/fp16=0.80x  cuda/triton=3.74x
+20:13:31 INFO bench_qwen3 Qwen3-1.7B  down_proj    T=512  [ 6144-> 2048] e2e: fp16=  77.1  triton= 232.3  cuda=  83.6  cuda/fp16=0.92x  cuda/triton=2.78x
+20:13:38 INFO bench_qwen3 Qwen3-1.7B  down_proj    T=1024 [ 6144-> 2048] e2e: fp16= 155.7  triton= 331.8  cuda= 173.4  cuda/fp16=0.90x  cuda/triton=1.91x
+20:13:45 INFO bench_qwen3 Qwen3-1.7B  down_proj    T=2048 [ 6144-> 2048] e2e: fp16= 302.1  triton= 566.8  cuda= 335.9  cuda/fp16=0.90x  cuda/triton=1.69x
+20:13:48 INFO bench_qwen3 Qwen3-4B    q_proj       T=1    [ 2560-> 4096] e2e: fp16=  25.4  triton= 135.8  cuda=  13.3  cuda/fp16=1.92x  cuda/triton=10.25x
+20:13:52 INFO bench_qwen3 Qwen3-4B    q_proj       T=8    [ 2560-> 4096] e2e: fp16=  26.8  triton= 135.6  cuda=  34.7  cuda/fp16=0.77x  cuda/triton=3.90x
+20:13:55 INFO bench_qwen3 Qwen3-4B    q_proj       T=32   [ 2560-> 4096] e2e: fp16=  26.9  triton= 138.5  cuda=  34.8  cuda/fp16=0.77x  cuda/triton=3.98x
+20:13:59 INFO bench_qwen3 Qwen3-4B    q_proj       T=128  [ 2560-> 4096] e2e: fp16=  27.8  triton= 137.9  cuda=  35.8  cuda/fp16=0.78x  cuda/triton=3.85x
+20:14:02 INFO bench_qwen3 Qwen3-4B    q_proj       T=512  [ 2560-> 4096] e2e: fp16=  73.1  triton= 146.6  cuda=  60.2  cuda/fp16=1.21x  cuda/triton=2.43x
+20:14:08 INFO bench_qwen3 Qwen3-4B    q_proj       T=1024 [ 2560-> 4096] e2e: fp16= 143.3  triton= 245.0  cuda= 111.1  cuda/fp16=1.29x  cuda/triton=2.21x
+20:14:15 INFO bench_qwen3 Qwen3-4B    q_proj       T=2048 [ 2560-> 4096] e2e: fp16= 259.0  triton= 430.0  cuda= 211.1  cuda/fp16=1.23x  cuda/triton=2.04x
+20:14:18 INFO bench_qwen3 Qwen3-4B    kv_proj      T=1    [ 2560-> 2048] e2e: fp16=  13.8  triton= 137.3  cuda=  10.1  cuda/fp16=1.36x  cuda/triton=13.60x
+20:14:22 INFO bench_qwen3 Qwen3-4B    kv_proj      T=8    [ 2560-> 2048] e2e: fp16=  14.9  triton= 136.2  cuda=  34.9  cuda/fp16=0.43x  cuda/triton=3.91x
+20:14:25 INFO bench_qwen3 Qwen3-4B    kv_proj      T=32   [ 2560-> 2048] e2e: fp16=  15.1  triton= 137.7  cuda=  35.1  cuda/fp16=0.43x  cuda/triton=3.92x
+20:14:29 INFO bench_qwen3 Qwen3-4B    kv_proj      T=128  [ 2560-> 2048] e2e: fp16=  15.6  triton= 136.8  cuda=  34.8  cuda/fp16=0.45x  cuda/triton=3.93x
+20:14:32 INFO bench_qwen3 Qwen3-4B    kv_proj      T=512  [ 2560-> 2048] e2e: fp16=  26.7  triton= 138.7  cuda=  43.2  cuda/fp16=0.62x  cuda/triton=3.21x
+20:14:36 INFO bench_qwen3 Qwen3-4B    kv_proj      T=1024 [ 2560-> 2048] e2e: fp16=  68.8  triton= 152.3  cuda=  61.4  cuda/fp16=1.12x  cuda/triton=2.48x
+20:14:40 INFO bench_qwen3 Qwen3-4B    kv_proj      T=2048 [ 2560-> 2048] e2e: fp16= 142.5  triton= 241.5  cuda= 117.5  cuda/fp16=1.21x  cuda/triton=2.06x
+20:14:44 INFO bench_qwen3 Qwen3-4B    o_proj       T=1    [ 4096-> 2560] e2e: fp16=  26.4  triton= 137.1  cuda=  16.0  cuda/fp16=1.65x  cuda/triton=8.57x
+20:14:47 INFO bench_qwen3 Qwen3-4B    o_proj       T=8    [ 4096-> 2560] e2e: fp16=  26.3  triton= 137.6  cuda=  35.3  cuda/fp16=0.75x  cuda/triton=3.90x
+20:14:51 INFO bench_qwen3 Qwen3-4B    o_proj       T=32   [ 4096-> 2560] e2e: fp16=  26.2  triton= 137.6  cuda=  35.1  cuda/fp16=0.75x  cuda/triton=3.92x
+20:14:54 INFO bench_qwen3 Qwen3-4B    o_proj       T=128  [ 4096-> 2560] e2e: fp16=  29.7  triton= 137.1  cuda=  42.5  cuda/fp16=0.70x  cuda/triton=3.22x
+20:14:58 INFO bench_qwen3 Qwen3-4B    o_proj       T=512  [ 4096-> 2560] e2e: fp16=  81.4  triton= 216.9  cuda=  84.0  cuda/fp16=0.97x  cuda/triton=2.58x
+20:15:04 INFO bench_qwen3 Qwen3-4B    o_proj       T=1024 [ 4096-> 2560] e2e: fp16= 140.7  triton= 299.7  cuda= 147.0  cuda/fp16=0.96x  cuda/triton=2.04x
+20:15:11 INFO bench_qwen3 Qwen3-4B    o_proj       T=2048 [ 4096-> 2560] e2e: fp16= 272.7  triton= 452.2  cuda= 234.1  cuda/fp16=1.16x  cuda/triton=1.93x
+20:15:15 INFO bench_qwen3 Qwen3-4B    gate_up_proj T=1    [ 2560->19456] e2e: fp16= 110.1  triton= 136.8  cuda=  49.4  cuda/fp16=2.23x  cuda/triton=2.77x
+20:15:19 INFO bench_qwen3 Qwen3-4B    gate_up_proj T=8    [ 2560->19456] e2e: fp16= 116.8  triton= 137.4  cuda=  35.8  cuda/fp16=3.26x  cuda/triton=3.84x
+20:15:22 INFO bench_qwen3 Qwen3-4B    gate_up_proj T=32   [ 2560->19456] e2e: fp16= 118.4  triton= 137.6  cuda=  40.3  cuda/fp16=2.94x  cuda/triton=3.41x
+20:15:26 INFO bench_qwen3 Qwen3-4B    gate_up_proj T=128  [ 2560->19456] e2e: fp16= 130.5  triton= 189.9  cuda=  92.7  cuda/fp16=1.41x  cuda/triton=2.05x
+20:15:31 INFO bench_qwen3 Qwen3-4B    gate_up_proj T=512  [ 2560->19456] e2e: fp16= 338.6  triton= 511.3  cuda= 232.3  cuda/fp16=1.46x  cuda/triton=2.20x
+20:15:38 INFO bench_qwen3 Qwen3-4B    gate_up_proj T=1024 [ 2560->19456] e2e: fp16= 654.9  triton= 948.6  cuda= 457.5  cuda/fp16=1.43x  cuda/triton=2.07x
+20:15:47 INFO bench_qwen3 Qwen3-4B    gate_up_proj T=2048 [ 2560->19456] e2e: fp16=1289.2  triton=1888.1  cuda= 917.0  cuda/fp16=1.41x  cuda/triton=2.06x
+20:15:51 INFO bench_qwen3 Qwen3-4B    down_proj    T=1    [ 9728-> 2560] e2e: fp16=  58.9  triton= 223.6  cuda=  38.1  cuda/fp16=1.55x  cuda/triton=5.87x
+20:15:55 INFO bench_qwen3 Qwen3-4B    down_proj    T=8    [ 9728-> 2560] e2e: fp16=  59.6  triton= 233.0  cuda=  48.1  cuda/fp16=1.24x  cuda/triton=4.85x
+20:15:59 INFO bench_qwen3 Qwen3-4B    down_proj    T=32   [ 9728-> 2560] e2e: fp16=  60.3  triton= 253.1  cuda=  57.4  cuda/fp16=1.05x  cuda/triton=4.41x
+20:16:02 INFO bench_qwen3 Qwen3-4B    down_proj    T=128  [ 9728-> 2560] e2e: fp16=  67.9  triton= 276.8  cuda=  79.9  cuda/fp16=0.85x  cuda/triton=3.46x
+20:16:07 INFO bench_qwen3 Qwen3-4B    down_proj    T=512  [ 9728-> 2560] e2e: fp16= 164.9  triton= 492.3  cuda= 223.7  cuda/fp16=0.74x  cuda/triton=2.20x
+20:16:14 INFO bench_qwen3 Qwen3-4B    down_proj    T=1024 [ 9728-> 2560] e2e: fp16= 308.0  triton= 693.7  cuda= 363.1  cuda/fp16=0.85x  cuda/triton=1.91x
+20:16:23 INFO bench_qwen3 Qwen3-4B    down_proj    T=2048 [ 9728-> 2560] e2e: fp16= 662.4  triton=1066.9  cuda= 727.9  cuda/fp16=0.91x  cuda/triton=1.47x
+20:16:27 INFO bench_qwen3 Qwen3-8B    q_proj       T=1    [ 4096-> 4096] e2e: fp16=  40.0  triton= 135.6  cuda=  18.7  cuda/fp16=2.14x  cuda/triton=7.25x
+20:16:30 INFO bench_qwen3 Qwen3-8B    q_proj       T=8    [ 4096-> 4096] e2e: fp16=  40.6  triton= 136.6  cuda=  35.1  cuda/fp16=1.15x  cuda/triton=3.89x
+20:16:34 INFO bench_qwen3 Qwen3-8B    q_proj       T=32   [ 4096-> 4096] e2e: fp16=  40.5  triton= 136.5  cuda=  34.9  cuda/fp16=1.16x  cuda/triton=3.91x
+20:16:37 INFO bench_qwen3 Qwen3-8B    q_proj       T=128  [ 4096-> 4096] e2e: fp16=  42.5  triton= 137.5  cuda=  47.3  cuda/fp16=0.90x  cuda/triton=2.91x
+20:16:41 INFO bench_qwen3 Qwen3-8B    q_proj       T=512  [ 4096-> 4096] e2e: fp16= 118.7  triton= 223.3  cuda=  87.1  cuda/fp16=1.36x  cuda/triton=2.56x
+20:16:46 INFO bench_qwen3 Qwen3-8B    q_proj       T=1024 [ 4096-> 4096] e2e: fp16= 216.7  triton= 380.4  cuda= 164.5  cuda/fp16=1.32x  cuda/triton=2.31x
+20:16:51 INFO bench_qwen3 Qwen3-8B    q_proj       T=2048 [ 4096-> 4096] e2e: fp16= 434.1  triton= 681.1  cuda= 319.4  cuda/fp16=1.36x  cuda/triton=2.13x
+20:16:55 INFO bench_qwen3 Qwen3-8B    kv_proj      T=1    [ 4096-> 2048] e2e: fp16=  20.8  triton= 135.7  cuda=  13.7  cuda/fp16=1.51x  cuda/triton=9.89x
+20:16:58 INFO bench_qwen3 Qwen3-8B    kv_proj      T=8    [ 4096-> 2048] e2e: fp16=  21.4  triton= 137.1  cuda=  35.3  cuda/fp16=0.61x  cuda/triton=3.89x
+20:17:02 INFO bench_qwen3 Qwen3-8B    kv_proj      T=32   [ 4096-> 2048] e2e: fp16=  21.2  triton= 136.0  cuda=  41.4  cuda/fp16=0.51x  cuda/triton=3.29x
+20:17:05 INFO bench_qwen3 Qwen3-8B    kv_proj      T=128  [ 4096-> 2048] e2e: fp16=  22.5  triton= 137.3  cuda=  35.4  cuda/fp16=0.63x  cuda/triton=3.88x
+20:17:09 INFO bench_qwen3 Qwen3-8B    kv_proj      T=512  [ 4096-> 2048] e2e: fp16=  49.4  triton= 157.1  cuda=  61.3  cuda/fp16=0.81x  cuda/triton=2.56x
+20:17:13 INFO bench_qwen3 Qwen3-8B    kv_proj      T=1024 [ 4096-> 2048] e2e: fp16= 111.2  triton= 225.1  cuda=  91.4  cuda/fp16=1.22x  cuda/triton=2.46x
+20:17:17 INFO bench_qwen3 Qwen3-8B    kv_proj      T=2048 [ 4096-> 2048] e2e: fp16= 226.5  triton= 374.1  cuda= 176.1  cuda/fp16=1.29x  cuda/triton=2.12x
+20:17:18 INFO bench_qwen3 Qwen3-8B    o_proj       T=1    [ 4096-> 4096] e2e: fp16=  40.0  triton= 134.5  cuda=  18.7  cuda/fp16=2.14x  cuda/triton=7.20x
+20:17:18 INFO bench_qwen3 Qwen3-8B    o_proj       T=8    [ 4096-> 4096] e2e: fp16=  40.6  triton= 135.5  cuda=  35.2  cuda/fp16=1.15x  cuda/triton=3.85x
+20:17:19 INFO bench_qwen3 Qwen3-8B    o_proj       T=32   [ 4096-> 4096] e2e: fp16=  40.6  triton= 135.0  cuda=  35.0  cuda/fp16=1.16x  cuda/triton=3.86x
+20:17:19 INFO bench_qwen3 Qwen3-8B    o_proj       T=128  [ 4096-> 4096] e2e: fp16=  42.4  triton= 137.1  cuda=  47.4  cuda/fp16=0.89x  cuda/triton=2.89x
+20:17:20 INFO bench_qwen3 Qwen3-8B    o_proj       T=512  [ 4096-> 4096] e2e: fp16= 118.5  triton= 223.4  cuda=  87.2  cuda/fp16=1.36x  cuda/triton=2.56x
+20:17:21 INFO bench_qwen3 Qwen3-8B    o_proj       T=1024 [ 4096-> 4096] e2e: fp16= 211.8  triton= 380.4  cuda= 164.3  cuda/fp16=1.29x  cuda/triton=2.31x
+20:17:23 INFO bench_qwen3 Qwen3-8B    o_proj       T=2048 [ 4096-> 4096] e2e: fp16= 422.4  triton= 682.2  cuda= 324.0  cuda/fp16=1.30x  cuda/triton=2.11x
+20:17:27 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=1    [ 4096->24576] e2e: fp16= 216.3  triton= 135.9  cuda=  95.8  cuda/fp16=2.26x  cuda/triton=1.42x
+20:17:31 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=8    [ 4096->24576] e2e: fp16= 242.7  triton= 137.0  cuda=  62.0  cuda/fp16=3.91x  cuda/triton=2.21x
+20:17:35 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=32   [ 4096->24576] e2e: fp16= 239.3  triton= 167.2  cuda=  68.3  cuda/fp16=3.50x  cuda/triton=2.45x
+20:17:39 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=128  [ 4096->24576] e2e: fp16= 274.0  triton= 311.5  cuda= 149.5  cuda/fp16=1.83x  cuda/triton=2.08x
+20:17:46 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=512  [ 4096->24576] e2e: fp16= 720.7  triton= 998.6  cuda= 462.6  cuda/fp16=1.56x  cuda/triton=2.16x
+20:17:55 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=1024 [ 4096->24576] e2e: fp16=1340.8  triton=1909.3  cuda= 904.8  cuda/fp16=1.48x  cuda/triton=2.11x
+20:18:10 INFO bench_qwen3 Qwen3-8B    gate_up_proj T=2048 [ 4096->24576] e2e: fp16=2560.8  triton=3746.2  cuda=1761.2  cuda/fp16=1.45x  cuda/triton=2.13x
+20:18:14 INFO bench_qwen3 Qwen3-8B    down_proj    T=1    [12288-> 4096] e2e: fp16= 112.3  triton= 276.7  cuda=  53.9  cuda/fp16=2.08x  cuda/triton=5.13x
+20:18:18 INFO bench_qwen3 Qwen3-8B    down_proj    T=8    [12288-> 4096] e2e: fp16= 123.1  triton= 287.2  cuda=  62.2  cuda/fp16=1.98x  cuda/triton=4.62x
+20:18:22 INFO bench_qwen3 Qwen3-8B    down_proj    T=32   [12288-> 4096] e2e: fp16= 124.2  triton= 322.1  cuda=  72.4  cuda/fp16=1.72x  cuda/triton=4.45x
+20:18:27 INFO bench_qwen3 Qwen3-8B    down_proj    T=128  [12288-> 4096] e2e: fp16= 136.2  triton= 355.2  cuda= 108.1  cuda/fp16=1.26x  cuda/triton=3.28x
+20:18:32 INFO bench_qwen3 Qwen3-8B    down_proj    T=512  [12288-> 4096] e2e: fp16= 326.0  triton= 653.1  cuda= 312.2  cuda/fp16=1.04x  cuda/triton=2.09x
+20:18:40 INFO bench_qwen3 Qwen3-8B    down_proj    T=1024 [12288-> 4096] e2e: fp16= 670.6  triton=1117.5  cuda= 621.0  cuda/fp16=1.08x  cuda/triton=1.80x
+20:18:52 INFO bench_qwen3 Qwen3-8B    down_proj    T=2048 [12288-> 4096] e2e: fp16=1319.0  triton=2100.3  cuda=1300.3  cuda/fp16=1.01x  cuda/triton=1.62x
+20:18:56 INFO bench_qwen3 Qwen3-14B   q_proj       T=1    [ 5120-> 5120] e2e: fp16=  61.1  triton= 135.6  cuda=  27.1  cuda/fp16=2.26x  cuda/triton=5.01x
+20:19:00 INFO bench_qwen3 Qwen3-14B   q_proj       T=8    [ 5120-> 5120] e2e: fp16=  65.8  triton= 138.5  cuda=  35.6  cuda/fp16=1.85x  cuda/triton=3.89x
+20:19:03 INFO bench_qwen3 Qwen3-14B   q_proj       T=32   [ 5120-> 5120] e2e: fp16=  66.4  triton= 138.8  cuda=  41.3  cuda/fp16=1.61x  cuda/triton=3.36x
+20:19:07 INFO bench_qwen3 Qwen3-14B   q_proj       T=128  [ 5120-> 5120] e2e: fp16=  70.7  triton= 198.7  cuda=  66.0  cuda/fp16=1.07x  cuda/triton=3.01x
+20:19:12 INFO bench_qwen3 Qwen3-14B   q_proj       T=512  [ 5120-> 5120] e2e: fp16= 176.4  triton= 376.5  cuda= 170.6  cuda/fp16=1.03x  cuda/triton=2.21x
+20:19:19 INFO bench_qwen3 Qwen3-14B   q_proj       T=1024 [ 5120-> 5120] e2e: fp16= 334.2  triton= 566.9  cuda= 309.5  cuda/fp16=1.08x  cuda/triton=1.83x
+20:19:27 INFO bench_qwen3 Qwen3-14B   q_proj       T=2048 [ 5120-> 5120] e2e: fp16= 650.1  triton=1036.5  cuda= 670.7  cuda/fp16=0.97x  cuda/triton=1.55x
+20:19:31 INFO bench_qwen3 Qwen3-14B   kv_proj      T=1    [ 5120-> 2048] e2e: fp16=  25.9  triton= 136.0  cuda=  17.7  cuda/fp16=1.46x  cuda/triton=7.69x
+20:19:35 INFO bench_qwen3 Qwen3-14B   kv_proj      T=8    [ 5120-> 2048] e2e: fp16=  26.7  triton= 138.0  cuda=  35.2  cuda/fp16=0.76x  cuda/triton=3.92x
+20:19:38 INFO bench_qwen3 Qwen3-14B   kv_proj      T=32   [ 5120-> 2048] e2e: fp16=  26.8  triton= 137.7  cuda=  35.4  cuda/fp16=0.76x  cuda/triton=3.89x
+20:19:42 INFO bench_qwen3 Qwen3-14B   kv_proj      T=128  [ 5120-> 2048] e2e: fp16=  30.5  triton= 143.6  cuda=  54.9  cuda/fp16=0.56x  cuda/triton=2.62x
+20:19:46 INFO bench_qwen3 Qwen3-14B   kv_proj      T=512  [ 5120-> 2048] e2e: fp16=  64.2  triton= 200.3  cuda=  73.5  cuda/fp16=0.87x  cuda/triton=2.72x
+20:19:50 INFO bench_qwen3 Qwen3-14B   kv_proj      T=1024 [ 5120-> 2048] e2e: fp16= 135.1  triton= 278.8  cuda= 140.5  cuda/fp16=0.96x  cuda/triton=1.98x
+20:19:54 INFO bench_qwen3 Qwen3-14B   kv_proj      T=2048 [ 5120-> 2048] e2e: fp16= 260.8  triton= 468.3  cuda= 270.8  cuda/fp16=0.96x  cuda/triton=1.73x
+20:19:55 INFO bench_qwen3 Qwen3-14B   o_proj       T=1    [ 5120-> 5120] e2e: fp16=  61.2  triton= 136.9  cuda=  27.1  cuda/fp16=2.26x  cuda/triton=5.06x
+20:19:55 INFO bench_qwen3 Qwen3-14B   o_proj       T=8    [ 5120-> 5120] e2e: fp16=  65.7  triton= 139.0  cuda=  35.7  cuda/fp16=1.84x  cuda/triton=3.89x
+20:19:56 INFO bench_qwen3 Qwen3-14B   o_proj       T=32   [ 5120-> 5120] e2e: fp16=  66.4  triton= 138.6  cuda=  41.3  cuda/fp16=1.61x  cuda/triton=3.36x
+20:19:57 INFO bench_qwen3 Qwen3-14B   o_proj       T=128  [ 5120-> 5120] e2e: fp16=  70.7  triton= 198.8  cuda=  66.0  cuda/fp16=1.07x  cuda/triton=3.01x
+20:19:58 INFO bench_qwen3 Qwen3-14B   o_proj       T=512  [ 5120-> 5120] e2e: fp16= 176.3  triton= 376.3  cuda= 170.2  cuda/fp16=1.04x  cuda/triton=2.21x
+20:19:59 INFO bench_qwen3 Qwen3-14B   o_proj       T=1024 [ 5120-> 5120] e2e: fp16= 334.7  triton= 567.1  cuda= 308.8  cuda/fp16=1.08x  cuda/triton=1.84x
+20:20:02 INFO bench_qwen3 Qwen3-14B   o_proj       T=2048 [ 5120-> 5120] e2e: fp16= 668.1  triton=1029.4  cuda= 669.1  cuda/fp16=1.00x  cuda/triton=1.54x
+20:20:07 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=1    [ 5120->34816] e2e: fp16= 378.2  triton= 263.0  cuda= 191.0  cuda/fp16=1.98x  cuda/triton=1.38x
+20:20:12 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=8    [ 5120->34816] e2e: fp16= 426.5  triton= 282.2  cuda= 214.3  cuda/fp16=1.99x  cuda/triton=1.32x
+20:20:17 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=32   [ 5120->34816] e2e: fp16= 436.0  triton= 317.2  cuda= 223.1  cuda/fp16=1.95x  cuda/triton=1.42x
+20:20:22 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=128  [ 5120->34816] e2e: fp16= 459.0  triton= 566.2  cuda= 388.6  cuda/fp16=1.18x  cuda/triton=1.46x
+20:20:32 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=512  [ 5120->34816] e2e: fp16=1231.9  triton=1715.8  cuda=1218.2  cuda/fp16=1.01x  cuda/triton=1.41x
+20:20:48 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=1024 [ 5120->34816] e2e: fp16=2342.0  triton=3335.1  cuda=2295.4  cuda/fp16=1.02x  cuda/triton=1.45x
+20:21:15 INFO bench_qwen3 Qwen3-14B   gate_up_proj T=2048 [ 5120->34816] e2e: fp16=4595.8  triton=6637.0  cuda=4427.2  cuda/fp16=1.04x  cuda/triton=1.50x
+20:21:19 INFO bench_qwen3 Qwen3-14B   down_proj    T=1    [17408-> 5120] e2e: fp16= 193.3  triton= 400.3  cuda=  87.1  cuda/fp16=2.22x  cuda/triton=4.60x
+20:21:24 INFO bench_qwen3 Qwen3-14B   down_proj    T=8    [17408-> 5120] e2e: fp16= 223.6  triton= 405.8  cuda= 102.5  cuda/fp16=2.18x  cuda/triton=3.96x
+20:21:28 INFO bench_qwen3 Qwen3-14B   down_proj    T=32   [17408-> 5120] e2e: fp16= 225.8  triton= 457.5  cuda= 125.0  cuda/fp16=1.81x  cuda/triton=3.66x
+20:21:33 INFO bench_qwen3 Qwen3-14B   down_proj    T=128  [17408-> 5120] e2e: fp16= 244.6  triton= 633.7  cuda= 195.8  cuda/fp16=1.25x  cuda/triton=3.24x
+20:21:40 INFO bench_qwen3 Qwen3-14B   down_proj    T=512  [17408-> 5120] e2e: fp16= 596.1  triton=1259.4  cuda= 661.0  cuda/fp16=0.90x  cuda/triton=1.91x
+20:21:51 INFO bench_qwen3 Qwen3-14B   down_proj    T=1024 [17408-> 5120] e2e: fp16=1213.7  triton=1899.9  cuda=1228.7  cuda/fp16=0.99x  cuda/triton=1.55x
+20:22:09 INFO bench_qwen3 Qwen3-14B   down_proj    T=2048 [17408-> 5120] e2e: fp16=2391.5  triton=3579.8  cuda=2427.8  cuda/fp16=0.99x  cuda/triton=1.47x
+20:22:09 INFO bench_qwen3 Qwen2.5-32B q_proj       T=1    [ 5120-> 5120] e2e: fp16=  61.3  triton= 136.4  cuda=  27.1  cuda/fp16=2.26x  cuda/triton=5.03x
+20:22:10 INFO bench_qwen3 Qwen2.5-32B q_proj       T=8    [ 5120-> 5120] e2e: fp16=  65.8  triton= 137.2  cuda=  36.3  cuda/fp16=1.81x  cuda/triton=3.78x
+20:22:10 INFO bench_qwen3 Qwen2.5-32B q_proj       T=32   [ 5120-> 5120] e2e: fp16=  66.3  triton= 138.7  cuda=  41.3  cuda/fp16=1.61x  cuda/triton=3.36x
+20:22:11 INFO bench_qwen3 Qwen2.5-32B q_proj       T=128  [ 5120-> 5120] e2e: fp16=  70.7  triton= 199.2  cuda=  65.9  cuda/fp16=1.07x  cuda/triton=3.02x
+20:22:12 INFO bench_qwen3 Qwen2.5-32B q_proj       T=512  [ 5120-> 5120] e2e: fp16= 176.3  triton= 376.4  cuda= 170.5  cuda/fp16=1.03x  cuda/triton=2.21x
+20:22:13 INFO bench_qwen3 Qwen2.5-32B q_proj       T=1024 [ 5120-> 5120] e2e: fp16= 335.9  triton= 566.8  cuda= 308.8  cuda/fp16=1.09x  cuda/triton=1.84x
+20:22:16 INFO bench_qwen3 Qwen2.5-32B q_proj       T=2048 [ 5120-> 5120] e2e: fp16= 668.9  triton=1029.1  cuda= 672.3  cuda/fp16=1.00x  cuda/triton=1.53x
+20:22:17 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=1    [ 5120-> 2048] e2e: fp16=  26.0  triton= 136.5  cuda=  17.7  cuda/fp16=1.47x  cuda/triton=7.72x
+20:22:17 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=8    [ 5120-> 2048] e2e: fp16=  26.6  triton= 135.4  cuda=  34.8  cuda/fp16=0.77x  cuda/triton=3.89x
+20:22:17 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=32   [ 5120-> 2048] e2e: fp16=  26.9  triton= 137.5  cuda=  35.1  cuda/fp16=0.77x  cuda/triton=3.92x
+20:22:18 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=128  [ 5120-> 2048] e2e: fp16=  30.5  triton= 143.4  cuda=  42.7  cuda/fp16=0.72x  cuda/triton=3.36x
+20:22:19 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=512  [ 5120-> 2048] e2e: fp16=  64.3  triton= 201.3  cuda=  74.4  cuda/fp16=0.86x  cuda/triton=2.71x
+20:22:19 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=1024 [ 5120-> 2048] e2e: fp16= 136.1  triton= 278.8  cuda= 139.2  cuda/fp16=0.98x  cuda/triton=2.00x
+20:22:21 INFO bench_qwen3 Qwen2.5-32B kv_proj      T=2048 [ 5120-> 2048] e2e: fp16= 261.5  triton= 468.0  cuda= 270.1  cuda/fp16=0.97x  cuda/triton=1.73x
+20:22:21 INFO bench_qwen3 Qwen2.5-32B o_proj       T=1    [ 5120-> 5120] e2e: fp16=  61.3  triton= 136.0  cuda=  27.1  cuda/fp16=2.26x  cuda/triton=5.01x
+20:22:22 INFO bench_qwen3 Qwen2.5-32B o_proj       T=8    [ 5120-> 5120] e2e: fp16=  65.8  triton= 136.4  cuda=  36.2  cuda/fp16=1.81x  cuda/triton=3.76x
+20:22:22 INFO bench_qwen3 Qwen2.5-32B o_proj       T=32   [ 5120-> 5120] e2e: fp16=  66.4  triton= 138.8  cuda=  41.2  cuda/fp16=1.61x  cuda/triton=3.36x
+20:22:23 INFO bench_qwen3 Qwen2.5-32B o_proj       T=128  [ 5120-> 5120] e2e: fp16=  70.6  triton= 199.2  cuda=  66.0  cuda/fp16=1.07x  cuda/triton=3.02x
+20:22:24 INFO bench_qwen3 Qwen2.5-32B o_proj       T=512  [ 5120-> 5120] e2e: fp16= 177.0  triton= 376.2  cuda= 169.9  cuda/fp16=1.04x  cuda/triton=2.21x
+20:22:25 INFO bench_qwen3 Qwen2.5-32B o_proj       T=1024 [ 5120-> 5120] e2e: fp16= 333.7  triton= 567.3  cuda= 308.1  cuda/fp16=1.08x  cuda/triton=1.84x
+20:22:28 INFO bench_qwen3 Qwen2.5-32B o_proj       T=2048 [ 5120-> 5120] e2e: fp16= 669.0  triton=1030.4  cuda= 671.8  cuda/fp16=1.00x  cuda/triton=1.53x
+20:22:34 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=1    [ 5120->55296] e2e: fp16= 596.9  triton= 364.9  cuda= 301.1  cuda/fp16=1.98x  cuda/triton=1.21x
+20:22:39 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=8    [ 5120->55296] e2e: fp16= 654.8  triton= 373.9  cuda= 337.7  cuda/fp16=1.94x  cuda/triton=1.11x
+20:22:45 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=32   [ 5120->55296] e2e: fp16= 667.7  triton= 393.2  cuda= 355.3  cuda/fp16=1.88x  cuda/triton=1.11x
+20:22:52 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=128  [ 5120->55296] e2e: fp16= 676.1  triton= 765.7  cuda= 657.1  cuda/fp16=1.03x  cuda/triton=1.17x
+20:23:05 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=512  [ 5120->55296] e2e: fp16=1873.8  triton=2660.4  cuda=2588.0  cuda/fp16=0.72x  cuda/triton=1.03x
+20:23:29 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=1024 [ 5120->55296] e2e: fp16=3600.3  triton=5333.5  cuda=5104.7  cuda/fp16=0.71x  cuda/triton=1.04x
+20:24:13 INFO bench_qwen3 Qwen2.5-32B gate_up_proj T=2048 [ 5120->55296] e2e: fp16=7296.6  triton=10443.5  cuda=10196.6  cuda/fp16=0.72x  cuda/triton=1.02x
+20:24:18 INFO bench_qwen3 Qwen2.5-32B down_proj    T=1    [27648-> 5120] e2e: fp16= 303.0  triton= 716.8  cuda= 366.4  cuda/fp16=0.83x  cuda/triton=1.96x
+20:24:23 INFO bench_qwen3 Qwen2.5-32B down_proj    T=8    [27648-> 5120] e2e: fp16= 324.0  triton= 680.6  cuda= 268.2  cuda/fp16=1.21x  cuda/triton=2.54x
+20:24:28 INFO bench_qwen3 Qwen2.5-32B down_proj    T=32   [27648-> 5120] e2e: fp16= 326.1  triton= 752.6  cuda= 319.8  cuda/fp16=1.02x  cuda/triton=2.35x
+20:24:34 INFO bench_qwen3 Qwen2.5-32B down_proj    T=128  [27648-> 5120] e2e: fp16= 380.8  triton=1037.3  cuda= 381.4  cuda/fp16=1.00x  cuda/triton=2.72x
+20:24:43 INFO bench_qwen3 Qwen2.5-32B down_proj    T=512  [27648-> 5120] e2e: fp16= 946.4  triton=1989.6  cuda=1067.6  cuda/fp16=0.89x  cuda/triton=1.86x
+20:24:58 INFO bench_qwen3 Qwen2.5-32B down_proj    T=1024 [27648-> 5120] e2e: fp16=1876.7  triton=3008.9  cuda=1829.3  cuda/fp16=1.03x  cuda/triton=1.64x
+20:25:22 INFO bench_qwen3 Qwen2.5-32B down_proj    T=2048 [27648-> 5120] e2e: fp16=3787.5  triton=5736.2  cuda=3615.1  cuda/fp16=1.05x  cuda/triton=1.59x
+20:25:26 INFO bench_qwen3 LLaMA3-70B  q_proj       T=1    [ 8192-> 8192] e2e: fp16= 146.8  triton= 206.4  cuda=  68.0  cuda/fp16=2.16x  cuda/triton=3.04x
+20:25:30 INFO bench_qwen3 LLaMA3-70B  q_proj       T=8    [ 8192-> 8192] e2e: fp16= 172.7  triton= 195.9  cuda=  69.5  cuda/fp16=2.48x  cuda/triton=2.82x
+20:25:34 INFO bench_qwen3 LLaMA3-70B  q_proj       T=32   [ 8192-> 8192] e2e: fp16= 173.5  triton= 220.6  cuda=  75.6  cuda/fp16=2.29x  cuda/triton=2.92x
+20:25:39 INFO bench_qwen3 LLaMA3-70B  q_proj       T=128  [ 8192-> 8192] e2e: fp16= 192.2  triton= 315.1  cuda= 115.0  cuda/fp16=1.67x  cuda/triton=2.74x
+20:25:44 INFO bench_qwen3 LLaMA3-70B  q_proj       T=512  [ 8192-> 8192] e2e: fp16= 414.3  triton= 746.5  cuda= 386.4  cuda/fp16=1.07x  cuda/triton=1.93x
+20:25:54 INFO bench_qwen3 LLaMA3-70B  q_proj       T=1024 [ 8192-> 8192] e2e: fp16= 879.4  triton=1358.5  cuda= 767.8  cuda/fp16=1.15x  cuda/triton=1.77x
+20:26:08 INFO bench_qwen3 LLaMA3-70B  q_proj       T=2048 [ 8192-> 8192] e2e: fp16=1763.7  triton=2613.0  cuda=1556.1  cuda/fp16=1.13x  cuda/triton=1.68x
+20:26:11 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=1    [ 8192-> 2048] e2e: fp16=  39.3  triton= 186.6  cuda=  26.4  cuda/fp16=1.49x  cuda/triton=7.08x
+20:26:15 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=8    [ 8192-> 2048] e2e: fp16=  40.5  triton= 194.4  cuda=  35.0  cuda/fp16=1.16x  cuda/triton=5.55x
+20:26:19 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=32   [ 8192-> 2048] e2e: fp16=  40.8  triton= 216.5  cuda=  50.2  cuda/fp16=0.81x  cuda/triton=4.31x
+20:26:23 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=128  [ 8192-> 2048] e2e: fp16=  46.8  triton= 218.4  cuda=  56.1  cuda/fp16=0.83x  cuda/triton=3.89x
+20:26:27 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=512  [ 8192-> 2048] e2e: fp16= 102.1  triton= 310.0  cuda= 106.3  cuda/fp16=0.96x  cuda/triton=2.92x
+20:26:31 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=1024 [ 8192-> 2048] e2e: fp16= 193.8  triton= 447.1  cuda= 246.4  cuda/fp16=0.79x  cuda/triton=1.81x
+20:26:37 INFO bench_qwen3 LLaMA3-70B  kv_proj      T=2048 [ 8192-> 2048] e2e: fp16= 405.2  triton= 757.6  cuda= 497.7  cuda/fp16=0.81x  cuda/triton=1.52x
+20:26:37 INFO bench_qwen3 LLaMA3-70B  o_proj       T=1    [ 8192-> 8192] e2e: fp16= 146.8  triton= 205.8  cuda=  68.0  cuda/fp16=2.16x  cuda/triton=3.03x
+20:26:38 INFO bench_qwen3 LLaMA3-70B  o_proj       T=8    [ 8192-> 8192] e2e: fp16= 172.5  triton= 195.2  cuda=  69.4  cuda/fp16=2.48x  cuda/triton=2.81x
+20:26:39 INFO bench_qwen3 LLaMA3-70B  o_proj       T=32   [ 8192-> 8192] e2e: fp16= 173.8  triton= 219.8  cuda=  75.5  cuda/fp16=2.30x  cuda/triton=2.91x
+20:26:40 INFO bench_qwen3 LLaMA3-70B  o_proj       T=128  [ 8192-> 8192] e2e: fp16= 192.2  triton= 315.3  cuda= 115.1  cuda/fp16=1.67x  cuda/triton=2.74x
+20:26:42 INFO bench_qwen3 LLaMA3-70B  o_proj       T=512  [ 8192-> 8192] e2e: fp16= 409.5  triton= 747.6  cuda= 386.5  cuda/fp16=1.06x  cuda/triton=1.93x
+20:26:45 INFO bench_qwen3 LLaMA3-70B  o_proj       T=1024 [ 8192-> 8192] e2e: fp16= 867.2  triton=1356.1  cuda= 767.3  cuda/fp16=1.13x  cuda/triton=1.77x
+20:26:53 INFO bench_qwen3 LLaMA3-70B  o_proj       T=2048 [ 8192-> 8192] e2e: fp16=1791.4  triton=2629.8  cuda=1555.2  cuda/fp16=1.15x  cuda/triton=1.69x
+20:26:59 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=1    [ 8192->57344] e2e: fp16= 986.1  triton= 604.9  cuda= 490.6  cuda/fp16=2.01x  cuda/triton=1.23x
+20:27:07 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=8    [ 8192->57344] e2e: fp16=1086.3  triton= 636.4  cuda= 699.6  cuda/fp16=1.55x  cuda/triton=0.91x
+20:27:14 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=32   [ 8192->57344] e2e: fp16=1098.9  triton= 656.7  cuda= 584.8  cuda/fp16=1.88x  cuda/triton=1.12x
+20:27:23 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=128  [ 8192->57344] e2e: fp16=1142.9  triton=1257.5  cuda=1120.3  cuda/fp16=1.02x  cuda/triton=1.12x
+20:27:43 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=512  [ 8192->57344] e2e: fp16=3103.0  triton=4483.2  cuda=4366.7  cuda/fp16=0.71x  cuda/triton=1.03x
+20:28:19 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=1024 [ 8192->57344] e2e: fp16=6137.7  triton=8819.4  cuda=8711.8  cuda/fp16=0.70x  cuda/triton=1.01x
+20:29:28 INFO bench_qwen3 LLaMA3-70B  gate_up_proj T=2048 [ 8192->57344] e2e: fp16=12130.8  triton=17433.3  cuda=17305.7  cuda/fp16=0.70x  cuda/triton=1.01x
+20:29:33 INFO bench_qwen3 LLaMA3-70B  down_proj    T=1    [28672-> 8192] e2e: fp16= 498.1  triton= 756.4  cuda= 432.0  cuda/fp16=1.15x  cuda/triton=1.75x
+20:29:39 INFO bench_qwen3 LLaMA3-70B  down_proj    T=8    [28672-> 8192] e2e: fp16= 527.7  triton= 715.3  cuda= 428.9  cuda/fp16=1.23x  cuda/triton=1.67x
+20:29:45 INFO bench_qwen3 LLaMA3-70B  down_proj    T=32   [28672-> 8192] e2e: fp16= 529.4  triton= 789.4  cuda= 448.2  cuda/fp16=1.18x  cuda/triton=1.76x
+20:29:51 INFO bench_qwen3 LLaMA3-70B  down_proj    T=128  [28672-> 8192] e2e: fp16= 608.3  triton=1089.5  cuda= 535.1  cuda/fp16=1.14x  cuda/triton=2.04x
+20:30:03 INFO bench_qwen3 LLaMA3-70B  down_proj    T=512  [28672-> 8192] e2e: fp16=1604.3  triton=2580.3  cuda=1574.1  cuda/fp16=1.02x  cuda/triton=1.64x
+20:30:25 INFO bench_qwen3 LLaMA3-70B  down_proj    T=1024 [28672-> 8192] e2e: fp16=3240.5  triton=4771.0  cuda=2997.2  cuda/fp16=1.08x  cuda/triton=1.59x
+20:31:03 INFO bench_qwen3 LLaMA3-70B  down_proj    T=2048 [28672-> 8192] e2e: fp16=6340.0  triton=9190.9  cuda=5897.7  cuda/fp16=1.07x  cuda/triton=1.56x
+20:31:03 INFO bench_qwen3 wrote cuda_kernel/logs/r78_final_roofline/qwen3_20260502_201018/bench.json
+20:31:03 INFO bench_qwen3 wrote cuda_kernel/logs/r78_final_roofline/qwen3_20260502_201018/bench.md
+20:31:03 INFO bench_qwen3 done.  1225 records across 245 shapes.

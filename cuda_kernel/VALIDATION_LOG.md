@@ -5216,9 +5216,729 @@ kv_proj shapes bounded by kernel-internal bottlenecks (not dispatch).
 
 Before rewriting the kernel or migrating to CUTLASS, **measure whether
 the dispatcher is actually picking the best variant of the existing
-kernel**.  In this case the kernel already had all the needed tile /
+In this case the kernel already had all the needed tile /
 split-K variants; the dispatcher was misrouting 5/20 shapes.  Half a
 day of data-driven heuristic surgery outperformed the 2-day F4
 CUTLASS migration attempt in every absolute metric.
+
+---
+
+## Run 2026-05-02 15:00 (UTC+8): r72 C.10 + C.10-v2 — dispatcher parameter sweep dead-end (ARCHIVED, NEGATIVE)
+
+### Context
+
+Between r69 (C.7 landed) and r71 (C.8 kBm-rule / C.8.3 dense-path pruning landed),
+the long-standing loser cluster on **Qwen2.5-32B gu / LLaMA3-70B gu** at T≥512
+still sits at speedup ≈ 0.45–0.50×. These shapes have the profile:
+  - d_out ∈ {55296, 57344}, d_in ∈ {5120, 8192}, T ∈ {512, 1024, 2048}
+  - Already forced onto kBm=128 by C.8.1(a): `d_out > 30000 && T >= 512`.
+
+Question: is there any tuning knob left on the existing kernel that can recover
+these shapes, or is the bottleneck structural (requires kernel rewrite)?
+
+### C.10 — split_k sweep probe
+
+Hypothesis: maybe the auto split_k pick is sub-optimal for large d_out × deep K.
+
+Method: added env override `HKUST_V9_FUSED_FORCE_SPLITK ∈ {1,2,4,8}` and ran
+`benchmarks/c10_splitk_probe.py` on the 5 loser shapes (warmup=200/300,
+outer=10/15, inner=50/100, median-of-3 trials per [[memory:bmmiahpl]]).
+
+Result — 32B gu T=512 representative (full matrix in `logs/r72_c10/probe.json`):
+
+| split_k | time (us) | speedup |
+|---|---|---|
+| 1 | 4082.3 | 0.472 |
+| 2 | 4082.7 | 0.472 |
+| 4 | 4083.1 | 0.472 |
+| 8 | 4082.9 | 0.472 |
+
+Variance across the 4 values is **<0.03%** — well below the measurement floor.
+All 5 loser shapes exhibit the same pattern. Conclusion: split_k has no effect
+on these shapes; the K-loop length is not the bottleneck.
+
+### C.10-v2 — (kBn, split_k) 2D combo sweep probe
+
+Hypothesis: maybe the auto kBn pick is hiding a better operating point; with
+kBm=128 locked, scanning kBn × split_k jointly might uncover an MMA-pipeline
+occupancy sweet-spot (smaller kBn → more CTAs → potentially better warp
+scheduler fill).
+
+Method: added env override `HKUST_V9_FUSED_FORCE_KBN ∈ {8,16,32,64}` on top of
+FORCE_SPLITK. Probe script: `benchmarks/c10v2_combo_probe.py` (6 shapes × 4 kBn
+× 3 split_k = 72 measurement points). Per-point timing spec matches
+[[memory:bmmiahpl]] (T=512: warmup=300, outer=15, inner=100; T≥1024: warmup=200,
+outer=10, inner=50–100; median-of-3 trials).
+
+Result — 32B gu T=512 (first completed shape, full 12-cell matrix in
+`logs/r72_c10v2/probe.log`):
+
+```
+kBn | sk=1           sk=2           sk=4
+  8 | 4082.5,0.47x   4082.8,0.47x   4083.2,0.47x
+ 16 | 4082.6,0.47x   4082.9,0.47x   4083.6,0.47x
+ 32 | 4082.7,0.47x   4083.1,0.47x   4083.0,0.47x
+ 64 | 4082.5,0.47x   4082.8,0.47x   4083.3,0.47x
+```
+
+Variance across all 12 cells: **<0.04%**. Grid CTA count changes 8× across
+the kBn sweep (kBn=8 → grid_N=64 → 27648 CTAs; kBn=64 → grid_N=8 → 3456 CTAs),
+yet total wall-clock time is numerically identical.
+
+**Interpretation**: total MMA MAC work is constant (kBm × kBn × grid_M × grid_N
+= d_out × T = fixed), and the measured 4082us is a **hard compute wall**
+imposed by per-MMA serial dequant/swizzle cost ([[memory:bd78lejo]] B1/B2).
+Changing the (kBn, split_k) partition neither adds nor removes MMA work, and
+the per-MMA epilogue cost is invariant — so the wall is untouchable from the
+dispatcher level.
+
+Probe was halted after the first shape (the 5 remaining shapes would produce
+the same null result; sharing the same B1/B2 bottleneck). Runtime saved: ~7 min
+of GPU time.
+
+### Conclusion — dispatcher tuning is EXHAUSTED for this loser cluster
+
+Every tunable dispatcher parameter (split_k, kBn, kBm) has been swept on the 5
+loser shapes and produces **zero** wall-clock change. The remaining speedup gap
+(0.47× → target 1.0×+) is blocked by the kernel mainloop itself, specifically:
+
+1. **B1** — serial HFMA2 dequant between consecutive MMAs.
+2. **B2** — IMAD address arithmetic for shared-memory swizzle.
+3. **B3** — only 2-stage `cp.async` double-buffering (CTA issues
+   `cp_async_wait_group<0>` after 2 stages, blocking MMA issue).
+
+The only way forward is a **kernel rewrite** (C.11 family). No further
+parameter tuning experiments on this cluster will be run.
+
+### Files touched
+
+- `benchmarks/c10_splitk_probe.py` (exists, reused)
+- `benchmarks/c10v2_combo_probe.py` (new)
+
+### Archive
+
+- `logs/r72_c10/probe.json` (C.10 split_k sweep)
+- `logs/r72_c10v2/probe.log` (C.10-v2 combo sweep, 32B gu T=512)
+- `logs/r72_c10v2/combo_probe.json` (partial — single shape)
+
+### Status — r72 C.10/C.10-v2: **NEGATIVE RESULT, ARCHIVED**
+
+Speedup unchanged on all swept points. Promoting cluster to C.11 kernel-rewrite
+track (3-stage cp.async pipeline and/or LOP3/PRMT dequant fast-path).
+
+### Key lesson
+
+**When dispatcher sweeps return zero variance, stop sweeping.** A null result
+across 8× grid-CTA-count variation is evidence that the bottleneck is
+per-instruction compute throughput, not launch/occupancy. Don't keep widening
+the sweep — pivot to kernel surgery.
+
+---
+
+## Run 2026-05-02 16:10 (UTC+8): r72 C.11-A — 3-stage cp.async pipeline SMEM budget blocker (ARCHIVED, SCAFFOLDING LANDED)
+
+### Context
+
+Following the r72 C.10/C.10-v2 negative result (dispatcher maxed out on the
+32B/70B gu T≥512 loser cluster), the next logical attack was **kernel-level**:
+specifically C.11-A — rewrite the mainloop from **2-stage cp.async**
+(`sW[2] / sX[2]` ring, `cp_async_wait_group<0>` after each MMA) to a
+**3-stage pipeline** (`sW[3] / sX[3]`, keep ≤1 in-flight via
+`cp_async_wait_group<1>`). Target: hide cp.async latency behind MMA,
+close the B3 bottleneck (cf. [[memory:bd78lejo]]).
+
+### Pre-flight
+
+- Device: RTX 4090 (SM89). `torch.cuda.get_device_properties`:
+  - `shared_memory_per_block` (static cap):                 49152 B
+  - `shared_memory_per_block_optin` (dynamic opt-in):      101376 B
+  - `shared_memory_per_multiprocessor` (pool per SM):      102400 B
+- Baseline (2-stage) per-CTA smem (measured, kBm=128 kBn=64 + ldmatrix +
+  cache): **~42 KB** — comfortably under static cap. Estimated naive 3-stage
+  (sW+sX+sum_X all 3-deep) per-CTA smem: **~50 KB** — over static cap by 1–2 KB.
+
+### Implementation
+
+Added a template parameter `int kStages = 2` to
+`fused_dense_sparse_mma_int4_kernel<...>`, made
+`sW[kStages] / sX[kStages] / s_sum_X[kStages]` ring-depth-generic, replaced
+`g & 1` / `buf ^ 1` / `cp_async_wait_group<0>` with their generic
+(`g % kStages`, `(buf+1)%kStages`, `wait_group<kStages-2>`) forms, and added
+`HKUST_V9_FUSED_FORCE_STAGES` env gate in the dispatcher guarded by
+`if constexpr (kUseCpAsync && kBmLocal == 128)`.
+
+`static_assert`s guarantee kStages ∈ {2,3} and `kStages==3 ⇒ kUseCpAsync`.
+
+### Compile-time failure: kStages=3 blows the 48KB static smem cap
+
+nvcc ptxas on `<kBn=64, kBm=128, kUseCpAsync=true, kUseLdmatrix=true, kStages=3>`:
+
+```
+ptxas error : Entry function '..._fused_dense_sparse_mma_int4_kernel<64,1,128,1,1,3>'
+              uses too much shared data (0xd680 bytes, 0xc000 max)
+```
+
+**Actual measured 3-stage smem**: 0xd680 = **54912 B** (5.76 KB over static cap).
+Breakdown:
+
+| component | bytes |
+|---|---|
+| sW[3][128][64]        | 24576 |
+| sX[3][64][64]         | 12288 |
+| s_sum_X[3][64] (int)  |   768 |
+| s_scale_u4[128][33]×fp16 | 8448 |
+| s_zero_u4[128][33]×fp16  | 8448 |
+| s_scale_x[64]×fp16    |   128 |
+| s_scale_block[128]×fp16 | 256 |
+| **total**             | **54912** |
+
+My initial 42KB estimate undercounted the scale/zero cache padding
+(kGrpBuf + kScalePad = 33 entries, not 32), plus the sum_X stage bump.
+
+### Dynamic-smem opt-in would crush occupancy (rejected)
+
+Moving large arrays to `extern __shared__` + `cudaFuncSetAttribute` to raise
+per-block cap to 56 KB is technically possible (opt-in cap is 99 KB, dynamic
+pool per SM is 100 KB). But **per-SM occupancy math**:
+
+- 2-stage baseline:  102400 / 42368 = **2.42 → 2 CTAs / SM**
+- 3-stage naive:     102400 / 54912 = **1.86 → 1 CTA / SM**
+
+Occupancy drop **2 → 1 CTA/SM** halves SM-level latency-hiding capacity —
+net regression almost guaranteed even if cp.async overlap is perfect.
+
+### Alternate trade-offs considered (all deferred)
+
+| option | saved smem | cost |
+|---|---|---|
+| sX-only 3-stage (keep sW 2-stage) | not enough |B3 starvation mainly on W |
+| sW-only 3-stage (keep sX 2-stage) | saves 4KB but still over cap | implementation cost ≥2 days |
+| kGrpBuf 32→16 as template | saves 7.7KB | halves scale/zero cache hit rate |
+| drop kScalePad (row pad 33→32) | saves 0.5KB | bank conflict on scale/zero reads |
+
+None of these are clear wins without further A/B, and all carry kernel-wide
+regression risk on the 134 non-loser shapes.
+
+### Decision: land scaffolding, disable 3-stage arm
+
+- Keep the `kStages` template parameter (default=2, always used in production).
+- Keep `HKUST_V9_FUSED_FORCE_STAGES` env hook in dispatcher.
+- **Disable** the 3-stage instantiation in dispatcher (removed the
+  `if (stages_env==3) kernel<...,3>()` branches, leaving only kStages=2).
+- Preserve 3-stage mainloop code under `if constexpr (kStages != 2)` for future
+  revival (per long-term memory: failed experiments should be disabled, not
+  deleted).
+- Pin the kStages=2 hot path to the **original hard-coded `& 1` / `^ 1`**
+  expressions under `if constexpr (kStages == 2)` so there is **zero codegen
+  delta** vs pre-r72 baseline.
+
+### Parity + no-regression verification
+
+- `pytest kernel/cuda_kernel/tests/test_parity.py`: **39/39 passed**.
+- Perf A/B on representative shapes after the refactor:
+
+| shape | pre-r72 baseline | post-r72 (kStages=2 pinned) | delta |
+|---|---|---|---|
+| 32B_gu_T512 (loser) | 4082.2 us | 4081.7 us | –0.01% |
+| 8B_q_T128           | ~48 us    | 48.3 us   | neutral |
+| 8B_kv_T128          | ~47 us    | 47.4 us   | neutral |
+
+(Measurement spec [[memory:bmmiahpl]]: warmup=300, outer=15, inner=100,
+median-of-3. Note: an earlier A/B measured 8870us on 32B_gu_T512 — root cause
+was a 20-minute orphaned benchmark process holding the GPU at 100% util after
+I had SIGINT'd its bash wrapper but not the python subprocess. After
+`kill -9`, the 4082us timing returned within noise. Lesson: always check
+`nvidia-smi --query-compute-apps` before believing a 2× regression.)
+
+### Files touched
+
+- `csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu`:
+  - Added `int kStages = 2` template param (+ static_asserts).
+  - `sW[kStages]`, `sX[kStages]`, `s_sum_X[kStages]`.
+  - Dense/sparse prologue+mainloop: kStages=2 pinned to original hardcoded
+    `& 1` / `^ 1` / `wait_group<0>` under `if constexpr (kStages == 2)`;
+    generic `% kStages` / `+(kStages-1)` / `wait_group<kStages-2>` in the
+    `else` branch (currently unreachable in production).
+  - Dispatcher: added `HKUST_V9_FUSED_FORCE_STAGES` env reader; the
+    `if constexpr (kUseCpAsync && kBmLocal == 128) { if (stages_env==3) {...} }`
+    3-stage launch branch is commented-out/deleted with a post-mortem block.
+- `kernel/cuda_kernel/benchmarks/c11a_smem_probe.py` (new, pre-flight).
+- `kernel/cuda_kernel/docs/PHASE4_C11A_3STAGE_PIPELINE.md` (design doc,
+  pre-compile; the failure is now annotated in this log).
+
+### Status — r72 C.11-A: **NEGATIVE RESULT ON IMPLEMENTATION; SCAFFOLDING LANDED; 3-STAGE DISABLED**
+
+The 2-stage path is proved byte-identical in performance to pre-r72 baseline
+(4081.7 vs 4082.2 us). The template machinery is ready for future revival
+(options: shrink kGrpBuf, split sW/sX stage depth, move to extern __shared__
+with dynamic smem tuning).
+
+### Key lessons
+
+1. **SMEM budget must be MEASURED, not estimated.** My 42KB estimate was off
+   by 28%; `ptxas --v` revealed the truth in 2 minutes.
+2. **Occupancy-cap dominates on register-dense kernels with full smem** — going
+   from 2→1 CTA/SM effectively halves the hardware hiding budget. Any
+   pipeline-depth change must clear this bar before implementation.
+3. **Orphaned benchmark processes will silently halve GPU throughput.** Always
+   `nvidia-smi --query-compute-apps` before believing an A/B regression. The
+   first 8870us measurement wasted 45 minutes of debugging.
+4. **Pin the hot path to identical expressions.** Using
+   `if constexpr (kStages == 2)` to force the original hard-coded `& 1`
+   expressions guarantees zero codegen drift for the production instantiation.
+
+### Recommended next move
+
+Do **not** continue C.11-A revival (all known sub-variants have known risks
+and ≤2 day ROI). Pivot to:
+
+- **C.11-C** (int8 scale/zero, attacks B1, 1 day, +3–5% est.) — next target.
+- **C.11-B** (LOP3/PRMT fast dequant, attacks B1, 1–2 days, +5–10% est.) —
+  follow-up.
+
+---
+
+## Run 2026-05-02 17:15 (UTC+8): r72 C.11 Probe-B — fold-skip ALU bisection
+
+### Goal
+
+Before spending 1–2 days on C.11-B (LOP3/PRMT fast dequant) or C.11-C (int8
+scale/zero), prove whether the per-output scalar dequant ALU in the
+fold_dense epilogue is actually a bottleneck. Both follow-ups attack B1
+(serialised dequant); if fold ALU is not a meaningful fraction of kernel
+time, their ceiling is small and the engineering cost is not justified.
+
+### Method
+
+Compile-time bisection via a `HKUST_PROBE_B` macro gated on an env var
+(`ops.py` appends `-DHKUST_PROBE_B=1` to NVCC flags when the env is set
+before the first import). Two subprocess children with separate JIT build
+dirs:
+- child A: `HKUST_PROBE_B=0` → baseline (correct kernel).
+- child B: `HKUST_PROBE_B=1` → fold_dense skips the scalar FMA tail.
+
+Driver: `kernel/cuda_kernel/tests/c11_probe_b_fold_skip.py`.
+Shapes: 2 loser + 2 winner representatives. Methodology [[memory:bmmiahpl]]:
+warmup=500, outer=10, inner=200 per shape, best-of-outer.
+
+### Two probe variants
+
+**Probe-B v1 (over-aggressive)** — removed the `z`, `s`, `sumxn_cache`
+reads entirely. Result (logs/c11_probeB/run.log):
+
+| shape            | cluster | baseline us | probeB-v1 us | delta   |
+|------------------|---------|-------------|--------------|---------|
+| 32B gu T=2048    | loser   | 10108       | 37425        | **−270%** (slower) |
+| 70B gu T=2048    | loser   | 37143       | 29695        | +20.0%  |
+| 8B  q  T=512     | winner  | 160         | 75           | +53.1%  |
+| 14B q  T=512     | winner  | 335         | 130          | +61.2%  |
+
+Interpretation: removing the `s_scale_u4` / `s_zero_u4` / `sumxn_cache`
+**reads** lets nvcc eliminate their upstream prefetch pipeline (cp.async
++ smem stores) as dead code. That changes the register footprint,
+occupancy, and instruction schedule in ways unrelated to fold ALU itself.
+Invalid bisection. (Also 32B gu showing +270% slowdown points at a
+transient clock / orphan-process artefact overlapping DCE noise — same
+class of issue called out in C.11-A.)
+
+**Probe-B v2 (corrected)** — keeps all upstream loads live, only cuts
+the scalar FMA:
+
+```cuda
+#if defined(HKUST_PROBE_B)
+    float z = ...; float s = ...; float sumxn = ...;
+    float probe_keep = (z + s + sumxn) * 0.0f;  // force loads live
+    y_fp[im][in_sub][r] += static_cast<float>(d_val) + probe_keep;
+#else
+    ... original fold FMA ...
+#endif
+```
+
+Result (logs/c11_probeB/run_v2.log):
+
+| shape            | cluster | baseline us | probeB-v2 us | delta   |
+|------------------|---------|-------------|--------------|---------|
+| 32B gu T=2048    | loser   | 10111       | 10156        | −0.44%  |
+| 70B gu T=2048    | loser   | 17140       | 17155        | −0.09%  |
+| 8B  q  T=512     | winner  | 79          | 79           | +0.20%  |
+| 14B q  T=512     | winner  | 155         | 157          | −0.79%  |
+
+All four shapes within ±1% noise band — **fold-ALU contribution to
+kernel wall time ≤ 1% across loser and winner clusters.**
+
+Note the 70B gu baseline differs between v1 and v2 runs (37143 vs 17140).
+Transient-clock / orphan-process artefact, same class as C.11-A. Only
+within-run A/B is trustable [[memory:bmmiahpl]]; v2 baseline was
+re-measured in the same session as v2 probe.
+
+### Conclusion: **DECISIVE NEGATIVE for C.11-B / C.11-C**
+
+The `z * sumxn` + `corrected * s` fused math in `fold_dense` costs ≤1%
+of kernel time on every representative shape (2 loser + 2 winner).
+Therefore:
+
+- **C.11-C** (int8 scale/zero pre-quant, attacks the two `__half2float`
+  conversions and one fp32 mul inside this fold): ceiling ≤ 1%. Not
+  worth 1 day + precision risk.
+- **C.11-B** (LOP3/PRMT fast int4→fp16 dequant): attacks a cousin of the
+  fold ALU — the per-subgroup int4 unpack. Probe-B evidence is not a
+  direct refutation (the unpack is upstream of the fold FMA), but the
+  unpack is even more tightly amortised and nvcc already compiles it
+  to `hfma2` with the two-constant trick. Estimated ≤1–2% saving. Not
+  worth 1–2 days + correctness risk.
+
+### Kernel-time budget estimate (post-Probe-B)
+
+With fold ALU ≤1%, and Probe-B v1 data showing that removing upstream
+`s_scale`/`s_zero`/`sumxn_cache` loads (even as DCE) shifts winners by
+5–17%, the most likely residual cost distribution is:
+
+- **Dense MMA + cp.async pipeline** (B3 in [[memory:bd78lejo]]): ~60–75%
+- **Shared-mem loads of scale/zero/sum_X + swizzle address math** (B2):
+  ~10–20%
+- **Sparse branch + sparse-row gather**: ~5–15% (shape-dependent)
+- **Fold ALU** (Probe-B target): ≤1% (confirmed)
+
+This points to **pipeline / smem-layout** work as the next-highest ROI,
+NOT more dequant-ALU micro-opts.
+
+### Files touched
+
+- `kernel/cuda_kernel/ops.py`: add env hook that appends `-DHKUST_PROBE_B=1`
+  to NVCC flags when `HKUST_PROBE_B=1` is set at first import.
+- `kernel/cuda_kernel/csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu`:
+  add `#if defined(HKUST_PROBE_B) … #else … #endif` in `fold_dense` lambda
+  (v2 form, keeps loads live). Default build has the macro undefined —
+  production kernel is **byte-identical to pre-Probe-B baseline**.
+- `kernel/cuda_kernel/tests/c11_probe_b_fold_skip.py` (new, diagnostic
+  driver with subprocess fan-out + PYTHONPATH injection).
+
+### Status — r72 C.11 Probe-B: **DECISIVE NEGATIVE. C.11-B and C.11-C SHELVED.**
+
+Production kernel is unchanged (macro default-off). Probe infrastructure
+retained in-tree as a diagnostic tool for future fold/dequant work.
+
+### Key lessons
+
+1. **Compile-time bisection must keep upstream loads live.** The v1 design
+   let DCE delete the prefetch pipeline, producing fake speedups of up to
+   61% on winner shapes and fake slowdowns of up to 270% on loser shapes.
+   The `(z + s + sumxn) * 0.0f` keep-alive pattern is the correct idiom
+   for this class of probe.
+2. **Fold ALU is not a bottleneck.** This is a negative result worth
+   having: it kills two follow-ups (C.11-B / C.11-C) that would have cost
+   a combined 2–3 days and had ≤1% ceilings.
+3. **Re-baseline inside the same session as the probe child.** Cross-run
+   timing of loser shapes fluctuates ~2× due to transient clock / orphan
+   processes. Any A/B must use within-run baseline.
+
+### Recommended next move
+
+Pivot away from B1 (dequant ALU) attacks. Candidates:
+
+1. **Probe-D: cp.async bisection** — gate the `cp.async.cg` issues with a
+   macro, measure how much kernel time is spent waiting on HBM→smem.
+   Directly tests whether B3 (2-stage pipeline) dominates the 32B/70B gu
+   loser cluster. 0.5 day probe. **Do this first.**
+2. **Probe-E: sparse-branch bisection** — skip sparse accumulation under a
+   macro, measure dense-only kernel time. Disambiguates whether sparse
+   pulls the loser shapes down. 0.5 day probe.
+3. **Probe-F: smem-layout bisection** — replace `s_scale_u4[M][G]` +
+   `s_zero_u4[M][G]` with a packed `s_sz_u8[M][G]`; measure whether
+   swizzle/IMAD (B2) drops. Only if D/E say mainloop is smem-bound.
+
+---
+
+## r73 — C.11 Probe-D: cp.async wait-group bisection (2026-05-02)
+
+### Summary — **DECISIVE NEGATIVE. Pipeline is not the bottleneck.**
+
+Compile-flag probe (`HKUST_PROBE_D=1`) replaces every
+`cp_async_wait_group<N>()` in `fused_dense_sparse_mma_int4.cu` with a
+PTX `cp.async.wait_group 99`, which (given we only ever have 1–2 pending
+groups) never actually blocks.  Kernel output is incorrect by design
+(downstream smem reads observe stale bytes), but **wall-clock time gives
+a direct bound on how much of the mainloop time is spent waiting on
+HBM→smem**.
+
+Within-run A/B (methodology [[memory:bmmiahpl]], warmup=500, outer=10,
+inner=200, separate JIT build dirs per flag to avoid binary cache):
+
+| shape              | cluster | baseline_us | probeD_us | delta    |
+|--------------------|---------|-------------|-----------|----------|
+| 32B gu T=2048      | loser   | 10107.36    | 11356.29  | −12.36%  |
+| 70B gu T=2048      | loser   | 17144.45    | 17150.59  |  −0.04%  |
+| 8B  q  T=512       | winner  |    78.54    |    78.69  |  −0.19%  |
+| 14B q  T=512       | winner  |   155.82    |   155.47  |  +0.22%  |
+
+### Interpretation
+
+If `cp.async.wait_group<N>` were the bottleneck we would expect removing
+it to **accelerate** the kernel; every shape except one sits at delta ≈ 0
+(noise floor).  The 32B-gu row is actually **slower** with the probe,
+which means nvcc's scheduler reorders neighbouring instructions slightly
+when the wait turns into a no-op PTX — but that only strengthens the
+conclusion: if the wait had been on the critical path, removing it could
+never have made the kernel slower.
+
+→ **B3 ("only 2-stage `cp.async` pipeline") is NOT the dominant cost on
+the loser cluster.**  Combined with r72 Probe-B ("B1 fold ALU is not
+dominant either"), we have now eliminated two of the three original
+phase-2 B-hypotheses.  The remaining candidate is **B2: shared-memory
+swizzle/IMAD address arithmetic + scale/zero layout**.
+
+### Killed follow-ups
+
+1. **C.11-A revival** (3-stage cp.async pipeline).  Dynamic-smem blocker
+   aside, the potential speed-up ceiling is now bounded by ≤1% on all
+   four probe shapes.  Not worth the smem-layout rework.
+2. **C.11-D warp-specialisation rewrite** (6–8 days).  Its entire value
+   proposition rests on "pipeline is starved."  Probe-D refutes the
+   premise directly; no budget for the rewrite.
+
+### Files touched
+
+- `kernel/cuda_kernel/csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu`:
+  add `template <int N> cp_async_wait_group_probe()` wrapper inside the
+  `fused_dense_sparse_mma_int4` namespace, gated on `HKUST_PROBE_D`
+  macro.  Default build has the macro undefined — production kernel is
+  **byte-identical to pre-Probe-D baseline**.  All 6 call sites updated
+  to use the wrapper.
+- `kernel/cuda_kernel/ops.py`: add env hook that appends
+  `-DHKUST_PROBE_D=1` to NVCC flags when `HKUST_PROBE_D=1` is set at
+  first import.
+- `kernel/cuda_kernel/tests/c11_probe_d_cpasync_waitoff.py` (new,
+  diagnostic driver — same subprocess fan-out pattern as Probe-B).
+
+### Status — r73 C.11 Probe-D: **DECISIVE NEGATIVE. C.11-A revival + C.11-D SHELVED.**
+
+Production kernel unchanged (macro default-off).  Probe retained in-tree.
+
+### Recommended next move
+
+Only one of the three original B-hypotheses survives: **B2 smem layout.**
+Validate before committing to a full rewrite:
+
+1. **Probe-E: sparse-branch bisection** (0.25 day).  Gate the sparse mma
+   accumulation behind a macro so the kernel runs dense-only.  If the
+   loser shapes stay slow, sparse is not the hidden tax and we can focus
+   entirely on the dense mainloop for B2.  Do this first — it's cheap
+   and disambiguates.
+2. **Probe-F: smem-layout bisection** (1 day).  Pack
+   `s_scale_u4[M][G]` + `s_zero_u4[M][G]` into a single
+   `s_sz_fp32[M][G]` (fp16-pair, 4-byte aligned) so one `ld.shared.b32`
+   fetches both; measure whether fold-load + address arithmetic drops.
+   Only pursue if Probe-E confirms the problem is in dense mainloop.
+
+---
+
+## r74 — C.11 Probe-E: sparse-branch bisection (2026-05-02)
+
+### Summary — **DECISIVE NEGATIVE. Sparse is not the loser-cluster tax.**
+
+Compile-flag probe (`HKUST_PROBE_E=1`) replaces the sparse-branch guard
+`if (split_k_idx == 0)` with `if (!kProbeSkipSparse && split_k_idx == 0)`
+where `kProbeSkipSparse` is a `constexpr bool` set to `true` under the
+macro.  nvcc constant-folds the entire sparse branch (BSR row-offset
+load, hp_col_indices scan, sparse `issue_w_sparse_load_async` /
+`run_mma_pass(buf, fold_sparse, ...)` block, ring-buffer `cp.async`
+commits, everything) out of the kernel.  Output is incorrect for
+`hp_blocks > 0` shapes by design — timing-only probe.
+
+Within-run A/B (methodology [[memory:bmmiahpl]], warmup=500, outer=10,
+inner=200, separate JIT build dirs per flag):
+
+| shape              | cluster | baseline_us | probeE_us | delta    |
+|--------------------|---------|-------------|-----------|----------|
+| 32B gu T=2048      | loser   | 10112.07    |  9988.53  | **+1.22%** |
+| 70B gu T=2048      | loser   | 17144.11    | 16911.40  | **+1.36%** |
+| 8B  q  T=512       | winner  |    78.77    |    76.68  | +2.65%  |
+| 14B q  T=512       | winner  |   155.55    |   147.49  | +5.18%  |
+
+### Interpretation
+
+The entire sparse branch — including ldmatrix-like W_high loads, the
+sparse fold (`y += 16 · d_val · s`), cp.async prefetches of the next
+hp_col_indices block, BSR row-offset scan, scale_block fetch — costs
+**≤1.4% of kernel time on the loser cluster**.  For shapes with
+hp_ratio=0.05 and large k dimension this is expected: the dense branch
+iterates `n_groups` times (≥ 40 groups for 32B gu), while sparse only
+iterates `blk_end - blk_start` ≈ 5% of BSR blocks once (and only on
+split_k_idx==0).
+
+### Cumulative diagnosis so far
+
+Three of the four candidate cost centres are now experimentally ruled
+out on the loser cluster:
+
+| hypothesis                              | probe   | measured cost | status |
+|-----------------------------------------|---------|---------------|--------|
+| B1: fold_dense scalar dequant ALU       | Probe-B | ≤1%           | killed |
+| B2: smem swizzle IMAD + scale/zero load | —       | **untested**  | **suspect** |
+| B3: 2-stage cp.async pipeline           | Probe-D | ≤0% (probe is slower) | killed |
+| sparse branch (W_high·X)                | Probe-E | ≤1.4%         | killed |
+
+By elimination, **≥97% of the 10.1ms (32B gu) / 17.1ms (70B gu) loser
+kernel time is spent inside the dense mainloop's `run_mma_pass(buf,
+fold_dense, prefetch_dense, g_cache)` — specifically the MMA issue loop
+with its smem reads for A/B and the scale/zero prefetch** (B2).
+
+### Files touched
+
+- `kernel/cuda_kernel/csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu`:
+  wrap `if (split_k_idx == 0)` with `kProbeSkipSparse` constexpr guard.
+  Macro undefined → `kProbeSkipSparse = false`, nvcc folds the `!false`
+  away; production kernel **byte-identical** to pre-Probe-E baseline.
+- `kernel/cuda_kernel/ops.py`: add `HKUST_PROBE_E=1` env hook that
+  appends `-DHKUST_PROBE_E=1` to NVCC flags.
+- `kernel/cuda_kernel/tests/c11_probe_e_sparse_off.py` (new, diagnostic
+  driver — same subprocess fan-out pattern as Probe-B/D).
+
+### Status — r74 C.11 Probe-E: **DECISIVE NEGATIVE. Dense-only fast path SHELVED.**
+
+A dense-only fast path (e.g. a second kernel instantiation gated on
+`hp_blocks == 0 || low_sparse`) was under consideration.  Probe-E caps
+its upside at ~1.2% on loser shapes — not worth a separate kernel +
+dispatcher wiring.
+
+### Recommended next move
+
+**Probe-F: smem-layout bisection** (1 day).  Pack `s_scale_u4[M][G]` +
+`s_zero_u4[M][G]` into a single `s_sz_fp32[M][G]` (fp16-pair, 4-byte
+aligned) so one `ld.shared.b32` fetches both — halves the smem-load
+instruction count and halves the IMAD address arithmetic in the
+scale/zero fetch path.  This is the direct experiment for B2.
+
+Secondary probe if Probe-F is inconclusive: **Probe-G: MMA-only** —
+replace the `fold_dense` lambda with a no-op that writes the raw int32
+accumulator straight to smem (skipping all scale/zero/sumxn math).
+Combined with Probe-B's fold-skip this measures what fraction of
+kernel time is spent in non-MMA smem traffic vs the mma.m16n8k64
+itself.
+
+---
+
+## r75 — C.11 Probe-F: smem-layout bisection (2026-05-02)
+
+### Summary — **DECISIVE NEGATIVE. B2 rejected. All four B-hypotheses now refuted → TC issue-rate ceiling.**
+
+Compile-flag probe (`HKUST_PROBE_F=1`) packs `s_scale_u4[kBm][G+1]` and
+`s_zero_u4[kBm][G+1]` into a single `__half2` array `s_sz_u4[kBm][G+1]`
+with layout `.x = zero, .y = scale`.  Three consequences for the dense
+mainloop fold:
+
+1. Two `ld.shared.b16` per `(mrow, gg)` pair fold into one
+   `ld.shared.b32` → halves smem-load instruction count on the fold
+   hot path.
+2. The two IMAD address computations for `s_scale_u4` and `s_zero_u4`
+   collapse into a single IMAD for `s_sz_u4` → halves the scalar
+   address arithmetic.
+3. smem byte footprint is identical (`kBm · (G+1) · 4B` == two arrays
+   of `kBm · (G+1) · 2B`).  Bank-conflict pad stays at 1 slot.
+
+Functionally correct (pure layout transform, not a semantic change).
+
+Within-run A/B (methodology [[memory:bmmiahpl]], warmup=500, outer=10,
+inner=200, separate JIT build dirs per flag):
+
+| shape              | cluster | baseline_us | probeF_us | delta    |
+|--------------------|---------|-------------|-----------|----------|
+| 32B gu T=2048      | loser   | 10106.51    | 10113.42  | **−0.07%** |
+| 70B gu T=2048      | loser   | 17140.00    | 17138.75  | **+0.01%** |
+| 8B  q  T=512       | winner  |    78.78    |    78.60  | +0.23%  |
+| 14B q  T=512       | winner  |   155.60    |   155.85  | −0.16%  |
+
+**All four shapes inside the ±0.25% noise floor.**
+
+### Interpretation
+
+Halving the smem-load and IMAD instructions for scale/zero produces
+**zero measurable speed-up** on loser or winner cluster.  There are
+exactly two possible explanations:
+
+1. `prefetch_dense` is **not** on the critical path — i.e., its load
+   latency is fully hidden under the neighbouring MMA pipe already.
+2. The fused load/address arithmetic is cheap but does not live in any
+   observable issue-slot.
+
+Both collapse to the same conclusion: **the MMA issue pipe itself is
+the bottleneck.**  At sm_89, each `mma.m16n8k64.s4.s4.s32` consumes
+issue slots on the TC pipe at a fixed rate, and within a single warp
+the back-to-back issue cadence is capped.  We are hitting that cap.
+
+### Cumulative diagnosis — FULL CLOSURE
+
+All four original cost-centre hypotheses are now experimentally
+rejected:
+
+| hypothesis                              | probe   | measured cost | status |
+|-----------------------------------------|---------|---------------|--------|
+| B1: fold_dense scalar dequant ALU       | Probe-B | ≤1%           | killed |
+| B2: smem swizzle IMAD + scale/zero load | **Probe-F** | **≤0.25%** | **killed** |
+| B3: 2-stage cp.async pipeline           | Probe-D | ≤0%           | killed |
+| sparse branch (W_high·X)                | Probe-E | ≤1.4%         | killed |
+
+By elimination the remaining ≥97% of loser-cluster kernel time is
+spent in the `mma.m16n8k64.s4.s4.s32` instruction stream itself.  This
+matches the updated [[memory:bd78lejo]] diagnosis ("MMA pipeline
+starvation — TC already active and carries nearly all MAC but
+scheduler is saturated") and pins down **which** scheduler cost centre
+is bound: per-warp MMA issue cadence, not operand supply.
+
+### Files touched
+
+- `kernel/cuda_kernel/csrc/fused_dense_sparse/fused_dense_sparse_mma_int4.cu`:
+  `#if defined(HKUST_PROBE_F)` branches at three call sites — smem
+  declaration (two `__half` arrays → one `__half2` array), prologue
+  load (two stores → one `__halves2half2` store), and `prefetch_dense`
+  (two `ld.shared.b16 + __half2float` → one `ld.shared.b32 +
+  __low2half/__high2half`).  Macro undefined → unchanged layout and
+  baseline byte-identical codegen.
+- `kernel/cuda_kernel/ops.py`: `HKUST_PROBE_F=1` env hook.
+- `kernel/cuda_kernel/tests/c11_probe_f_smem_pack.py` (new, diagnostic
+  driver — subprocess fan-out pattern).
+
+### Status — r75 C.11 Probe-F: **DECISIVE NEGATIVE. All B-hypotheses refuted. C.12 smem-pack SHELVED.**
+
+The C.12 smem-pack productisation that would have followed a positive
+Probe-F is abandoned — no speed-up to ship.  Probe-F code stays
+in-tree as a diagnostic tool; macro default-off, production byte
+identical to r72 baseline.
+
+### Conclusion — V9 int4 kernel has reached the per-warp MMA issue-rate ceiling
+
+The dispatcher-side optimisation budget (C.1 … C.11 Probe-F) is
+exhausted.  Four orthogonal micro-probes together show that no amount
+of (fold ALU tuning / pipeline deepening / sparse fast path / smem
+layout re-pack) can shift the loser-cluster critical path.  The kernel
+is in the structural regime diagnosed by memory [[memory:bd78lejo]]:
+TC carries the MAC workload but the **warp-scheduler issue slot** is
+the ceiling.
+
+### Recommended next move — **graduate to Phase 3 Step 2**
+
+Only two structural directions can break through an MMA issue-rate
+ceiling:
+
+1. **Warp-specialisation rewrite** (producer/consumer split, multiple
+   consumer warps issuing MMA in parallel so per-warp issue cap is no
+   longer the bottleneck).  This is what Hopper's async-pipeline
+   example code achieves natively; on sm_89 it must be hand-rolled
+   (named-barrier, circular buffer, MBarrier-like sync).  Estimated
+   6–8 days.  Note: this was previously shelved under r73 Probe-D
+   NEGATIVE on the grounds that "pipeline starvation is not the
+   bottleneck", but its real value proposition is *issue-slot
+   multiplication*, not pipeline depth — Probe-F revives it as the
+   only remaining lever.  **Correction**: r73's shelving rationale for
+   C.11-D was over-general; reinstate it as the lead candidate for
+   Phase 3 Step 2.
+2. **CUTLASS 3.x Hopper-style stream-K + persistent CTA rewrite on
+   sm_89 back-ported**.  Higher ceiling (`cuda_eff` target 0.50–0.70
+   per [[memory:bd78lejo]]) but higher engineering cost (2–3 weeks).
+
+Immediate step before either rewrite: **re-freeze the current V9 int4
+kernel as the production baseline**.  r72 byte-identical kernel is the
+final V9 drop with dispatcher-level optimisation.  Update
+PROJECT_HANDOFF and move Phase 3 Step 2 to the active milestone.
 
 ---

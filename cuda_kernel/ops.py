@@ -106,6 +106,62 @@ _NVCC_FLAGS = [
     "-Wno-deprecated-declarations",
 ]
 
+# Phase3 Step2 / Probe-B: opt-in compile-time probe that skips the
+# per-output scalar dequant ALU in fold_dense. Setting the env var
+# HKUST_PROBE_B=1 before first import of this module will define the
+# HKUST_PROBE_B macro and cause the kernel to accumulate the raw
+# int32 MMA result without the z/s/sumxn math. Used only for
+# roofline-style bisection; callers that care about correctness must
+# leave the env var unset (default).
+if os.environ.get("HKUST_PROBE_B", "0") == "1":
+    _NVCC_FLAGS.append("-DHKUST_PROBE_B=1")
+
+# r73 / Probe-D: opt-in compile-time probe for cp.async wait-group
+# bisection.  Setting HKUST_PROBE_D=1 replaces every
+# cp_async_wait_group<N>() call in fused_dense_sparse_mma_int4.cu with
+# a cp.async.wait_group 99 PTX (which never actually waits since we
+# only ever have 1-2 pending groups).  Kernel results are INCORRECT
+# under this mode — it is timing-only, used to measure the upper
+# bound of how much time is spent waiting on HBM->smem.  Leave the
+# env var unset (default) for any correctness-sensitive code path.
+if os.environ.get("HKUST_PROBE_D", "0") == "1":
+    _NVCC_FLAGS.append("-DHKUST_PROBE_D=1")
+
+# r74 / Probe-E: opt-in compile-time probe that skips the entire
+# sparse (W_high) branch in fused_dense_sparse_mma_int4.  Setting
+# HKUST_PROBE_E=1 defines the HKUST_PROBE_E macro which turns the
+# sparse-guard constexpr bool into `true`, so nvcc constant-folds the
+# branch away.  Kernel output is INCORRECT for shapes with hp_blocks
+# > 0 (we drop W_high·X).  Used only for timing upper-bound / roofline
+# bisection.  Default: unset → kernel is byte-identical to baseline.
+if os.environ.get("HKUST_PROBE_E", "0") == "1":
+    _NVCC_FLAGS.append("-DHKUST_PROBE_E=1")
+
+# r75 / Probe-F: opt-in compile-time probe that packs s_scale_u4 and
+# s_zero_u4 into a single __half2 array (s_sz_u4).  The fold_dense
+# scale/zero fetch becomes a single ld.shared.b32 instead of two
+# ld.shared.b16, halving smem-load instructions and IMAD address
+# arithmetic in the B2 hot-path.  smem byte footprint is identical to
+# baseline.  Default unset → kernel is byte-identical to baseline.
+if os.environ.get("HKUST_PROBE_F", "0") == "1":
+    _NVCC_FLAGS.append("-DHKUST_PROBE_F=1")
+
+# r77 / Probe-G: opt-in synchronisation overhead calibration probe.
+# HKUST_PROBE_G=N (N in 0..8) inserts N extra full-CTA `bar.sync id, 128`
+# barriers per dense g-iter, modelling the UPPER BOUND on a future
+# warp-specialised (1P+3C) producer-consumer handshake cost.  N=0 is
+# byte-identical to baseline (helper expands to an empty function).
+# N>=1 keeps kernel output CORRECT (barriers are sync-only, no data path).
+# Used to gate r77 warp-spec spike: if overhead <3% at realistic N, go; else
+# abort warp-spec and switch to Option 2 CUTLASS 3.x back-port.
+_probe_g_val = os.environ.get("HKUST_PROBE_G", "0")
+try:
+    _probe_g_n = int(_probe_g_val)
+except ValueError:
+    _probe_g_n = 0
+if _probe_g_n > 0:
+    _NVCC_FLAGS.append(f"-DHKUST_PROBE_G={_probe_g_n}")
+
 _CXX_FLAGS = [
     "-O3",
     "-std=c++17",

@@ -11,6 +11,7 @@
 set -euo pipefail
 
 LABEL="${1:-$(date +%Y%m%d_%H%M%S)}"
+shift || true  # drop the label so "$@" only carries python-side args
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 OUT_DIR="${REPO_ROOT}/kernel/bench/logs/w4a4_fused_ops_${LABEL}"
 LOG_FILE="${OUT_DIR}/run.log"
